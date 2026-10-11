@@ -2316,6 +2316,10 @@ def _lock_card_cutoff() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _storm_day_cutoff() -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def lock_cards_used(user_id: int = 0) -> int:
     """最近 1 小时里，自动锁敌已经开掉几张恢复卡。"""
     user_id = int(user_id or attack_context_user() or 0)
@@ -2400,7 +2404,7 @@ def note_storm_reject(name: str, user_id: int = 0, qq: str = "") -> None:
             (user_id, name, now_ts()))
         conn.execute(
             "DELETE FROM storm_reject WHERE user_id=? AND at<?",
-            (user_id, _lock_card_cutoff()))
+            (user_id, _storm_day_cutoff()))
         conn.commit()
     except sqlite3.Error:
         return
@@ -2422,6 +2426,21 @@ def list_storm_rejects(user_id: int) -> list:
     finally:
         conn.close()
     return [{"name": str(name or ""), "at": beijing_ts(at)} for name, at in rows]
+
+
+def storm_rejects_day(user_id: int) -> int:
+    """这个登录账号最近 1 天拒绝的超级强攻次数。"""
+    user_id = int(user_id or 0)
+    if not user_id:
+        return 0
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM storm_reject WHERE user_id=? AND at>=?",
+            (user_id, _storm_day_cutoff())).fetchone()
+    finally:
+        conn.close()
+    return int(row[0] or 0) if row else 0
 
 
 def set_clear_plan(user_id: int, mode, page_from, page_to, priority,

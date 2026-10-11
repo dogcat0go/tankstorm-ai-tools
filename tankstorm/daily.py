@@ -504,9 +504,8 @@ SAFE_FIELDS = {("0463", "count")}
 # 将领授勋和加强授勋不推进这两项，再排在它们之后。
 ORDER_LAST = {"每日任务", "周任务", "将领授勋", "将领加强授勋"}
 
-# 军事演习会把有人的场地逐个打下去，服务器回 ret=4，最后把连接打断。
-# 矿区争夺同样不稳。先不做。开关保持关，最近执行里写明。
-HELD_TASKS = ("军事演习", "矿区争夺")
+# 矿区争夺会把有主的矿逐个打下去，服务器拒绝后可能把连接打断。先不做。
+HELD_TASKS = ("矿区争夺",)
 HELD_STATUS = "暂不执行，反复被拒会打断连接"
 
 # 连续多少轮收不到响应就放弃该任务（当天）。
@@ -842,24 +841,6 @@ def _resolve_fields(task, rec, sock=None, since=0.0):
 # ---------------------------------------------------------------- 挑选器
 #
 # 全部按 2026-08-10 抓包的真实响应结构写，字段号见各处注释。
-
-def _pick_free_wargame_site(data):
-    """军事演习：从查询响应里挑一个没人占的演习场。
-
-    响应结构（RseWarGameOpt type=1，分页推送，bLastMsg 标记最后一页）：
-        field14.field2 = [ {field1: 场地号, field2..field5: 属性,
-                            field6: 占领者uid, field7: 占领者名} , ... ]
-    没人占的条目就是**没有 field6**。实测最后一页 241 个场地里 121 个是空的。
-    """
-    sites = []
-    for blk in _aslist(data.get("field14")):
-        if isinstance(blk, dict):
-            sites += [e for e in _aslist(blk.get("field2")) if isinstance(e, dict)]
-    for e in sites:
-        if not e.get("field6") and isinstance(e.get("field1"), int):
-            return e["field1"]
-    return None
-
 
 def _pick_sevendays_day(data):
     """七天乐：只领**当天**那份，已领过就返回 None。
@@ -1395,16 +1376,16 @@ TASKS = [
                           3: ("int32", 0)})],
        gate=Gate("RseWarCollegeOpt", "skilltraintimes")),
 
-    # 占领是真正拿收益的那一步。有空场就占空场；没有就打这次查到的场。
-    # tokenNum 是当天剩余占领次数（实测 3，占一次变 2），正好当闸门。
-    # 形状不合"挑一个就发一包"：没有空位时要换目标接着打，所以走 runner。
-    _t("军事演习", "战争学院·军事演习（占场地）", "04a7", "RceWarGameOpt",
+    # 2026-10-11 抓包。先开战争学院，再 type=1 拉场地。敌方战力是 field9。
+    # 13:40 实测：打战力 78670 的场地 473，回包只有 type=3、ret=10、deftUid，
+    # 没有 siteID，也没占上。这种拒绝换下一个低于 900 万的。
+    # ret=100 且 bOccupySite=true 才算打下。打下就停，避免把连接打断。
+    _t("军事演习", "战争学院·军事演习（打低战力）", "04a7", "RceWarGameOpt",
        {}, "实测",
-       "8/10 抓包：{type:1} 查询（分页推送，bLastMsg 为最后一页）→ "
-       "{type:2,siteID} 占领空场。空场 = 条目里没有 field6(占领者)。"
-       "没有空位时按这次查到的场地挨个打，请求再带上占领者 uid，占住一场就停。"
-       "不发 forceFlag。bOccupySite=true 才算占住，siteEndTime 是结束时刻",
-       max_per_day=3,
+       "2026-10-11：先 {type:1} 开战争学院，再 {type:1,siteID:0,uID:\"\",forceFlag:false} 拉场地。"
+       "有人的场看 field9，从低到高打低于 900 万的。本国、自己、停战中的跳过。"
+       "ret=10 是这一场被拒，换下一个。ret=100 且 bOccupySite=true 算打下",
+       max_per_day=1,
        gate=Gate("RseWarGameOpt", "tokenNum"),
        cooldown_until="siteEndTime",
        runner=lambda rec, sock, config: _run_wargame(rec, sock, config)),
@@ -2374,29 +2355,34 @@ def _wargame_sites(pages):
     return sites
 
 
-def _wargame_attempts(sites, me):
-    """有空场只占那一个。没有就按探测顺序打有主的，自己的和停战中的跳过。"""
-    free_id = _pick_free_wargame_site({"field14": {"field2": sites}})
-    if isinstance(free_id, int) and not isinstance(free_id, bool):
-        return [(f"占领空场 {free_id}",
-                 {1: ("int32", 2), 2: ("int32", free_id)})]
+def _wargame_targets(sites, me, home=None, limit=9000000):
+    """低于 limit 的有主场地，按战力从低到高。空场、自己、本国、停战中的不要。"""
     now = time.time()
-    attempts = []
+    out = []
     for e in sites:
         uid = e.get("field6")
         if not isinstance(uid, str) or not uid or (me and uid == me):
             continue
-        if e.get("field12") is True:
+        land = e.get("field8")
+        if (isinstance(home, int) and not isinstance(home, bool)
+                and isinstance(land, int) and not isinstance(land, bool)
+                and land == home):
+            continue
+        if e.get("field12") in (True, 1):
             continue
         truce = e.get("field13")
         if isinstance(truce, int) and not isinstance(truce, bool) and truce > now:
             continue
-        sid = e["field1"]
+        power = e.get("field9")
+        sid = e.get("field1")
+        if isinstance(power, bool) or not isinstance(power, int) or power <= 0 or power >= limit:
+            continue
+        if isinstance(sid, bool) or not isinstance(sid, int):
+            continue
         name = e.get("field7") if isinstance(e.get("field7"), str) and e.get("field7") else uid
-        # 空场的实测包只有 type+siteID。有主的多带占领者 uid，不发 forceFlag。
-        attempts.append((f"打下场 {sid}（{name}）",
-                         {1: ("int32", 2), 2: ("int32", sid), 3: ("string", uid)}))
-    return attempts
+        out.append((power, sid, uid, name))
+    out.sort()
+    return out
 
 
 def _mine_attempts(data, me):
@@ -2526,58 +2512,113 @@ def _collect_wargame_pages(sock, rec, since, timeout):
     return pages
 
 
+def _attack_reply(sid, uid):
+    """type=3 才是攻打结果。ret=10 的那条不带 siteID，只带 deftUid。"""
+    def want(d):
+        if not isinstance(d, dict) or d.get("type") != 3:
+            return False
+        got_sid = d.get("siteID")
+        got_uid = d.get("deftUid")
+        if isinstance(got_sid, int) and not isinstance(got_sid, bool) and got_sid not in (0, sid):
+            return False
+        if isinstance(got_uid, str) and got_uid and got_uid != uid:
+            return False
+        return True
+    return want
+
+
 def _run_wargame(rec, sock, config):
-    """有空场就占。没有就按这次查到的场地挨个打，占住就停。"""
+    """先开战争学院再拉场地。从低到高打低于 900 万的，ret=10 就换下一个。"""
     task = _task_of("军事演习")
     if rec is None or sock is None:
         return False, "没有连接，不打"
-    timeout, gap = _daily_wait(config)
-    since = rec.seq_mark()
+    timeout, _gap = _daily_wait(config)
     try:
-        _send_op(sock, rec, task, {1: ("int32", 1)})
+        sender.send_frame(
+            sock, "04a5",
+            encode_message({1: ("int32", 1), 2: ("int32", 0), 3: ("int32", 0)},
+                           omit_zero=False),
+            rec.rc4_c2s)
+    except OSError:
+        raise
+    except Exception as exc:
+        return False, f"发送失败：{exc}"
+    _nap(0.4)
+    since = rec.seq_mark()
+    query = {1: ("int32", 1), 2: ("int32", 0), 3: ("string", ""), 4: ("bool", False)}
+    try:
+        _send_op(sock, rec, task, query)
     except OSError:
         raise
     except Exception as exc:
         return False, f"发送失败：{exc}"
     log.info("[%s] 查询场地", task.key)
     pages = _collect_wargame_pages(sock, rec, since, timeout)
-    if pages and not any(p.get("bLastMsg") is True for p in pages):
+    if not pages:
+        return False, "失败：未收到演习场列表"
+    if not any(p.get("bLastMsg") is True for p in pages):
         log.info("[%s] 场地列表没等齐最后一页，按已收到的继续", task.key)
+    again = bool((config.get("每日任务") or {}).get("忽略今日次数"))
+    for p in pages:
+        if again or p.get("bOccupySite") is not True:
+            continue
+        ts = _future_stamp(p, "siteEndTime")
+        sid = p.get("siteID")
+        where = f"场地 {sid}" if isinstance(sid, int) and not isinstance(sid, bool) else "场地"
+        if ts:
+            mins = (ts - time.time()) / 60
+            return True, f"成功：已经占着{where}，占用至 {mins:.0f} 分钟后", ts
+        return True, f"成功：已经占着{where}，这一轮不打"
     panel = next((p for p in pages
                   if isinstance(p.get("tokenNum"), int)
                   and not isinstance(p.get("tokenNum"), bool)), None)
-    for p in pages:
-        if p.get("bOccupySite") is not True:
-            continue
-        ts = _future_stamp(p, "siteEndTime")
-        if ts:
-            mins = (ts - time.time()) / 60
-            return False, f"已经占着场地，占用至 {mins:.0f} 分钟后", ts
-        return False, "已经占着演习场，这一轮不打"
     passed, why, _exhausted, _tier = _check_gate(task.gate, panel)
     if not passed:
         return False, f"闸门拦截：{why}"
     log.info("[%s] 闸门放行：%s", task.key, why)
     sites = _wargame_sites(pages)
     me = str(getattr(rec, "uid", "") or "")
-    attempts = _wargame_attempts(sites, me)
-    if not attempts:
-        n = len(sites)
-        if n:
-            return False, f"探测到 {n} 个演习场，没有空位，也没有能打的，跳过"
-        return False, "没有探测到演习场，跳过"
-    if attempts[0][0].startswith("打"):
-        log.info("[%s] 没有空位，按探测顺序打 %d 个，占住就停",
-                 task.key, len(attempts))
-    left = panel.get("tokenNum") if isinstance(panel, dict) else None
-
-    def hold(data):
-        if not isinstance(data, dict) or data.get("bOccupySite") is not True:
-            return None
-        return _future_stamp(data, "siteEndTime") or True
-
-    return _contest(rec, sock, task, attempts, hold, left, "tokenNum",
-                    timeout, gap)
+    targets = _wargame_targets(sites, me, read_my_country(rec))
+    if not targets:
+        return True, f"成功：看过 {len(sites)} 个场地，没有 900 万以下可打的对手"
+    names = _field_names(_schema, task.opcode)
+    refused = []
+    for power, sid, uid, name in targets[:5]:
+        fields = {1: ("int32", 3), 2: ("int32", sid),
+                  3: ("string", uid), 4: ("bool", False)}
+        safe, why = _check_safety(task, names, fields)
+        if not safe:
+            return False, f"安全检查拦截：{why}"
+        before = rec.seq_mark()
+        try:
+            _send_op(sock, rec, task, fields)
+        except OSError:
+            raise
+        except Exception as exc:
+            return False, f"发送失败：{exc}"
+        log.info("[%s] 攻打场地 %s（%s，战力 %s）", task.key, sid, name, power)
+        data = _await_response(
+            sock, rec, "RseWarGameOpt", before, timeout, want=_attack_reply(sid, uid))
+        if not isinstance(data, dict):
+            return False, "失败：未收到攻打回包"
+        ret = data.get("ret")
+        if data.get("bOccupySite") is True and ret in (0, 100):
+            ts = _future_stamp(data, "siteEndTime")
+            text = f"成功：打下场地 {sid}（{name}，战力 {power}）"
+            if refused:
+                text += f"，前面 {len(refused)} 个被拒"
+            if ts:
+                text += f"，占用至 {(ts - time.time()) / 60:.0f} 分钟后"
+                return True, text, ts
+            return True, text
+        if ret == 10:
+            refused.append(sid)
+            log.info("[%s] 场地 %s 被拒 ret=10，换下一个", task.key, sid)
+            _nap(0.4)
+            continue
+        return False, f"失败：场地 {sid}（{name}，战力 {power}）没打下来 ret={ret}"
+    shown = "、".join(str(s) for s in refused)
+    return False, f"失败：打了 {len(refused)} 个都被拒 ret=10（场地 {shown}）"
 
 
 def _run_mine(rec, sock, config):
@@ -2664,6 +2705,7 @@ def _run(rec, sock, config, schema, on_fail=None):
         return {}, {}
 
     switches = conf.get("任务", {})
+    ignore_done = bool(conf.get("忽略今日次数"))
     allow_unverified = conf.get("允许未实测参数", False)
     gap = float(conf.get("间隔秒", 3))
 
@@ -2686,7 +2728,7 @@ def _run(rec, sock, config, schema, on_fail=None):
                 results[task.key] = "未开启"
                 continue
 
-            done = st["done"].get(task.key, 0)
+            done = 0 if ignore_done else st["done"].get(task.key, 0)
             # 免费重开记满 2 次之后，填了终点仍要接着打，不能把整项跳过。
             if done >= task.max_per_day and not (
                     task.key == "征战世界" and _campaign_goal(config)):
@@ -2695,8 +2737,8 @@ def _run(rec, sock, config, schema, on_fail=None):
                 continue
 
             # 冷却之一：服务器明确告诉我们"到这个时刻才能再做"（占领结束时刻等）。
-            # 这个是读来的，优先于任何写死的秒数。
-            until = st.get("until", {}).get(task.key, 0)
+            # 这个是读来的，优先于任何写死的秒数。单独测试时不看这份记录。
+            until = 0 if ignore_done else st.get("until", {}).get(task.key, 0)
             if until and time.time() < until:
                 wait = until - time.time()
                 results[task.key] = (f"占用中，服务器给的结束时刻还有 "

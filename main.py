@@ -504,6 +504,8 @@ def main() -> int:
         block = config.setdefault("每日任务", {}).setdefault("任务", {})
         for key in known:
             block[key] = key == name
+        # 只测这一项时不看今天已经做过。正式每日任务仍然按当天次数停。
+        config.setdefault("每日任务", {})["忽略今日次数"] = True
         log.info("这一轮只做：%s", name)
 
     # 保活：常驻。--keepalive --daily 时才顺带跑一轮任务

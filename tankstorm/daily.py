@@ -1993,6 +1993,27 @@ def note_blast_count(rec, new_id=0):
         rec._blast_published = total
 
 
+def _blast_recent(rec, bid):
+    """上一包建筑修改里这个兵营的队列。登录包不会在开工后更新。"""
+    if rec is None:
+        return None
+    item = rec.latest.get("RseBuildingModify")
+    data = item[1] if isinstance(item, tuple) and len(item) > 1 else None
+    building = data.get("building") if isinstance(data, dict) else None
+    if not isinstance(building, dict) or _one(building.get("field4")) != bid:
+        return None
+    queue = _blast_queue(building)
+    if queue is None:
+        return None
+    army, making, left = queue
+    mark = (getattr(rec, "latest_at", {}) or {}).get("RseBuildingModify")
+    if left > 0 and making not in (0, _BLAST_ARMY) and army not in (0, _BLAST_ARMY):
+        return "other", army, making, left, mark
+    if left <= 0:
+        return "idle", army, making, 0, mark
+    return "blast", army, making, left, mark
+
+
 def _blast_once(rec, sock, config, assume_idle=False, on_progress=None):
     """造一个爆破兵。快速制造只在勋章花费为 0 时发，credit 固定写 0。
 
@@ -2020,18 +2041,32 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None):
     if barracks is None:
         return False, "读不到兵营，不造爆破兵"
     bid, (army, making, left) = barracks
+    snap = (getattr(rec, "latest_at", {}) or {}).get("RseLoad") if rec else None
+    snap_name = "登录包"
     if assume_idle:
         army, making, left = 0, 0, 0
-    elif left > 0 and making not in (0, _BLAST_ARMY) and army not in (0, _BLAST_ARMY):
-        return False, f"兵营正在造别的兵（{making or army}），不打断"
+        snap = None
+    else:
+        recent = _blast_recent(rec, bid)
+        if recent and recent[0] == "other":
+            return False, f"兵营正在造别的兵（{recent[2] or recent[1]}），不打断"
+        if recent and recent[0] == "blast":
+            load_at = snap
+            mod_at = recent[4]
+            if left <= 0 or load_at is None or (mod_at is not None and mod_at >= load_at):
+                army, making, left = recent[1], recent[2], recent[3]
+                snap = mod_at
+                snap_name = "上一包"
+                _blast_log(f"兵营 {bid} 上一包还在造爆破兵，剩余 {left} 秒，不重新开工")
+        elif left > 0 and making not in (0, _BLAST_ARMY) and army not in (0, _BLAST_ARMY):
+            return False, f"兵营正在造别的兵（{making or army}），不打断"
 
     seen_left, seen_at = left, time.monotonic()
     if not assume_idle and left > 0:
-        snap = (getattr(rec, "latest_at", {}) or {}).get("RseLoad") if rec else None
         passed = _passed(snap)
         aged = left if passed is None else max(0, left - passed)
         _blast_log(
-            f"兵营 {bid} 登录包剩余 {left} 秒，这份数据已过 "
+            f"兵营 {bid} {snap_name}剩余 {left} 秒，这份数据已过 "
             f"{'未知' if passed is None else passed} 秒，按 {aged} 秒算")
         if passed is not None and aged <= 0:
             _blast_log(f"兵营 {bid} 里那一只剩余时间已经走完，算进数量")
@@ -2087,27 +2122,30 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None):
 
     left, cost = medal_now()
     cap = _blast_cap(qq_hall, yellow, blue)
-    if cost != 0:
-        gap = left - cap
-        if 0 < gap <= 900:
-            if on_progress:
-                on_progress(f"剩余 {left} 秒，要 {cost} 勋章，等到 0 勋章再加速")
-            _blast_log(
-                f"兵营 {bid} 剩余 {left} 秒，要 {cost} 勋章，"
-                f"大厅={qq_hall} 黄钻={yellow} 蓝钻={blue}，等到 0 勋章")
-            _nap(gap + 2)
-            left, cost = medal_now()
-        if cost != 0:
+    send_at = 595 if cap >= 600 else max(1, cap - 2)
+    if left > send_at:
+        gap = left - send_at
+        if gap > 900 or _blast_medal(send_at, qq_hall, yellow, blue) != 0:
             _blast_log(f"兵营 {bid} 剩余 {left} 秒，加速要 {cost} 勋章，不发")
             return False, f"剩余 {left} 秒，加速要 {cost} 勋章，不加速"
-
-    _nap(0.4)
-    left, cost = medal_now()
-    if cost != 0:
-        _blast_log(f"兵营 {bid} 等到发出时剩余 {left} 秒，要 {cost} 勋章，不发")
+        if on_progress:
+            on_progress(f"剩余 {left} 秒，要 {cost} 勋章，等到 {send_at} 秒再加速")
+        _blast_log(
+            f"兵营 {bid} 剩余 {left} 秒，要 {cost} 勋章，"
+            f"大厅={qq_hall} 黄钻={yellow} 蓝钻={blue}，等到 {send_at} 秒")
+        _nap(gap)
+        left, cost = send_at, 0
+    elif cost != 0:
+        _blast_log(f"兵营 {bid} 剩余 {left} 秒，加速要 {cost} 勋章，不发")
         return False, f"剩余 {left} 秒，加速要 {cost} 勋章，不加速"
-    if left < 1:
-        left = 1
+    else:
+        _nap(0.4)
+        left, cost = medal_now()
+        if cost != 0:
+            _blast_log(f"兵营 {bid} 等到发出时剩余 {left} 秒，要 {cost} 勋章，不发")
+            return False, f"剩余 {left} 秒，加速要 {cost} 勋章，不加速"
+        if left < 1:
+            left = 1
     _blast_log(
         f"快速制造 兵营 {bid} time={left} 勋章花费={cost} "
         f"大厅={qq_hall} 黄钻={yellow} 蓝钻={blue} 当前勋章={wallet}")

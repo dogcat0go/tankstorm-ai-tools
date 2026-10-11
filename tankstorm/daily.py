@@ -1142,6 +1142,15 @@ TASKS = [
                  claimed_flag=True, count_field="threeMonthCardCnt"),
        report=("threeMonthCardGetAwd", "threeMonthCardCnt")),
 
+    # 2026-10-11 12:51 抓包。和三张月卡同一条协议，activetype=1 是实景树。
+    # 查询 hasGetDayfree=false，领取后翻 true。背包 +10049、+50002、+110054×5。
+    # 点券、金属、石油都没动。
+    _t("实景树每日奖励", "实景树·每日奖励", "0408", "RceRedwarMonthCard",
+       {}, "实测",
+       "2026-10-11：{type:0,activetype:1} 查询，hasGetDayfree 为 false 才发 "
+       "{type:1,activetype:1}。nResult=0 且标记翻 true 才算领到。不花点券",
+       runner=lambda rec, sock, config: daily_scene_tree(rec, sock, config)),
+
     # ---- 有免费次数的：必须带 guard，免费用完就停 ----
     #
     # 截图实测各模块的免费额度与付费变体：
@@ -1411,6 +1420,15 @@ TASKS = [
        gate=Gate("RseResourceOpt", "searchTimes"),
        cooldown_until="resourceEndTime",
        runner=lambda rec, sock, config: _run_mine(rec, sock, config)),
+
+    # 2026-10-11 12:51 抓包。type=5 带 bAutoTreat=false 只读面板。
+    # tRewardTime 是上次领到的时刻（领完写成这一秒）。今天领过就不再发。
+    # type=301 只写 type。回包 nIdleRewardNum=12。点券、金属、石油都没动。
+    _t("世界废墟挂机奖励", "世界废墟·挂机奖励", "045b", "RcePVEFightOpt",
+       {}, "实测",
+       "2026-10-11：{type:5,bAutoTreat:false} 查询，tRewardTime 不是今天才发 "
+       "{type:301}。不带治疗标记。面板 result=3 才认。不花点券",
+       runner=lambda rec, sock, config: daily_world_idle(rec, sock, config)),
 
     # 开打和命令行 --pve 同一套：type=7 打当前关，一个数字就打到这一关。
     # 已经到了或超过终点时，每免费重开一次就从第 1 关再打到终点。一天最多 2 次。
@@ -2018,6 +2036,74 @@ def daily_medal(rec, sock, config, strong=False):
         gain = f"，{kind}代币 {start}→{tokens}"
     tail = f"{kind}铸造次数已用完" if left <= 0 else f"还剩{kind}铸造 {left} 次"
     return True, f"成功：拨款 {rounds} 次{gain}，{tail}"
+
+
+def daily_scene_tree(rec, sock, config):
+    """实景树每日奖励。先查 hasGetDayfree，false 才领。不花点券。"""
+    before = rec.seq_mark() if rec else 0
+    sender.send_frame(
+        sock, "0408",
+        encode_message({1: ("int32", 0), 2: ("int32", 1)}, omit_zero=False),
+        rec.rc4_c2s)
+    panel = _await_response(
+        sock, rec, "RseRedwarMonthCard", before, 6.0,
+        want=lambda d: isinstance(d, dict) and d.get("type") == 0
+        and d.get("activetype") == 1)
+    if not isinstance(panel, dict) or "hasGetDayfree" not in panel:
+        return False, "失败：未收到实景树面板"
+    if panel.get("hasGetDayfree") is True:
+        return True, "成功：今天已经领过实景树奖励"
+    if panel.get("hasGetDayfree") is not False:
+        return False, "失败：读不到实景树领取标记"
+    mark = rec.seq_mark() if rec else 0
+    sender.send_frame(
+        sock, "0408",
+        encode_message({1: ("int32", 1), 2: ("int32", 1)}, omit_zero=False),
+        rec.rc4_c2s)
+    got = _await_response(
+        sock, rec, "RseRedwarMonthCard", mark, 6.0,
+        want=lambda d: isinstance(d, dict) and d.get("type") == 1
+        and d.get("activetype") == 1)
+    result = _one(got.get("nResult")) if isinstance(got, dict) else None
+    if got is None or result is None:
+        return False, "失败：未收到实景树回包"
+    if result != 0 or got.get("hasGetDayfree") is not True:
+        return False, f"失败：实景树被拒 nResult={result}"
+    return True, "成功：领到实景树每日奖励"
+
+
+def daily_world_idle(rec, sock, config):
+    """世界废墟挂机奖励。tRewardTime 不是今天才发 type=301。不花点券。"""
+    before = rec.seq_mark() if rec else 0
+    sender.send_frame(
+        sock, "045b",
+        encode_message({1: ("bool", False), 2: ("int32", 5)}, omit_zero=False),
+        rec.rc4_c2s)
+    panel = _await_response(
+        sock, rec, "RsePVEFightOpt", before, 6.0,
+        want=lambda d: isinstance(d, dict) and d.get("type") == 5)
+    if not isinstance(panel, dict):
+        return False, "失败：未收到废墟面板"
+    if _one(panel.get("result")) != 3:
+        return False, f"失败：废墟面板 result={panel.get('result')}"
+    last = _one(panel.get("tRewardTime"))
+    if last is None:
+        return False, "失败：读不到上次领取时间"
+    if last > 0 and time.localtime(last)[:3] == time.localtime()[:3]:
+        return True, "成功：今天已经领过挂机奖励"
+    mark = rec.seq_mark() if rec else 0
+    sender.send_frame(sock, "045b",
+                      encode_message({2: ("int32", 301)}),
+                      rec.rc4_c2s)
+    got = _await_response(
+        sock, rec, "RsePVEFightOpt", mark, 6.0,
+        want=lambda d: isinstance(d, dict) and d.get("type") == 301)
+    num = _one(got.get("nIdleRewardNum")) if isinstance(got, dict) else None
+    if got is None or not num:
+        return False, "失败：挂机奖励没有到账"
+    rid = _one(got.get("nIdleRewardID"))
+    extra = f"，编号 {rid}" if rid else ""
+    return True, f"成功：领到挂机奖励，数量 {num}{extra}"
 
 
 def daily_train(rec, sock, config):

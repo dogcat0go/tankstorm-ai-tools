@@ -112,7 +112,7 @@ button.sort {
   cursor: pointer;
   white-space: nowrap;
 }
-button.sort:hover, button.sort.on { color: #1a1a1a; }
+button.sort:hover, button.sort.on { color: #1a1a1a; text-decoration: underline; }
 table.members { min-width: 860px; }
 table.members button.ghost { padding: 4px 10px; }
 table.members button.ghost + button.ghost { margin-left: 8px; }

@@ -101,7 +101,7 @@ function onlineOf(row) {
 }
 
 function sortHint(col, key, dir) {
-  if (col !== key) return " ↕";
+  if (col !== key) return "";
   return dir === "asc" ? " ↑" : " ↓";
 }
 
@@ -401,12 +401,12 @@ onUnmounted(() => {
         <table class="members">
           <thead>
             <tr>
-              <th><button type="button" class="sort" :class="{ on: memberSort === 'username' }" @click="toggleSort('m', 'username')">登录账号{{ sortHint('username', memberSort, memberDir) }}</button></th>
-              <th><button type="button" class="sort" :class="{ on: memberSort === 'tier' }" @click="toggleSort('m', 'tier')">档{{ sortHint('tier', memberSort, memberDir) }}</button></th>
-              <th><button type="button" class="sort" :class="{ on: memberSort === 'expires' }" @click="toggleSort('m', 'expires')">有效期{{ sortHint('expires', memberSort, memberDir) }}</button></th>
-              <th><button type="button" class="sort" :class="{ on: memberSort === 'qq' }" @click="toggleSort('m', 'qq')">攻打 QQ{{ sortHint('qq', memberSort, memberDir) }}</button></th>
-              <th><button type="button" class="sort" :class="{ on: memberSort === 'region' }" @click="toggleSort('m', 'region')">区服{{ sortHint('region', memberSort, memberDir) }}</button></th>
-              <th><button type="button" class="sort" :class="{ on: memberSort === 'online' }" @click="toggleSort('m', 'online')">状态{{ sortHint('online', memberSort, memberDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: memberSort === 'username' }" title="点击排序" @click="toggleSort('m', 'username')">登录账号{{ sortHint('username', memberSort, memberDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: memberSort === 'tier' }" title="点击排序" @click="toggleSort('m', 'tier')">档{{ sortHint('tier', memberSort, memberDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: memberSort === 'expires' }" title="点击排序" @click="toggleSort('m', 'expires')">有效期{{ sortHint('expires', memberSort, memberDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: memberSort === 'qq' }" title="点击排序" @click="toggleSort('m', 'qq')">攻打 QQ{{ sortHint('qq', memberSort, memberDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: memberSort === 'region' }" title="点击排序" @click="toggleSort('m', 'region')">区服{{ sortHint('region', memberSort, memberDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: memberSort === 'online' }" title="点击排序" @click="toggleSort('m', 'online')">状态{{ sortHint('online', memberSort, memberDir) }}</button></th>
               <th></th>
             </tr>
           </thead>
@@ -469,11 +469,11 @@ onUnmounted(() => {
         <table>
           <thead>
             <tr>
-              <th><button type="button" class="sort" :class="{ on: fighterSort === 'username' }" @click="toggleSort('f', 'username')">登录账号{{ sortHint('username', fighterSort, fighterDir) }}</button></th>
-              <th><button type="button" class="sort" :class="{ on: fighterSort === 'qq' }" @click="toggleSort('f', 'qq')">攻打 QQ{{ sortHint('qq', fighterSort, fighterDir) }}</button></th>
-              <th><button type="button" class="sort" :class="{ on: fighterSort === 'region' }" @click="toggleSort('f', 'region')">区服{{ sortHint('region', fighterSort, fighterDir) }}</button></th>
-              <th><button type="button" class="sort" :class="{ on: fighterSort === 'online' }" @click="toggleSort('f', 'online')">状态{{ sortHint('online', fighterSort, fighterDir) }}</button></th>
-              <th><button type="button" class="sort" :class="{ on: fighterSort === 'here' }" @click="toggleSort('f', 'here')">人在{{ sortHint('here', fighterSort, fighterDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: fighterSort === 'username' }" title="点击排序" @click="toggleSort('f', 'username')">登录账号{{ sortHint('username', fighterSort, fighterDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: fighterSort === 'qq' }" title="点击排序" @click="toggleSort('f', 'qq')">攻打 QQ{{ sortHint('qq', fighterSort, fighterDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: fighterSort === 'region' }" title="点击排序" @click="toggleSort('f', 'region')">区服{{ sortHint('region', fighterSort, fighterDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: fighterSort === 'online' }" title="点击排序" @click="toggleSort('f', 'online')">状态{{ sortHint('online', fighterSort, fighterDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: fighterSort === 'here' }" title="点击排序" @click="toggleSort('f', 'here')">人在{{ sortHint('here', fighterSort, fighterDir) }}</button></th>
               <th>cookie</th>
             </tr>
           </thead>

@@ -236,8 +236,10 @@ def _handler(config: dict):
         def do_GET(self):
             path = self.path.split("?", 1)[0]
             if path == "/api/meta":
+                from . import config_platform
                 _json(self, 200, {"dev_login": dev_login, "invite": bool(invite),
-                                  "register": register_open})
+                                  "register": register_open,
+                                  "login_platform": config_platform(config)})
                 return
             if path == "/api/me":
                 user = self._user()
@@ -525,7 +527,9 @@ def _handler(config: dict):
                 elif path == "/api/attack-login":
                     from .socket_keepalive import kick_attack_login
                     was_off = citydb.shutdown_due(user["id"])
-                    login = kick_attack_login(config, user["id"], claim=True)
+                    login = kick_attack_login(
+                        config, user["id"], claim=True,
+                        platform=str(data.get("platform") or ""))
                     out = {"ok": True, "login": login}
                     if was_off:
                         out["off_at"] = citydb.shutdown_at(user["id"])

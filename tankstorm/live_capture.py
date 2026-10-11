@@ -231,8 +231,9 @@ def _swf_candidates(qq, ctx, canvas):
     """FlashVars.version 常是配置表号，SWF 文件名另算。按可能性列出候选 URL。"""
     html = ""
     try:
-        html = qq.session.get(canvas, timeout=20,
-                              headers={"Referer": "https://game.qzone.qq.com/"}).text
+        html = qq.session.get(canvas, timeout=20, headers={
+            "Referer": getattr(qq, "game_url", None) or "https://game.qzone.qq.com/",
+        }).text
     except Exception as exc:
         log.warning("拉外框页失败：%s", exc)
     seen, out = set(), []

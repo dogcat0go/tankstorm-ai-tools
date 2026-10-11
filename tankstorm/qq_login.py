@@ -75,9 +75,11 @@ import zlib
 
 import requests
 
-from . import GAME_URL
+from . import (PLATFORM_COOKIE, PLAT_HALL, PLAT_QZONE,
+               config_platform, normalize_platform, platform_spec)
 from . import paths
 from .log import get_logger
+from .qzone import fetch_hall_launch, hall_logged_in
 
 log = get_logger()
 
@@ -526,10 +528,14 @@ class QQSession:
         self.session.headers["User-Agent"] = UA
         self._qr_poll = None
         self._login_busy = False
+        self._platform = None
         # 不用可重入锁。SIGTERM 处理函数和正在进行的请求在同一条线程上，
         # 重入会把同一次会话的两个请求叠在一起。
         self._http_lock = threading.Lock()
         self._load_cookies()
+        found = self._detect_platform()
+        if found:
+            self._platform = found
 
     # ---------- cookie 持久化 ----------
 
@@ -670,7 +676,77 @@ class QQSession:
             self.session.cookies.get("uin") or ""
         return raw.lstrip("o0")
 
+    def set_platform(self, name) -> str:
+        """这次扫码/续期走空间还是大厅。写进 cookie，下次打开同一份票据还能认。"""
+        self._platform = normalize_platform(name)
+        self._set_cookie(PLATFORM_COOKIE, self._platform, domain=".qq.com")
+        return self._platform
+
+    def apply_config_platform(self, config: dict | None) -> None:
+        """cookie 里还看不出平台时，用配置里的「登录.平台」。"""
+        if self._detect_platform():
+            return
+        self.set_platform(config_platform(config))
+
+    def _detect_platform(self) -> str:
+        marked = self._cookie(PLATFORM_COOKIE)
+        if marked:
+            return normalize_platform(marked)
+        for c in self.session.cookies:
+            if c.name != "p_skey":
+                continue
+            domain = c.domain or ""
+            if "qzone" in domain:
+                return PLAT_QZONE
+            if "minigame" in domain or "qqgame" in domain:
+                return PLAT_HALL
+        return ""
+
+    @property
+    def platform(self) -> str:
+        if self._platform:
+            return self._platform
+        return self._detect_platform() or PLAT_QZONE
+
+    def _pt(self) -> dict:
+        return platform_spec(self.platform)
+
+    @property
+    def game_url(self) -> str:
+        return self._pt()["game_url"]
+
+    @property
+    def pt_appid(self) -> str:
+        return self._pt()["ptlogin_appid"]
+
+    @property
+    def daid(self) -> str:
+        return self._pt()["daid"]
+
+    def _xlogin_params(self, low_login: str = "0") -> dict:
+        spec = self._pt()
+        return {
+            "proxy_url": spec["proxy_url"],
+            "daid": spec["daid"],
+            "hide_title_bar": "1",
+            "low_login": low_login,
+            "qlogin_auto_login": "1",
+            "no_verifyimg": "1",
+            "link_target": "blank",
+            "appid": spec["ptlogin_appid"],
+            "style": "22",
+            "target": "self",
+            "s_url": spec["game_url"],
+        }
+
     def _get_p_skey(self) -> str:
+        needles = self._pt()["p_skey_needles"]
+        for c in self.session.cookies:
+            if c.name != "p_skey":
+                continue
+            domain = c.domain or ""
+            if any(n in domain for n in needles):
+                return c.value
         for c in self.session.cookies:
             if c.name == "p_skey" and "qzone" in (c.domain or ""):
                 return c.value
@@ -704,7 +780,7 @@ class QQSession:
         try:
             r = self.session.post(
                 api + "/get_cookies",
-                json={"domain": "game.qzone.qq.com"},
+                json={"domain": self._pt()["napcat_domain"]},
                 headers=headers, timeout=10)
             data = r.json()
         except Exception as exc:
@@ -726,9 +802,10 @@ class QQSession:
             log.info("NapCat 票据里没有 skey 或 p_skey")
             self.note_login("NapCat 票据里没有 skey 或 p_skey")
             return False
-        qzone_names = {"p_skey", "p_uin", "pt4_token"}
+        named = {"p_skey", "p_uin", "pt4_token"}
+        p_domain = self._pt()["p_skey_domain"]
         for key, val in pairs.items():
-            domain = ".qzone.qq.com" if key in qzone_names else ".qq.com"
+            domain = p_domain if key in named else ".qq.com"
             self._set_cookie(key, val, domain=domain)
         self._save_cookies()
         if not self.is_valid():
@@ -782,11 +859,7 @@ class QQSession:
             # 1) xlogin 建立 login_sig —— 快速登录的入口，会带出 pt_login_sig
             r = self.session.get(
                 "https://xui.ptlogin2.qq.com/cgi-bin/xlogin",
-                params={"proxy_url": "https://qzs.qq.com/qzone/v6/portal/proxy.html",
-                        "daid": DAID, "hide_title_bar": "1", "low_login": "0",
-                        "qlogin_auto_login": "1", "no_verifyimg": "1",
-                        "link_target": "blank", "appid": PTLOGIN_APPID,
-                        "style": "22", "target": "self", "s_url": GAME_URL},
+                params=self._xlogin_params(),
                 timeout=15)
             login_sig = self._cookie("pt_login_sig") or ""
             if not login_sig:
@@ -797,8 +870,8 @@ class QQSession:
             # 2) 快速登录：服务端凭 superkey/RK/ptcz 识别设备，直接下发新票据
             r = self.session.get(
                 "https://ptlogin2.qq.com/pt_login",
-                params={"u": self.uin, "aid": PTLOGIN_APPID, "daid": DAID,
-                        "login_sig": login_sig, "u1": GAME_URL,
+                params={"u": self.uin, "aid": self.pt_appid, "daid": self.daid,
+                        "login_sig": login_sig, "u1": self.game_url,
                         "ptlang": "2052", "pt_uistyle": "40",
                         "action": f"0-0-{int(time.time() * 1000)}"},
                 headers={"Referer": "https://xui.ptlogin2.qq.com/"},
@@ -862,24 +935,18 @@ class QQSession:
             if not self._cookie("skey"):
                 self.note_login("网页票据保活跳过：没有 skey。%s", self.ticket_brief())
                 return False
-            try:
-                r = self.session.get(GAME_URL, allow_redirects=False, timeout=15)
-            except requests.RequestException as exc:
-                self.note_login("网页票据保活请求失败：%s", exc)
-                return False
-            if r.status_code == 200 and "ptlogin" not in (r.text or "")[:2000]:
+            ok, why = self._ticket_alive()
+            if ok:
                 self._save_cookies()
                 self.note_login("网页票据已保活。%s", self.ticket_brief())
                 return True
-            loc = r.headers.get("Location", "")
-            self.note_login("网页票据保活时游戏页已不认 status=%s 跳去登录=%s。%s",
-                            r.status_code, "ptlogin" in loc.lower(), self.ticket_brief())
+            self.note_login("网页票据保活时游戏页已不认 %s。%s", why, self.ticket_brief())
             return False
         finally:
             self._http_lock.release()
 
     def is_valid(self) -> bool:
-        """访问游戏页：已登录返回 200 页面，未登录会 302 去 ptlogin。"""
+        """访问游戏入口：空间看游戏页是否 200，大厅看 launchapp 是否签发票据。"""
         with self._http_lock:
             try:
                 has_skey = bool(self.session.cookies.get("skey"))
@@ -889,19 +956,33 @@ class QQSession:
             if not has_skey:
                 self.note_login("没有 skey，登录态无效。%s", self.ticket_brief())
                 return False
-            try:
-                r = self.session.get(GAME_URL, allow_redirects=False, timeout=15)
-            except requests.RequestException as exc:
-                log.warning("登录态校验请求失败: %s", exc)
-                self.note_login("登录态校验请求失败：%s。%s", exc, self.ticket_brief())
-                return False
-            if r.status_code == 200 and "ptlogin" not in r.text[:2000]:
+            ok, why = self._ticket_alive()
+            if ok:
                 return True
-            loc = r.headers.get("Location", "")
-            log.info("登录态已失效 (status=%s, location=%s...)", r.status_code, loc[:80])
-            self.note_login("游戏页不认这张票 status=%s 跳去登录=%s。%s",
-                            r.status_code, "ptlogin" in loc.lower(), self.ticket_brief())
+            log.info("登录态已失效 (%s)", why)
+            self.note_login("游戏页不认这张票 %s。%s", why, self.ticket_brief())
             return False
+
+    def _ticket_alive(self) -> tuple:
+        """当前 cookie 能不能打开游戏入口。返回 (是否有效, 失败说明)。"""
+        if self.platform == PLAT_HALL:
+            try:
+                data = fetch_hall_launch(self.session, referer=self.game_url)
+            except Exception as exc:
+                return False, f"大厅 launchapp 失败：{exc}"
+            if hall_logged_in(data):
+                return True, ""
+            why = (data.get("resultstr") or data.get("SeedErr")
+                   or data.get("_error") or data.get("msg") or data.get("result"))
+            return False, f"大厅未登录 {why}".strip()
+        try:
+            r = self.session.get(self.game_url, allow_redirects=False, timeout=15)
+        except requests.RequestException as exc:
+            return False, f"请求失败：{exc}"
+        if r.status_code == 200 and "ptlogin" not in (r.text or "")[:2000]:
+            return True, ""
+        loc = r.headers.get("Location", "")
+        return False, f"status={r.status_code} 跳去登录={'ptlogin' in loc.lower()}"
 
     # ---------- 扫码 / 推送登录 ----------
 
@@ -1042,9 +1123,9 @@ class QQSession:
             r = self.session.get(
                 "https://ssl.ptlogin2.qq.com/ptqrshow",
                 params={"qr_push": "1", "qr_push_uin": str(push_uin),
-                        "type": "1", "appid": PTLOGIN_APPID,
+                        "type": "1", "appid": self.pt_appid,
                         "t": str(random.random()), "ptlang": "2052",
-                        "u1": GAME_URL, "daid": DAID, "pt_3rd_aid": "0"},
+                        "u1": self.game_url, "daid": self.daid, "pt_3rd_aid": "0"},
                 headers={"Referer": "https://xui.ptlogin2.qq.com/"},
                 timeout=15)
         except requests.RequestException as exc:
@@ -1068,9 +1149,9 @@ class QQSession:
         写进 qrcode.png，只报一句"未获取到 qrsig"，看不出真正原因。
         """
         params = {
-            "appid": PTLOGIN_APPID, "e": "2", "l": "M", "s": "3", "d": "72",
-            "v": "4", "t": str(random.random()), "daid": DAID, "pt_3rd_aid": "0",
-            "ptlang": "2052", "u1": GAME_URL,
+            "appid": self.pt_appid, "e": "2", "l": "M", "s": "3", "d": "72",
+            "v": "4", "t": str(random.random()), "daid": self.daid, "pt_3rd_aid": "0",
+            "ptlang": "2052", "u1": self.game_url,
         }
         try:
             r = self.session.get("https://xui.ptlogin2.qq.com/ssl/ptqrshow",
@@ -1107,11 +1188,13 @@ class QQSession:
         """
         s = self.session
         self._qr_poll = None
+        plat = self.platform
         # 清会话票据但**保住设备凭据** —— 推送靠 dev_mid_sig 之类识别"推给哪台设备"，
         # 全清了就只能回 ec=313。磁盘上的文件要等登录成功才会重写。
         before = self.ticket_brief()
-        self.note_login("开始取二维码，清掉内存里的会话票据。清掉前：%s", before)
+        self.note_login("开始取二维码（%s），清掉内存里的会话票据。清掉前：%s", plat, before)
         self._clear_session_cookies(keep=DEVICE_COOKIES)
+        self.set_platform(plat)
         # 浏览器进登录页第一件事就是 xlogin，它建立 pt_login_sig 上下文。
         # 但它同时会**无条件重新签发 pt_guid_sig**（实测：本来就有一个也照换），
         # 而 pt_guid_sig 是和 dev_mid_sig 配对的，被换掉就对不上了。
@@ -1119,11 +1202,7 @@ class QQSession:
         guid_before = self._cookie("pt_guid_sig")
         try:
             s.get("https://xui.ptlogin2.qq.com/cgi-bin/xlogin",
-                  params={"daid": DAID, "appid": PTLOGIN_APPID,
-                          "hide_title_bar": "1", "low_login": "0",
-                          "qlogin_auto_login": "1", "no_verifyimg": "1",
-                          "link_target": "blank", "style": "22",
-                          "target": "self", "s_url": GAME_URL},
+                  params=self._xlogin_params(),
                   timeout=15)
         except requests.RequestException as exc:
             log.debug("xlogin 预热失败(忽略): %s", exc)
@@ -1200,12 +1279,12 @@ class QQSession:
                     "expired": False, "scanned": False}
         try:
             r = self.session.get("https://xui.ptlogin2.qq.com/ssl/ptqrlogin", params={
-                "u1": GAME_URL, "ptqrtoken": state["ptqrtoken"], "ptredirect": "0",
+                "u1": self.game_url, "ptqrtoken": state["ptqrtoken"], "ptredirect": "0",
                 "h": "1", "t": "1", "g": "1", "from_ui": "1", "ptlang": "2052",
                 "action": f"0-0-{int(time.time() * 1000)}",
                 "js_ver": "26071711", "js_type": "1",
                 "login_sig": state["login_sig"],
-                "pt_uistyle": "40", "aid": PTLOGIN_APPID, "daid": DAID,
+                "pt_uistyle": "40", "aid": self.pt_appid, "daid": self.daid,
                 "has_onekey": "1",
             }, headers={"Referer": "https://xui.ptlogin2.qq.com/"},
                 timeout=15)
@@ -1285,17 +1364,15 @@ class QQSession:
                 password, pending, low_login=low_login, ticket=ticket, randstr=randstr)
 
         self._pwd_pending = None
+        plat = self.platform
         self._clear_session_cookies(keep=DEVICE_COOKIES)
+        self.set_platform(plat)
         guid_before = self._cookie("pt_guid_sig")
         low = "1" if low_login else "0"
         try:
             self.session.get(
                 "https://xui.ptlogin2.qq.com/cgi-bin/xlogin",
-                params={"daid": DAID, "appid": PTLOGIN_APPID,
-                        "hide_title_bar": "1", "low_login": low,
-                        "qlogin_auto_login": "1", "no_verifyimg": "1",
-                        "link_target": "blank", "style": "22",
-                        "target": "self", "s_url": GAME_URL},
+                params=self._xlogin_params(low),
                 timeout=15)
         except requests.RequestException as exc:
             return {"ok": False, "captcha": False, "code": "", "msg": f"xlogin 失败: {exc}"}
@@ -1307,11 +1384,11 @@ class QQSession:
             r = self.session.get(
                 "https://ssl.ptlogin2.qq.com/check",
                 params={"regmaster": "", "pt_tea": "2", "pt_vcode": "1",
-                        "uin": uin, "appid": PTLOGIN_APPID,
+                        "uin": uin, "appid": self.pt_appid,
                         "js_ver": "26071711", "js_type": "1",
-                        "login_sig": login_sig, "u1": GAME_URL,
+                        "login_sig": login_sig, "u1": self.game_url,
                         "r": str(random.random()), "pt_uistyle": "22",
-                        "daid": DAID, "pt_3rd_aid": "0"},
+                        "daid": self.daid, "pt_3rd_aid": "0"},
                 headers={"Referer": "https://xui.ptlogin2.qq.com/"},
                 timeout=15)
         except requests.RequestException as exc:
@@ -1350,7 +1427,7 @@ class QQSession:
             return {
                 "ok": False, "captcha": True, "code": "1",
                 "msg": "请完成滑动验证。划过一次之后，下次密码登录可能就不用再验证。",
-                "aid": PTLOGIN_APPID, "sid": pending["sid"],
+                "aid": self.pt_appid, "sid": pending["sid"],
                 "cap_cd": pending["cap_cd"],
             }
         return self._pt_password_submit(
@@ -1379,13 +1456,13 @@ class QQSession:
             "u": uin, "verifycode": vcode, "pt_vcode_v1": pt_vcode,
             "pt_verifysession_v1": session, "p": enc,
             "pt_randsalt": pending.get("randsalt") or "2",
-            "u1": GAME_URL, "ptredirect": "0", "h": "1", "t": "1", "g": "1",
+            "u1": self.game_url, "ptredirect": "0", "h": "1", "t": "1", "g": "1",
             "from_ui": "1", "ptlang": "2052",
             "action": f"2-0-{int(time.time() * 1000)}",
             "js_ver": "26071711", "js_type": "1",
             "login_sig": pending.get("login_sig") or "",
             "pt_uistyle": "22",
-            "aid": PTLOGIN_APPID, "daid": DAID,
+            "aid": self.pt_appid, "daid": self.daid,
         }
         if pending.get("ptdrvs"):
             params["ptdrvs"] = pending["ptdrvs"]

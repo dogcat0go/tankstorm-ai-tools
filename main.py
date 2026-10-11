@@ -209,7 +209,9 @@ def open_qq(config: dict, name: str, fatal_lock: bool = True):
     if not name:
         if not _lock_cookie(scan_path, fatal=fatal_lock):
             return None
-        return QQSession(scan_path)
+        qq = QQSession(scan_path)
+        qq.apply_config_platform(config)
+        return qq
     accounts = (config.get("登录") or {}).get("账号") or {}
     spec = accounts.get(name)
     if not isinstance(spec, dict):
@@ -255,6 +257,7 @@ def open_qq(config: dict, name: str, fatal_lock: bool = True):
     if not _lock_cookie(path, fatal=fatal_lock):
         return None
     qq = QQSession(path, qrcode_file=qr)
+    qq.apply_config_platform(config)
     qq.use_napcat = False
     qq.attack_account = True
     qq.account_name = name

@@ -26,6 +26,7 @@ span.switch { font-size: 15px; font-weight: 700; }
 .attack-bar > p { margin: 0 0 8px; }
 .attack-bar > p:last-child { margin-bottom: 0; }
 .attack-bar > p:first-child button.login { margin-left: 0; }
+.attack-bar .login-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
 .attack-bar button.login { background: #d4e9ff; color: #16375f; border: 1px solid #8ebfed; }
 .attack-bar button.login:hover { background: #c3dffb; }
 .attack-bar img.qr { display: block; margin-top: 8px; }

@@ -1,7 +1,9 @@
 <script setup>
+import { ref, watch } from "vue";
+
 const offAt = defineModel("offAt", { type: String, required: true });
 
-defineProps({
+const props = defineProps({
   proc: { type: Object, default: null },
   qrSrc: { type: String, default: "" },
   bindWait: { type: Boolean, default: false },
@@ -15,6 +17,30 @@ defineProps({
   offNote: { type: String, default: "" },
   reloadQr: { type: Function, required: true },
   showErr: { type: Function, required: true },
+  loginPlatDefault: { type: String, default: "空间" },
+});
+
+const loginPlat = ref("空间");
+try {
+  const saved = localStorage.getItem("ts_login_plat");
+  loginPlat.value = saved === "大厅" || saved === "空间"
+    ? saved
+    : (props.loginPlatDefault || "空间");
+} catch (e) {
+  loginPlat.value = props.loginPlatDefault || "空间";
+}
+watch(loginPlat, (value) => {
+  try {
+    localStorage.setItem("ts_login_plat", value);
+  } catch (e) {}
+});
+watch(() => props.loginPlatDefault, (value) => {
+  let saved = "";
+  try {
+    saved = localStorage.getItem("ts_login_plat") || "";
+  } catch (e) {}
+  if (saved === "大厅" || saved === "空间") return;
+  if (value === "大厅" || value === "空间") loginPlat.value = value;
 });
 </script>
 
@@ -23,7 +49,7 @@ defineProps({
     <div v-if="!(proc && proc.qq)" class="bind-guide">
       <p class="bind-title">先绑定攻打 QQ</p>
       <ol v-if="!qrSrc">
-        <li>点下面的「登录」，二维码会出现在这里。</li>
+        <li>先选 QQ 空间还是 QQ 游戏大厅，再点「登录」，二维码会出现在这里。</li>
         <li>用另一台设备打开手机 QQ，扫这张图。</li>
         <li>扫完在手机上点「确认登录」。这个 QQ 就绑到当前账号，之后只用这一个。</li>
       </ol>
@@ -32,11 +58,13 @@ defineProps({
         <li>扫完在手机上点「确认登录」，停在确认页才算扫上。</li>
         <li>过期后这里会自动换成新码，对着页面上最新的一张扫。</li>
       </ol>
-      <p class="muted">不要把图存进同一台手机的相册再扫，腾讯会拒绝。一个登录账号只绑一个攻打 QQ，绑上之后不能换成另一个。</p>
+      <p class="muted">不要把图存进同一台手机的相册再扫，腾讯会拒绝。一个登录账号只绑一个攻打 QQ，绑上之后不能换成另一个。平时从大厅进游戏的选大厅，两边不是同一套登录票据。</p>
       <p v-if="bindWait && !qrSrc" class="bind-wait">二维码正在生成，请稍等。</p>
     </div>
-    <p v-if="pushLoginVisible(proc)">
-      <button type="button" class="login" @click="pushLogin().catch((e) => showErr(e.message, 'bar'))">登录</button>
+    <p v-if="pushLoginVisible(proc)" class="login-row">
+      <label class="choice"><input v-model="loginPlat" type="radio" value="空间" /> QQ空间</label>
+      <label class="choice"><input v-model="loginPlat" type="radio" value="大厅" /> QQ游戏大厅</label>
+      <button type="button" class="login" @click="pushLogin(loginPlat).catch((e) => showErr(e.message, 'bar'))">登录</button>
     </p>
     <div class="proc">
       <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>

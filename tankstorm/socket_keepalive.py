@@ -2272,6 +2272,35 @@ def web_attack_account(config: dict) -> str:
 
 _page_login_guard = threading.Lock()
 _page_login_users = set()
+_wanted_platform = {}
+_wanted_platform_guard = threading.Lock()
+
+
+def remember_login_platform(user_id: int = 0, uin: str = "", platform: str = "") -> None:
+    """网页点登录时选的空间/大厅，留给随后的扫码会话。"""
+    from . import normalize_platform
+    plat = str(platform or "").strip()
+    if not plat:
+        return
+    plat = normalize_platform(plat)
+    with _wanted_platform_guard:
+        if int(user_id or 0):
+            _wanted_platform[f"user-{int(user_id)}"] = plat
+        if str(uin or "").strip():
+            _wanted_platform[str(uin).strip()] = plat
+
+
+def consume_login_platform(user_id: int = 0, uin: str = "", qq=None) -> str:
+    """取出这次要走的平台，写到 QQSession 上。"""
+    plat = ""
+    with _wanted_platform_guard:
+        if str(uin or "").strip():
+            plat = _wanted_platform.pop(str(uin).strip(), "") or plat
+        if int(user_id or 0):
+            plat = _wanted_platform.pop(f"user-{int(user_id)}", "") or plat
+    if plat and qq is not None:
+        qq.set_platform(plat)
+    return plat
 
 
 def attack_cookie_file(uin: str) -> str:
@@ -2325,7 +2354,7 @@ def _page_login_cookie(user_id: int) -> str:
     return os.path.join(folder, f"page-login-{int(user_id)}.json")
 
 
-def start_unbound_page_qr(config: dict, user_id: int) -> str:
+def start_unbound_page_qr(config: dict, user_id: int, platform: str = "") -> str:
     """还没绑定攻打 QQ 时，只在网页上出二维码。不读、不拉、不改正在跑的攻打进程。
     扫上并记到这个登录账号之后，立刻拉起这个 QQ 的挂机保活。"""
     import os
@@ -2361,6 +2390,10 @@ def start_unbound_page_qr(config: dict, user_id: int) -> str:
     except OSError:
         pass
     qq = QQSession(cookie, qrcode_file=qr)
+    from . import config_platform
+    plat = str(platform or "").strip() or config_platform(config)
+    qq.set_platform(plat)
+    remember_login_platform(user_id, "", plat)
     who = citydb.username_of(user_id)
 
     def on_page_qr(path, pushed=False):
@@ -2376,7 +2409,8 @@ def start_unbound_page_qr(config: dict, user_id: int) -> str:
                     uin = str(getattr(qq, "uin", "") or "").strip()
                     if uin.isdigit() and citydb.confirm_attack_qq(user_id, uin):
                         _store_attack_cookie(user_id, cookie, uin)
-                        log.info("登录账号 %s 扫码绑定攻打 QQ %s", who, uin)
+                        remember_login_platform(user_id, uin, plat)
+                        log.info("登录账号 %s 扫码绑定攻打 QQ %s（%s）", who, uin, plat)
                         cookie = ""
                         bound = uin
                         citydb.note_attack_logging_in(user_id)
@@ -2455,6 +2489,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                 _pool.pop(uin, None)
         return
     qq.page_qr = on_page
+    consume_login_platform(user_id, uin, qq)
     who = "、".join(
         citydb.username_of(i) for i in citydb.attack_context_users()
     ) or citydb.username_of(user_id)
@@ -2551,7 +2586,8 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                 _pool.pop(uin, None)
 
 
-def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> str:
+def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False,
+                      platform: str = "") -> str:
     """网页或主进程拉起：每个攻打 QQ 各有一条线程。
     还没绑定、并且是本人点了推送登录时，只在网页上出二维码，不碰任何攻打线程。"""
     from . import citydb
@@ -2564,10 +2600,12 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> st
     if claim and citydb.shutdown_due(user_id):
         citydb.set_shutdown_at(user_id, "")
         log.info("登录账号 %s 点了登录，定时关闭取消", citydb.username_of(user_id))
+    if claim:
+        remember_login_platform(user_id, citydb.attack_qq_of(user_id), platform)
     if claim and not citydb.attack_qq_of(user_id):
         log.info("登录账号 %s 还没有攻打 QQ，二维码直接显示在网页上",
                  citydb.username_of(user_id))
-        return start_unbound_page_qr(config, user_id)
+        return start_unbound_page_qr(config, user_id, platform=platform)
     name, why = attack_account_for_user(config, user_id)
     if why:
         if why == "taken":
@@ -2668,6 +2706,10 @@ def _connect_and(qq, config: dict, work) -> int:
     if citydb.attack_context_user() or citydb.attack_context_qq():
         if not citydb.attack_in_keepalive():
             citydb.set_attack_status("login")
+    consume_login_platform(
+        citydb.attack_context_user(),
+        getattr(qq, "uin", "") or citydb.attack_context_qq(),
+        qq)
 
     if not qq.is_valid() and not relogin_with_push(qq, config):
         qq.note_login("游戏连接前登录没完成。%s。%s",
@@ -2880,8 +2922,11 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
     二维码过期/超时则自动重发新码，一直重试直到扫码成功（守护进程不能自己退场）。
     force_qr 为真时不再用旧票据续上，必须重新扫。攻打 QQ 对不上时用这个。"""
     # 先向本机 NapCat 要当前票据。没有再试长效凭据静默续期。
-    qq.note_login("进入重新登录。强制扫码=%s。%s。%s",
-                  "是" if force_qr else "否", _login_context(), qq.ticket_brief())
+    from . import citydb as _citydb
+    consume_login_platform(_citydb.attack_context_user(), getattr(qq, "uin", ""), qq)
+    qq.note_login("进入重新登录（%s）。强制扫码=%s。%s。%s",
+                  qq.platform, "是" if force_qr else "否", _login_context(),
+                  qq.ticket_brief())
     if not force_qr and qq.adopt_napcat(config):
         qq.note_login("NapCat 已接上，不再扫码。%s", qq.ticket_brief())
         return True

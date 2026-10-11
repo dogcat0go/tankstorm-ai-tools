@@ -504,8 +504,7 @@ SAFE_FIELDS = {("0463", "count")}
 # 将领授勋和加强授勋不推进这两项，再排在它们之后。
 ORDER_LAST = {"每日任务", "周任务", "将领授勋", "将领加强授勋"}
 
-# 矿区争夺会把有主的矿逐个打下去，服务器拒绝后可能把连接打断。先不做。
-HELD_TASKS = ("矿区争夺",)
+HELD_TASKS = ()
 HELD_STATUS = "暂不执行，反复被拒会打断连接"
 
 # 连续多少轮收不到响应就放弃该任务（当天）。
@@ -870,7 +869,8 @@ def _next_mine_to_occupy(data):
     for e in _aslist(data.get("field5")):
         if isinstance(e, dict) and isinstance(e.get("field1"), int) \
                 and not e.get("field6"):
-            return {1: ("int32", 3), 2: ("int32", e["field1"])}
+            return {1: ("int32", 3), 2: ("int32", e["field1"]),
+                    3: ("int32", 0), 4: ("string", "")}
     return None
 
 
@@ -1390,15 +1390,16 @@ TASKS = [
        cooldown_until="siteEndTime",
        runner=lambda rec, sock, config: _run_wargame(rec, sock, config)),
 
-    # 探索只是找矿，占下来才有产出。没有无主矿就打这次探到的有主矿。
-    _t("矿区争夺", "矿区争夺·探索并占矿", "049a", "RceResourceOpt",
+    # 2026-10-11 14:30 抓包。中级搜索 searchType=2，次数看 searchTimesMid。
+    # 打矿 type=3 只带矿点 ID，searchType=0，uID 空字符串，不带占领者。
+    _t("矿区争夺", "矿区争夺·中级搜索并占矿", "049a", "RceResourceOpt",
        {}, "实测",
-       "8/10 抓包：{type:1} 查询 → {type:2,searchType:1} 探索 → "
-       "{type:3,resourceID} 占无主矿。没有无主矿时按这次探到的矿挨个打，"
-       "再带上占领者 uid，占住一个就停。searchTimes 是剩余搜索次数。"
-       "resourceEndTime 在占矿回包里",
+       "2026-10-11：{type:1,resourceID:0,searchType:0,uID:\"\"} 查询 → "
+       "{type:2,searchType:2} 中级搜索 → {type:3,resourceID,searchType:0,uID:\"\"} 打矿。"
+       "正在占领就不再搜。无主矿优先。有主矿只打战力最低的一个，占住就停。"
+       "searchTimesMid 是中级剩余次数",
        max_per_day=5,
-       gate=Gate("RseResourceOpt", "searchTimes"),
+       gate=Gate("RseResourceOpt", "searchTimesMid"),
        cooldown_until="resourceEndTime",
        runner=lambda rec, sock, config: _run_mine(rec, sock, config)),
 
@@ -2386,11 +2387,11 @@ def _wargame_targets(sites, me, home=None, limit=9000000):
 
 
 def _mine_attempts(data, me):
-    """有无主矿只占那一个。没有就按探测顺序打有主的。"""
+    """有无主矿只占那一个。没有就打战力最低的有主矿，只打一个。"""
     free = _next_mine_to_occupy(data)
     if free:
         return [("占下探到的无主矿", free)]
-    attempts = []
+    ranked = []
     for e in _aslist(data.get("field5") if isinstance(data, dict) else None):
         if not isinstance(e, dict):
             continue
@@ -2400,10 +2401,18 @@ def _mine_attempts(data, me):
             continue
         if not isinstance(uid, str) or not uid or (me and uid == me):
             continue
+        power = e.get("field5")
+        if isinstance(power, bool) or not isinstance(power, int) or power <= 0:
+            power = 10 ** 12
         name = e.get("field2") if isinstance(e.get("field2"), str) and e.get("field2") else uid
-        attempts.append((f"打矿 {rid}（{name}）",
-                         {1: ("int32", 3), 2: ("int32", rid), 4: ("string", uid)}))
-    return attempts
+        ranked.append((power, rid, name))
+    if not ranked:
+        return []
+    ranked.sort()
+    power, rid, name = ranked[0]
+    shown = "未知" if power >= 10 ** 12 else str(power)
+    return [(f"打矿 {rid}（{name}，战力 {shown}）",
+             {1: ("int32", 3), 2: ("int32", rid), 3: ("int32", 0), 4: ("string", "")})]
 
 
 def _contest(rec, sock, task, attempts, hold, left, left_key, timeout, gap):
@@ -2638,18 +2647,18 @@ def _run_mine(rec, sock, config):
     log.info("[%s] 查询矿区", task.key)
     panel = _await_response(
         sock, rec, "RseResourceOpt", before, timeout,
-        want=lambda d: (isinstance(d, dict)
-                        and isinstance(d.get("searchTimes"), int)
-                        and not isinstance(d.get("searchTimes"), bool)))
+        want=lambda d: (isinstance(d, dict) and d.get("type") == 1
+                        and isinstance(d.get("searchTimesMid"), int)
+                        and not isinstance(d.get("searchTimesMid"), bool)))
     ts = _future_stamp(panel, "resourceEndTime")
     if ts:
         mins = (ts - time.time()) / 60
-        return False, f"已经占着矿，占用至 {mins:.0f} 分钟后", ts
+        return True, f"已经占着矿，占用至 {mins:.0f} 分钟后", ts
     passed, why, _exhausted, _tier = _check_gate(task.gate, panel)
     if not passed:
         return False, f"闸门拦截：{why}"
     log.info("[%s] 闸门放行：%s", task.key, why)
-    explore = {1: ("int32", 2), 2: ("int32", 0), 3: ("int32", 1), 4: ("string", "")}
+    explore = {1: ("int32", 2), 2: ("int32", 0), 3: ("int32", 2), 4: ("string", "")}
     names = _field_names(_schema, task.opcode)
     safe, why = _check_safety(task, names, explore)
     if not safe:
@@ -2672,7 +2681,7 @@ def _run_mine(rec, sock, config):
     ts = _future_stamp(data, "resourceEndTime")
     if ts:
         mins = (ts - time.time()) / 60
-        return False, f"已经占着矿，占用至 {mins:.0f} 分钟后", ts
+        return True, f"已经占着矿，占用至 {mins:.0f} 分钟后", ts
     me = str(getattr(rec, "uid", "") or "")
     attempts = _mine_attempts(data, me)
     if not attempts:

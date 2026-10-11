@@ -130,7 +130,7 @@ def main() -> int:
         if args.set_tier:
             name, tier = args.set_tier
             if tier not in citydb.TIERS:
-                log.error("订阅档只能是初级、中级、高级")
+                log.error("订阅档只能是初级、中级、高级、高级pro")
                 return 1
             if not citydb.set_user_tier(name, tier):
                 log.error("没有这个账号：%s", name)
@@ -160,7 +160,7 @@ def main() -> int:
             return 1
         tier = args.tier or "初级"
         if tier not in citydb.TIERS:
-            log.error("订阅档只能是初级、中级、高级")
+            log.error("订阅档只能是初级、中级、高级、高级pro")
             return 1
         if citydb.create_user(name, password, day, tier) is None:
             log.error("这个用户名已经有了。改有效期：python3 web.py --set-expires %s %s",

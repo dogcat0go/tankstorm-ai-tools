@@ -456,26 +456,45 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
             pass
 
 
+def _summary_ok(text: str) -> bool:
+    """这一行算做成了。领过、今天已经做过，都不是失败。"""
+    text = str(text or "")
+    return (text.startswith("成功") or "今日已领" in text
+            or "今日已执行" in text or "已做过" in text)
+
+
 def _push_daily_summary(config: dict, results: dict, details: dict) -> None:
     """把每日任务成果推到 PushPlus，并在日志里打一份对照表。
 
     只有真正执行过的才推 —— 全是"未开启/冷却中"的轮次不值得打扰。
+    命令行只开了一项时，汇总里只留这一项，不把没开的月卡和暂不执行算成失败。
     """
-    # "跳过"不是失败 —— 今日额度已用完、冷却中、未开启，这些都不该算进成败统计，
-    # 否则一份"全是跳过"的日志会显示成"未成 14"，看着像全崩了。
-    acted = {k: v for k, v in results.items()
-             if v and not any(s in v for s in
-                              ("未开启", "冷却中", "未实测", "跳过"))}
+    switches = ((config.get("每日任务") or {}).get("任务") or {})
+    enabled = [k for k, on in switches.items()
+               if on is True and isinstance(k, str) and not k.startswith("_")]
+    focus = enabled[0] if len(enabled) == 1 else None
+    quiet = ("未开启", "冷却中", "未实测", "跳过", "暂不执行")
+    acted = {}
+    for k, v in results.items():
+        if not v:
+            continue
+        if focus is not None:
+            if k == focus:
+                acted[k] = v
+            continue
+        if any(s in v for s in quiet):
+            continue
+        acted[k] = v
     if not acted:
         return
 
-    okn = sum(1 for v in acted.values() if v.startswith("成功"))
+    okn = sum(1 for v in acted.values() if _summary_ok(v))
     bad = len(acted) - okn
 
     log.info("―― 每日任务成果 ―― 成功 %d，未成 %d", okn, bad)
     rows = []
     for k, v in acted.items():
-        icon = "✅" if v.startswith("成功") else "❌"
+        icon = "✅" if _summary_ok(v) else "❌"
         log.info("  %s %-12s %s", icon, k, v)
         extra = ""
         d = details.get(k)
@@ -2308,11 +2327,10 @@ def _page_login_cookie(user_id: int) -> str:
 def start_unbound_page_qr(config: dict, user_id: int) -> str:
     """还没绑定攻打 QQ 时，只在网页上出二维码。不读、不拉、不改正在跑的攻打进程。
     扫上并记到这个登录账号之后，立刻拉起这个 QQ 的挂机保活。"""
-    import fcntl
     import os
 
     from . import citydb
-    from .qq_login import QQSession
+    from .qq_login import QQSession, try_lock
 
     user_id = int(user_id)
     with _page_login_guard:
@@ -2327,8 +2345,11 @@ def start_unbound_page_qr(config: dict, user_id: int) -> str:
         pass
     try:
         lockf = open(cookie + ".lock", "a+")
-        fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
+        lockf = None
+    if lockf is None or not try_lock(lockf):
+        if lockf is not None:
+            lockf.close()
         with _page_login_guard:
             _page_login_users.discard(user_id)
         return "qr"

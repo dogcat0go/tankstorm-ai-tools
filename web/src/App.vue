@@ -37,6 +37,7 @@ const qrSrc = ref("");
 const bindWait = ref(false);
 const devLogin = ref(false);
 const registerOpen = ref(false);
+const loginPlatDefault = ref("空间");
 const autoLock = ref(false);
 const holdMin = ref("0");
 const holdAll = ref(false);
@@ -658,9 +659,9 @@ function holdCell(it) {
   return finished && finished.id === it.id ? text : "—";
 }
 
-async function pushLogin() {
+async function pushLogin(plat) {
   showErr("", "bar");
-  const data = await api("/api/attack-login", {});
+  const data = await api("/api/attack-login", { platform: plat || "空间" });
   if (data.off_at != null) {
     offAt.value = data.off_at ? String(data.off_at).replace(" ", "T") : "";
     if (me.value) me.value.off_at = data.off_at || "";
@@ -802,6 +803,7 @@ onMounted(async () => {
   const meta = await fetch("/api/meta").then((r) => r.json()).catch(() => ({}));
   devLogin.value = !!meta.dev_login;
   registerOpen.value = !!meta.register;
+  loginPlatDefault.value = meta.login_platform === "大厅" ? "大厅" : "空间";
   await loadMe();
   timer = setInterval(() => {
     if (me.value) refresh().catch(() => {});
@@ -870,6 +872,7 @@ onUnmounted(() => {
         :push-login-visible="pushLoginVisible"
         :proc-text="procText"
         :push-login="pushLogin"
+        :login-plat-default="loginPlatDefault"
         :set-attack-pause="setAttackPause"
         v-model:off-at="offAt"
         :save-off-at="saveOffAt"

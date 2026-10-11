@@ -11,7 +11,7 @@
 hjdz 能抓，是因为它自己的 WebEngine 窗口经 CDN 代理换上打过钩子的 RedWar.swf，
 ExternalInterface 把明文打到页面。大厅登不进去之后，这条链路改到本仓库：
 
-  扫码登录（QZone，已经能用）→ 拿到 canvas_url
+  扫码登录（空间或大厅）→ 拿到 canvas_url
   本机 HTTPS 代理冒充 redwar-cdn.sincetimes.com，投递钩子版 SWF
   flash_host（Qt WebEngine + pepflashplayer）打开 canvas_url
   钩子经 __pkt 上报，这里落盘并打印攻击相关字段
@@ -53,7 +53,12 @@ _HJDZ = os.path.normpath(os.path.join(app_dir(), "..", "hjdz-automation"))
 
 
 def run(qq, config: dict) -> int:
-    if not qq.is_valid() and not relogin_with_push(qq, config):
+    plat = qq.platform
+    if not qq.is_valid() and not relogin_with_push(qq, config, platform=plat):
+        return 1
+    if not qq.is_valid() and not relogin_with_push(
+            qq, config, force_qr=True, platform=plat):
+        log.error("扫码之后仍进不了%s", plat)
         return 1
     ctx = get_game_context(qq)
     canvas = ctx.get("canvas_url")
@@ -231,8 +236,9 @@ def _swf_candidates(qq, ctx, canvas):
     """FlashVars.version 常是配置表号，SWF 文件名另算。按可能性列出候选 URL。"""
     html = ""
     try:
-        html = qq.session.get(canvas, timeout=20,
-                              headers={"Referer": "https://game.qzone.qq.com/"}).text
+        html = qq.session.get(canvas, timeout=20, headers={
+            "Referer": getattr(qq, "game_url", None) or "https://game.qzone.qq.com/",
+        }).text
     except Exception as exc:
         log.warning("拉外框页失败：%s", exc)
     seen, out = set(), []

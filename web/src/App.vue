@@ -87,7 +87,7 @@ const fundBuildings = [
   { id: "10136", name: "红场" },
   { id: "10137", name: "帝国大厦" },
   { id: "10144", name: "万磁陀螺" },
-  { id: "10139", name: "英雄徽章雕塑" },
+  { id: "10172", name: "英雄徽章雕塑" },
 ];
 const dailyNote = ref("");
 const dailyAt = ref("");

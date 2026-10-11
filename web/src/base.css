@@ -99,7 +99,21 @@ p button.ghost, p a.ghost { margin-left: 8px; }
 table { width: 100%; border-collapse: collapse; background: #fff; margin-top: 12px; }
 table.scan td input { width: 7em; box-sizing: border-box; }
 table.scan td select { min-width: 9em; }
-table.members { min-width: 720px; }
+form.filters { margin-top: 8px; }
+form.filters input, form.filters select { min-width: 8em; }
+button.sort {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: #555;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+button.sort:hover, button.sort.on { color: #1a1a1a; text-decoration: underline; }
+table.members { min-width: 860px; }
 table.members button.ghost { padding: 4px 10px; }
 table.members button.ghost + button.ghost { margin-left: 8px; }
 table.members td.member-cfg { background: #fafaf7; }

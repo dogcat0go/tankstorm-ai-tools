@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import "./base.css";
 
 const me = ref(null);
@@ -17,7 +17,19 @@ const quietEnd = ref("");
 const scanRanges = ref([]);
 const scanNote = ref("");
 const scanQuiet = ref(false);
+const memberQ = ref("");
+const memberRegion = ref("");
+const memberOnline = ref("");
+const memberTier = ref("");
+const memberSort = ref("id");
+const memberDir = ref("asc");
+const fighterQ = ref("");
+const fighterRegion = ref("");
+const fighterOnline = ref("");
+const fighterSort = ref("id");
+const fighterDir = ref("asc");
 let fighterTimer = 0;
+const TIER_RANK = { 初级: 1, 中级: 2, 高级: 3 };
 
 async function api(path, body) {
   const r = await fetch(path, {
@@ -42,6 +54,150 @@ function procText(p) {
   if (!p.online) return p.paused && p.detail ? p.detail : "没在跑";
   if (p.paused && p.phase !== "login") return p.detail || "已暂停";
   return p.detail || "空闲，等订单";
+}
+
+const fighterMap = computed(() => {
+  const map = {};
+  for (const f of fighters.value) map[f.user_id] = f;
+  return map;
+});
+
+const memberMap = computed(() => {
+  const map = {};
+  for (const m of members.value) map[m.id] = m;
+  return map;
+});
+
+const regionOptions = computed(() => {
+  const set = new Set();
+  for (const m of members.value) {
+    if (m.region) set.add(Number(m.region));
+  }
+  for (const f of fighters.value) {
+    if (f.region) set.add(Number(f.region));
+  }
+  return [...set].sort((a, b) => a - b);
+});
+
+function fighterOf(userId) {
+  return fighterMap.value[userId] || null;
+}
+
+function regionOf(row) {
+  if (row.region) return Number(row.region);
+  const m = memberMap.value[row.user_id || row.id];
+  return m && m.region ? Number(m.region) : 0;
+}
+
+function regionText(row) {
+  const n = regionOf(row);
+  return n ? n + "区" : "—";
+}
+
+function onlineOf(row) {
+  if (row.online) return true;
+  const f = fighterOf(row.id || row.user_id);
+  return !!(f && f.online);
+}
+
+function sortHint(col, key, dir) {
+  if (col !== key) return "";
+  return dir === "asc" ? " ↑" : " ↓";
+}
+
+function toggleSort(which, col) {
+  const sortRef = which === "m" ? memberSort : fighterSort;
+  const dirRef = which === "m" ? memberDir : fighterDir;
+  if (sortRef.value === col) {
+    dirRef.value = dirRef.value === "asc" ? "desc" : "asc";
+  } else {
+    sortRef.value = col;
+    dirRef.value = col === "online" ? "desc" : "asc";
+  }
+}
+
+function hitQuery(q, ...parts) {
+  const s = q.trim().toLowerCase();
+  if (!s) return true;
+  return parts.some((p) => String(p || "").toLowerCase().includes(s));
+}
+
+function hitRegion(sel, region) {
+  if (!sel) return true;
+  return String(Number(region) || 0) === sel;
+}
+
+function hitOnline(sel, on) {
+  if (!sel) return true;
+  return sel === "on" ? !!on : !on;
+}
+
+function cmpVal(a, b, dir) {
+  let n = 0;
+  if (typeof a === "string" || typeof b === "string") n = String(a).localeCompare(String(b), "zh");
+  else if (a < b) n = -1;
+  else if (a > b) n = 1;
+  return dir === "desc" ? -n : n;
+}
+
+function memberKey(m, col) {
+  if (col === "username") return m.username || "";
+  if (col === "tier") return TIER_RANK[m.tier] || 0;
+  if (col === "expires") return (m.expires_at || "").trim() || "9999-99-99";
+  if (col === "qq") return m.attack_qq || "";
+  if (col === "region") return regionOf(m) || 9999;
+  if (col === "online") return onlineOf(m) ? 1 : 0;
+  return m.id;
+}
+
+function fighterKey(f, col) {
+  if (col === "username") return f.username || "";
+  if (col === "qq") return String(f.qq || "");
+  if (col === "region") return regionOf(f) || 9999;
+  if (col === "online") return f.online ? 1 : 0;
+  if (col === "here") return f.here || "";
+  return f.user_id;
+}
+
+const shownMembers = computed(() => {
+  const rows = members.value.filter((m) =>
+    hitQuery(memberQ.value, m.username, m.attack_qq, m.qq_target)
+    && hitRegion(memberRegion.value, m.region)
+    && hitOnline(memberOnline.value, onlineOf(m))
+    && (!memberTier.value || (m.tier || "初级") === memberTier.value));
+  const col = memberSort.value;
+  const dir = memberDir.value;
+  rows.sort((a, b) => cmpVal(memberKey(a, col), memberKey(b, col), dir) || a.id - b.id);
+  return rows;
+});
+
+const shownFighters = computed(() => {
+  const rows = fighters.value.filter((f) =>
+    hitQuery(fighterQ.value, f.username, f.qq)
+    && hitRegion(fighterRegion.value, regionOf(f))
+    && hitOnline(fighterOnline.value, f.online));
+  const col = fighterSort.value;
+  const dir = fighterDir.value;
+  rows.sort((a, b) => cmpVal(fighterKey(a, col), fighterKey(b, col), dir) || a.user_id - b.user_id);
+  return rows;
+});
+
+const memberFilterOn = computed(() =>
+  !!(memberQ.value || memberRegion.value || memberOnline.value || memberTier.value));
+const fighterFilterOn = computed(() =>
+  !!(fighterQ.value || fighterRegion.value || fighterOnline.value));
+
+function clearMemberFilters() {
+  memberQ.value = "";
+  memberRegion.value = "";
+  memberOnline.value = "";
+  memberTier.value = "";
+}
+
+function clearFighterFilters() {
+  fighterQ.value = "";
+  fighterRegion.value = "";
+  fighterOnline.value = "";
 }
 
 async function loadCities() {
@@ -171,6 +327,8 @@ async function logout() {
   openMember.value = 0;
   fighters.value = [];
   scanRanges.value = [];
+  clearMemberFilters();
+  clearFighterFilters();
 }
 
 onMounted(async () => {
@@ -211,27 +369,63 @@ onUnmounted(() => {
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
       <h2>成员账号</h2>
-      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理和攻打 QQ 不动。</p>
-      <div class="wide" v-if="members.length">
+      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理和攻打 QQ 不动。点表头可以排序。</p>
+      <form class="filters" @submit.prevent>
+        <label>搜索<input v-model="memberQ" placeholder="账号或 QQ" /></label>
+        <label>区服
+          <select v-model="memberRegion">
+            <option value="">全部</option>
+            <option value="0">未识别</option>
+            <option v-for="r in regionOptions" :key="'mr' + r" :value="String(r)">{{ r }}区</option>
+          </select>
+        </label>
+        <label>状态
+          <select v-model="memberOnline">
+            <option value="">全部</option>
+            <option value="on">在线</option>
+            <option value="off">没在跑</option>
+          </select>
+        </label>
+        <label>档
+          <select v-model="memberTier">
+            <option value="">全部</option>
+            <option>初级</option>
+            <option>中级</option>
+            <option>高级</option>
+          </select>
+        </label>
+        <button v-if="memberFilterOn" type="button" class="ghost" @click="clearMemberFilters">清除筛选</button>
+      </form>
+      <p class="muted" v-if="members.length">显示 {{ shownMembers.length }} / {{ members.length }} 个</p>
+      <div class="wide" v-if="shownMembers.length">
         <table class="members">
           <thead>
-            <tr><th>登录账号</th><th>档</th><th>有效期</th><th>攻打 QQ</th><th>区服</th><th></th></tr>
+            <tr>
+              <th><button type="button" class="sort" :class="{ on: memberSort === 'username' }" title="点击排序" @click="toggleSort('m', 'username')">登录账号{{ sortHint('username', memberSort, memberDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: memberSort === 'tier' }" title="点击排序" @click="toggleSort('m', 'tier')">档{{ sortHint('tier', memberSort, memberDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: memberSort === 'expires' }" title="点击排序" @click="toggleSort('m', 'expires')">有效期{{ sortHint('expires', memberSort, memberDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: memberSort === 'qq' }" title="点击排序" @click="toggleSort('m', 'qq')">攻打 QQ{{ sortHint('qq', memberSort, memberDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: memberSort === 'region' }" title="点击排序" @click="toggleSort('m', 'region')">区服{{ sortHint('region', memberSort, memberDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: memberSort === 'online' }" title="点击排序" @click="toggleSort('m', 'online')">状态{{ sortHint('online', memberSort, memberDir) }}</button></th>
+              <th></th>
+            </tr>
           </thead>
           <tbody>
-            <template v-for="m in members" :key="m.id">
+            <template v-for="m in shownMembers" :key="m.id">
               <tr>
                 <td>{{ m.username }}<span v-if="m.admin" class="muted"> · 管理</span></td>
                 <td>{{ m.tier || "初级" }}</td>
                 <td>{{ m.expires_at || "不限期" }}</td>
                 <td>{{ m.attack_qq || "—" }}</td>
-                <td>{{ m.region ? m.region + "区" : "—" }}</td>
+                <td>{{ regionText(m) }}</td>
+                <td :class="onlineOf(m) ? 'on' : 'off'">{{ onlineOf(m) ? "在线" : "没在跑" }}</td>
                 <td>
                   <button type="button" class="ghost" @click="toggleMember(m.id)">{{ openMember === m.id ? "收起" : "配置" }}</button>
                   <button type="button" class="ghost" :disabled="clearing === m.id" @click="clearMember(m).catch((e) => (err = e.message))">清空</button>
                 </td>
               </tr>
               <tr v-if="openMember === m.id">
-                <td colspan="6" class="member-cfg">
+                <td colspan="7" class="member-cfg">
                   <p>订阅 QQ：{{ m.qq_target || "—" }}</p>
                   <p>挂机：{{ m.hold_min || 0 }} 分钟<template v-if="m.hold_all"> · 全天候</template></p>
                   <p>定时关闭：{{ m.off_at || "未设" }}</p>
@@ -249,23 +443,54 @@ onUnmounted(() => {
         </table>
       </div>
       <p v-if="!members.length" class="muted">还没有登录账号。</p>
+      <p v-else-if="!shownMembers.length" class="muted">没有符合筛选的账号。</p>
       <h2>攻打 QQ</h2>
-      <p class="muted">每 5 秒刷新。每个攻打 QQ 一条线程，票据在对应的 cookie 文件里。</p>
-      <table>
-        <thead>
-          <tr><th>登录账号</th><th>攻打 QQ</th><th>状态</th><th>人在</th><th>cookie</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="f in fighters" :key="f.user_id">
-            <td>{{ f.username }}</td>
-            <td>{{ f.qq }}</td>
-            <td :class="f.online ? 'on' : 'off'">{{ procText(f) }}</td>
-            <td>{{ f.here || "—" }}</td>
-            <td><code>{{ f.cookie }}</code></td>
-          </tr>
-        </tbody>
-      </table>
+      <p class="muted">每 5 秒刷新。每个攻打 QQ 一条线程，票据在对应的 cookie 文件里。点表头可以排序。</p>
+      <form class="filters" @submit.prevent>
+        <label>搜索<input v-model="fighterQ" placeholder="账号或 QQ" /></label>
+        <label>区服
+          <select v-model="fighterRegion">
+            <option value="">全部</option>
+            <option value="0">未识别</option>
+            <option v-for="r in regionOptions" :key="'fr' + r" :value="String(r)">{{ r }}区</option>
+          </select>
+        </label>
+        <label>状态
+          <select v-model="fighterOnline">
+            <option value="">全部</option>
+            <option value="on">在线</option>
+            <option value="off">没在跑</option>
+          </select>
+        </label>
+        <button v-if="fighterFilterOn" type="button" class="ghost" @click="clearFighterFilters">清除筛选</button>
+      </form>
+      <p class="muted" v-if="fighters.length">显示 {{ shownFighters.length }} / {{ fighters.length }} 个</p>
+      <div class="wide" v-if="shownFighters.length">
+        <table>
+          <thead>
+            <tr>
+              <th><button type="button" class="sort" :class="{ on: fighterSort === 'username' }" title="点击排序" @click="toggleSort('f', 'username')">登录账号{{ sortHint('username', fighterSort, fighterDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: fighterSort === 'qq' }" title="点击排序" @click="toggleSort('f', 'qq')">攻打 QQ{{ sortHint('qq', fighterSort, fighterDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: fighterSort === 'region' }" title="点击排序" @click="toggleSort('f', 'region')">区服{{ sortHint('region', fighterSort, fighterDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: fighterSort === 'online' }" title="点击排序" @click="toggleSort('f', 'online')">状态{{ sortHint('online', fighterSort, fighterDir) }}</button></th>
+              <th><button type="button" class="sort" :class="{ on: fighterSort === 'here' }" title="点击排序" @click="toggleSort('f', 'here')">人在{{ sortHint('here', fighterSort, fighterDir) }}</button></th>
+              <th>cookie</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="f in shownFighters" :key="f.user_id">
+              <td>{{ f.username }}</td>
+              <td>{{ f.qq }}</td>
+              <td>{{ regionText(f) }}</td>
+              <td :class="f.online ? 'on' : 'off'">{{ procText(f) }}</td>
+              <td>{{ f.here || "—" }}</td>
+              <td><code>{{ f.cookie }}</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <p v-if="!fighters.length" class="muted">还没有绑定攻打 QQ。</p>
+      <p v-else-if="!shownFighters.length" class="muted">没有符合筛选的攻打 QQ。</p>
       <h2>扫描安排</h2>
       <form class="stack scan-form" @submit.prevent="saveScan().catch((e) => (err = e.message))">
         <label>间隔秒<input v-model="scanGap" inputmode="numeric" required /></label>

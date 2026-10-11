@@ -1152,7 +1152,7 @@ def _interrupt_reason(exc) -> str:
 
 
 def _fight_modo(rec, sock, config, beater, job) -> None:
-    """刷摩多军团。走进首都旁边两座城，召唤支援兵再打。恢复卡按订单上的数量。"""
+    """刷摩多军团。走进离自己最近的一座城，召唤支援兵再打。恢复卡按订单上的数量。"""
     from . import citydb, country_war
 
     citydb.set_attack_status("running")

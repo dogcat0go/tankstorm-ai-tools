@@ -1516,19 +1516,8 @@ def modo_stands(country_id: int) -> list:
     return stands
 
 
-def modo_first_cards(budget) -> int:
-    """两座城共用这些恢复卡。第一座最多用一半，余数留给第二座。0 表示不用卡。"""
-    try:
-        n = int(budget or 0)
-    except (TypeError, ValueError):
-        return 0
-    if n <= 0:
-        return 0
-    return (n + 1) // 2
-
-
 def add_modo_order(user_id: int, cards) -> str:
-    """提交一条刷摩多军团。按攻打号的国家打首都旁边两座。成功返回空字符串。"""
+    """提交一条刷摩多军团。按攻打号的国家打离自己最近的一座。成功返回空字符串。"""
     try:
         n = int(str(cards).strip())
     except (TypeError, ValueError, AttributeError):
@@ -3863,6 +3852,7 @@ def list_attack_fighters() -> list:
             "detail": status.get("detail"),
             "here": status.get("here") or "",
             "paused": status.get("paused"),
+            "region": user_region(user_id),
         })
     return rows
 

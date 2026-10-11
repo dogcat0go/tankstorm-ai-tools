@@ -3385,7 +3385,7 @@ def set_attack_status(phase: str, task: str = "", note: str = "") -> None:
     here = _kept_here(prev)
     if here:
         data["here"] = here
-    for key in ("morale", "power"):
+    for key in ("morale", "power", "blast"):
         val = _kept_int(prev, key)
         if val is not None:
             data[key] = val
@@ -3447,6 +3447,32 @@ def note_attack_here(city_id, power=None, morale=None) -> None:
         _upsert_signal(name, json.dumps(data, ensure_ascii=False))
     except sqlite3.Error:
         return
+
+
+def note_attack_blast(count) -> bool:
+    """记下这个攻打号当前的爆破兵数量。没变就不写库。写失败返回 False。"""
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return False
+    if not attack_context_user() and not attack_context_qq():
+        return False
+    name = _mark_name("proc")
+    try:
+        data = _proc_payload(_signal_value(name))
+        if not data or data.get("phase") == "offline":
+            return False
+        if data.get("blast") == count:
+            return True
+        data["blast"] = count
+        _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def attack_blast_count(user_id: int):
+    """网页上的当前爆破兵数量。还没读到兵册是 None，可以是 0。"""
+    parsed, _seen, _online = _read_user_proc(int(user_id))
+    return _kept_int(parsed, "blast")
 
 
 def note_attack_move_text(text: str, user_id: int = 0) -> None:
@@ -4501,8 +4527,8 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
             count = int(str(params.get("count") or "").strip())
         except (TypeError, ValueError):
             return "数量要是数字"
-        if not (1 <= count <= 99):
-            return "数量要在 1 到 99"
+        if not (1 <= count <= 399):
+            return "数量要在 1 到 399"
         clean["count"] = count
     conn = connect()
     try:

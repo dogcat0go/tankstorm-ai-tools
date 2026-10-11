@@ -316,6 +316,7 @@ def _handler(config: dict):
                     return
                 _json(self, 200, {
                     "qq": citydb.attack_qq_of(user["id"]),
+                    "blast": citydb.attack_blast_count(user["id"]),
                     "jobs": citydb.list_daily_jobs(user["id"], limit=8, kind="blast"),
                 })
                 return

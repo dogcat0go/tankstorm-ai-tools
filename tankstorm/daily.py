@@ -1957,6 +1957,29 @@ def _wallet_credit(data):
     return None
 
 
+def note_blast_count(rec, new_id=0):
+    """把当前爆破兵数量写给网页。刚造完、兵册还没刷新的那一只用 id 补上。"""
+    if rec is None:
+        return
+    extra = getattr(rec, "_blast_extra", None)
+    if extra is None:
+        extra = set()
+        rec._blast_extra = extra
+    if isinstance(new_id, int) and not isinstance(new_id, bool) and new_id > 0:
+        extra.add(new_id)
+    from . import repair
+    ids = repair.blast_ids(rec)
+    if ids is None:
+        return
+    extra.difference_update(ids)
+    total = len(ids | extra)
+    if getattr(rec, "_blast_published", None) == total:
+        return
+    from . import citydb
+    if citydb.note_attack_blast(total):
+        rec._blast_published = total
+
+
 def _blast_once(rec, sock, config, assume_idle=False, on_progress=None):
     """造一个爆破兵。快速制造只在勋章花费为 0 时发，credit 固定写 0。
 
@@ -2051,6 +2074,9 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None):
         return False, f"勋章从 {wallet} 变成 {after}，已停"
     if not isinstance(err, int) or isinstance(err, bool) or err != 0:
         return False, f"快速制造服务器返回 error={err}"
+    army = got.get("army")
+    new_id = army.get("field2") if isinstance(army, dict) else 0
+    note_blast_count(rec, new_id if isinstance(new_id, int) and not isinstance(new_id, bool) else 0)
     return True, f"成功：兵营 {bid} 按剩余 {left} 秒、0 勋章加速完成"
 
 
@@ -2060,8 +2086,9 @@ def daily_blast(rec, sock, config, count=1, on_progress=None):
         count = int(count)
     except (TypeError, ValueError):
         return False, "数量不对"
-    if not 1 <= count <= 99:
-        return False, "数量要在 1 到 99"
+    if not 1 <= count <= 399:
+        return False, "数量要在 1 到 399"
+    note_blast_count(rec)
     done = 0
     assume_idle = False
     while done < count:

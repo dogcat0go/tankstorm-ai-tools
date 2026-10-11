@@ -80,6 +80,7 @@ const dailyJobs = ref([]);
 const baseCount = ref("1");
 const baseJobs = ref([]);
 const baseNote = ref("");
+const baseBlast = ref(null);
 const pveStages = ref("");
 let pveStagesReady = false;
 const fundBuilding = ref("");
@@ -191,11 +192,13 @@ async function saveDailyAt() {
 async function refreshBase() {
   if (!me.value) {
     baseJobs.value = [];
+    baseBlast.value = null;
     return;
   }
   const data = await api("/api/base");
   dailyQq.value = data.qq || dailyQq.value;
   baseJobs.value = data.jobs || [];
+  baseBlast.value = data.blast == null ? null : data.blast;
 }
 
 async function runBase(count) {
@@ -1015,6 +1018,7 @@ onUnmounted(() => {
         v-model:count="baseCount"
         :daily-qq="dailyQq"
         :jobs="baseJobs"
+        :blast="baseBlast"
         :note="baseNote"
         :err="err"
         :err-at="errAt"

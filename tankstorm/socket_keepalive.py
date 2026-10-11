@@ -1954,6 +1954,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
         try:
             if _shutdown_stop():
                 return 0
+            daily.note_blast_count(rec)
             if citydb.attack_paused():
                 asked = citydb.take_attack_login()
                 if asked:

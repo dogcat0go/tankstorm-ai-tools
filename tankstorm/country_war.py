@@ -749,18 +749,10 @@ def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
     return out
 
 
-def _modo_stop(reason: str) -> bool:
-    """这一座打不下去了，另一座也不要再去。"""
-    text = str(reason or "")
-    if text in ("已暂停", "已定时关闭", "已手动关停"):
-        return True
-    return any(k in text for k in ("被别人打败", "连接", "读不到自己的国家", "读不到当前", "出不了首都"))
-
-
 def farm_modo_order(rec, sock, config, card_limit, beat=None, tally=None) -> dict:
-    """按攻打号的国家，走进首都旁边两座魔多军团，召唤支援兵再打。
+    """按攻打号的国家，走进离自己最近的一座魔多军团，召唤支援兵再打。
 
-    恢复卡两座共用。第一座最多用一半，剩下的留给第二座。0 表示不用卡。
+    恢复卡都在这一座用完。0 表示不用卡。
     """
     from . import citydb
 
@@ -772,72 +764,76 @@ def farm_modo_order(rec, sock, config, card_limit, beat=None, tally=None) -> dic
         out["停止原因"] = "读不到攻打号的国家，停手"
         return out
     stands = citydb.modo_stands(country)
-    if len(stands) < 2:
+    if not stands:
         cname = citydb.country_name(country) or str(country)
-        out["停止原因"] = f"{cname} 首都旁边没有两座魔多军团"
+        out["停止原因"] = f"{cname} 没有相邻的魔多军团"
         return out
     budget = int(card_limit or 0)
     if budget < 0:
         budget = 0
-    notes = []
-    used = 0
-    for index, (stand, npc, name) in enumerate(stands[:2]):
-        label = f"{stand} {name}".strip()
-        log.info("[魔多] 走向 %s，驻地 %s", label, npc)
-        walked = walk_to(
-            rec, sock, config, stand, beat=beat,
-            march_only=True, enter_target=True)
-        why = str((walked or {}).get("停止原因") or "")
-        if why:
-            out["停止原因"] = why
+    _, loc, _, panel = _panel(sock, rec, country)
+    if panel is None or not loc:
+        out["停止原因"] = "读不到当前所在城市"
+        return out
+    loc = int(loc)
+    picked = None
+    best = None
+    for item in stands:
+        stand = int(item[0])
+        if stand == loc:
+            picked = item
             break
-        cap = citydb.modo_first_cards(budget) if index == 0 else budget - used
-        if cap < 0:
-            cap = 0
-        fight_config = dict(config)
-        war = dict(config.get("国战") or {})
-        war["摩多驻地城市ID"] = int(npc)
-        war["自己国家ID"] = int(country)
-        war["自动使用国战恢复卡"] = cap > 0
-        war["单次最多用几张恢复卡"] = cap
-        fight_config["国战"] = war
-        shop_conf = fight_config.get("功勋商城") or {}
-        restock = bool(shop_conf.get("刷摩多召唤失败补一轮", True))
-        fought = run(rec, sock, fight_config, rounds=100000, beat=beat,
-                     tally=tally, restock_on_summon_fail=restock)
-        hits = (fought.get("扫荡") or 0) + (fought.get("攻击") or 0)
-        out["攻击"] += hits
-        out["扫荡"] += fought.get("扫荡") or 0
-        out["召唤"] += fought.get("召唤") or 0
-        out["用卡"] += fought.get("用卡") or 0
-        out["补兵"] += fought.get("补兵") or 0
-        used = out["用卡"]
-        reason = str(fought.get("停止原因") or "")
-        if "未开启自动使用国战恢复卡" in reason:
-            reason = reason.replace("；未开启自动使用国战恢复卡", "")
-        line = f"{name} 召唤 {fought.get('召唤') or 0} 次，打 {hits} 次"
-        if reason and "已打满" not in reason:
-            short = reason if len(reason) <= 48 else reason[:48].rstrip() + "…"
-            line += f"（{short}）"
-        notes.append(line)
-        if _modo_stop(reason):
-            out["停止原因"] = reason
-            break
-        if ("行动力" in reason or "恢复卡" in reason) and (budget <= 0 or used >= budget):
-            out["停止原因"] = reason
-            break
-        if reason and "已打满" not in reason and "行动力" not in reason and "恢复卡" not in reason:
-            out["停止原因"] = "" if index == 0 else reason
-            if index == 0:
-                continue
-            break
-    summary = "；".join(notes)
+        plan = citydb.plan_route(loc, stand, country)
+        path = plan.get("路径") or []
+        if not path:
+            key = (10 ** 9, 10 ** 9, int(item[1]))
+        else:
+            key = (len(plan.get("须占领") or []), max(0, len(path) - 1), int(item[1]))
+        if best is None or key < best:
+            best = key
+            picked = item
+    stand, npc, name = picked
+    label = f"{stand} {name}".strip()
+    log.info("[魔多] 最近是 %s，驻地 %s", label, npc)
+    walked = walk_to(
+        rec, sock, config, stand, beat=beat,
+        march_only=True, enter_target=True)
+    why = str((walked or {}).get("停止原因") or "")
+    if why:
+        out["停止原因"] = why
+        out["说明"] = why
+        return out
+    fight_config = dict(config)
+    war = dict(config.get("国战") or {})
+    war["摩多驻地城市ID"] = int(npc)
+    war["自己国家ID"] = int(country)
+    war["自动使用国战恢复卡"] = budget > 0
+    war["单次最多用几张恢复卡"] = budget
+    fight_config["国战"] = war
+    shop_conf = fight_config.get("功勋商城") or {}
+    restock = bool(shop_conf.get("刷摩多召唤失败补一轮", True))
+    fought = run(rec, sock, fight_config, rounds=100000, beat=beat,
+                 tally=tally, restock_on_summon_fail=restock)
+    hits = (fought.get("扫荡") or 0) + (fought.get("攻击") or 0)
+    out["攻击"] = hits
+    out["扫荡"] = fought.get("扫荡") or 0
+    out["召唤"] = fought.get("召唤") or 0
+    out["用卡"] = fought.get("用卡") or 0
+    out["补兵"] = fought.get("补兵") or 0
+    reason = str(fought.get("停止原因") or "")
+    if "未开启自动使用国战恢复卡" in reason:
+        reason = reason.replace("；未开启自动使用国战恢复卡", "")
+    out["停止原因"] = reason
+    summary = f"{name} 召唤 {out['召唤']} 次，打 {hits} 次"
+    if reason and "已打满" not in reason:
+        short = reason if len(reason) <= 48 else reason[:48].rstrip() + "…"
+        summary += f"（{short}）"
     if out["用卡"]:
-        summary = (summary + "。" if summary else "") + f"用了 {out['用卡']} 张恢复卡"
+        summary += f"。用了 {out['用卡']} 张恢复卡"
     if out["补兵"]:
-        summary = (summary + "。" if summary else "") + f"补了 {out['补兵']} 个支援兵"
-    if out["停止原因"] and out["停止原因"] not in summary:
-        summary = (summary + "。" if summary else "") + out["停止原因"]
+        summary += f"。补了 {out['补兵']} 个支援兵"
+    if reason and reason not in summary:
+        summary += "。" + reason
     out["说明"] = summary
     return out
 

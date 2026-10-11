@@ -138,6 +138,7 @@ def _user_out(user: dict) -> dict:
         "tier": user.get("tier") or "初级",
         "remote_attack": citydb.attack_tier(user.get("tier") or ""),
         "high_tier": citydb.high_tier(user.get("tier") or ""),
+        "base_war": citydb.base_tier(user.get("tier") or ""),
         "admin": bool(user.get("admin")),
         "auto_lock": bool(user.get("auto_lock")),
         "hold_min": int(user.get("hold_min") or 0),
@@ -303,6 +304,19 @@ def _handler(config: dict):
                     "process": citydb.attack_status(user["id"]),
                     "storms": citydb.list_storm_rejects(user["id"]),
                     "storm_day": citydb.storm_rejects_day(user["id"]),
+                })
+                return
+            if path == "/api/base":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not citydb.base_tier(user.get("tier") or ""):
+                    _json(self, 403, {"error": "基地战需要高级pro订阅"})
+                    return
+                _json(self, 200, {
+                    "qq": citydb.attack_qq_of(user["id"]),
+                    "jobs": citydb.list_daily_jobs(user["id"], limit=8, kind="blast"),
                 })
                 return
             if path == "/api/daily":
@@ -495,6 +509,18 @@ def _handler(config: dict):
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True})
+                elif path == "/api/base":
+                    if citydb.account_expired(user.get("expires_at") or ""):
+                        raise ValueError("账号已过期")
+                    if not citydb.base_tier(user.get("tier") or ""):
+                        raise ValueError("基地战需要高级pro订阅")
+                    why = citydb.enqueue_daily_job(
+                        user["id"], "blast", {"count": data.get("count")})
+                    if why:
+                        raise ValueError(why)
+                    from .socket_keepalive import kick_attack_login
+                    login = kick_attack_login(config, user["id"])
+                    _json(self, 200, {"ok": True, "login": login})
                 elif path == "/api/daily":
                     if citydb.account_expired(user.get("expires_at") or ""):
                         raise ValueError("账号已过期")
@@ -817,7 +843,7 @@ def _announce(host, port, config):
         log.warning("注册口令是空的，公网上任何人都能注册。填 config「订阅.注册口令」")
     if not _register_open(config):
         log.info("注册已关闭。添加账号：python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31 --tier 中级")
-        log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级。中级和高级可提交远程扫码攻打。自动索敌、自动锁敌和清城高级配置只要高级")
+        log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级|高级pro。中级及以上可提交远程扫码攻打。自动索敌、自动锁敌和清城高级配置要高级或高级pro。基地战只要高级pro")
         log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin，可看成员配置、攻打 QQ 和扫描安排")
     log.info("密码登录测试页：/pwd-lab（只要管理员。独立票据，不绑攻打号）")
     log.info("软件授时：登录后 POST /api/clock，正文 mono_ms 为单调计时毫秒，返回会员剩余时间")

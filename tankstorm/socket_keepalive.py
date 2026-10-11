@@ -27,6 +27,7 @@ import re
 import select
 import signal
 import socket
+import sqlite3
 import threading
 import time
 from contextlib import contextmanager
@@ -286,6 +287,8 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
             rec.set_identity(ctx.get("uid"), ctx.get("openid"), getattr(qq, "uin", None))
         except Exception as exc:
             log.debug("设置录制标识失败(忽略): %s", exc)
+        rec.login_pf = ctx.get("pf") or (
+            "qqgame" if getattr(qq, "platform", None) == "大厅" else "qzone")
 
     if spec.get("http_warmup", True):
         _http_warmup(qq, ctx)
@@ -453,26 +456,45 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
             pass
 
 
+def _summary_ok(text: str) -> bool:
+    """这一行算做成了。领过、今天已经做过，都不是失败。"""
+    text = str(text or "")
+    return (text.startswith("成功") or "今日已领" in text
+            or "今日已执行" in text or "已做过" in text)
+
+
 def _push_daily_summary(config: dict, results: dict, details: dict) -> None:
     """把每日任务成果推到 PushPlus，并在日志里打一份对照表。
 
     只有真正执行过的才推 —— 全是"未开启/冷却中"的轮次不值得打扰。
+    命令行只开了一项时，汇总里只留这一项，不把没开的月卡和暂不执行算成失败。
     """
-    # "跳过"不是失败 —— 今日额度已用完、冷却中、未开启，这些都不该算进成败统计，
-    # 否则一份"全是跳过"的日志会显示成"未成 14"，看着像全崩了。
-    acted = {k: v for k, v in results.items()
-             if v and not any(s in v for s in
-                              ("未开启", "冷却中", "未实测", "跳过"))}
+    switches = ((config.get("每日任务") or {}).get("任务") or {})
+    enabled = [k for k, on in switches.items()
+               if on is True and isinstance(k, str) and not k.startswith("_")]
+    focus = enabled[0] if len(enabled) == 1 else None
+    quiet = ("未开启", "冷却中", "未实测", "跳过", "暂不执行")
+    acted = {}
+    for k, v in results.items():
+        if not v:
+            continue
+        if focus is not None:
+            if k == focus:
+                acted[k] = v
+            continue
+        if any(s in v for s in quiet):
+            continue
+        acted[k] = v
     if not acted:
         return
 
-    okn = sum(1 for v in acted.values() if v.startswith("成功"))
+    okn = sum(1 for v in acted.values() if _summary_ok(v))
     bad = len(acted) - okn
 
     log.info("―― 每日任务成果 ―― 成功 %d，未成 %d", okn, bad)
     rows = []
     for k, v in acted.items():
-        icon = "✅" if v.startswith("成功") else "❌"
+        icon = "✅" if _summary_ok(v) else "❌"
         log.info("  %s %-12s %s", icon, k, v)
         extra = ""
         d = details.get(k)
@@ -1149,7 +1171,7 @@ def _interrupt_reason(exc) -> str:
 
 
 def _fight_modo(rec, sock, config, beater, job) -> None:
-    """刷摩多军团。走进首都旁边两座城，召唤支援兵再打。恢复卡按订单上的数量。"""
+    """刷摩多军团。走进离自己最近的一座城，召唤支援兵再打。恢复卡按订单上的数量。"""
     from . import citydb, country_war
 
     citydb.set_attack_status("running")
@@ -1868,6 +1890,15 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 on_progress=_show)
             _show(why)
             citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+        elif kind == "blast":
+            if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
+                return
+            ok, why = daily.daily_blast(
+                rec, sock, config, count=params.get("count") or 1,
+                on_progress=_show)
+            _show(why)
+            citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
         else:
             citydb.finish_daily_job(job["id"], "failed", "没有这项日常")
     except daily.Stopped:
@@ -1920,62 +1951,67 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     here_id = 0
     path_at = 0.0
     while True:
-        if _shutdown_stop():
-            return 0
-        if citydb.attack_paused():
+        try:
+            if _shutdown_stop():
+                return 0
+            if citydb.attack_paused():
+                asked = citydb.take_attack_login()
+                if asked:
+                    _arm_push_keepalive()
+                    if not citydb.attack_link_alive():
+                        citydb.set_attack_paused(False)
+                        log.info("点了推送登录，游戏没挂上，准备重连")
+                        return 0
+                citydb.set_attack_status("paused")
+                if not _wait_socket(sock, spec, ctx):
+                    raise OSError("服务器关闭连接")
+                continue
+            if _run_requested_move(rec, sock, config, beater):
+                continue
+            daily_job = citydb.claim_daily_job()
+            if daily_job:
+                stated = False
+                with _order_account(int(daily_job.get("user_id") or 0)):
+                    _run_one_daily(rec, sock, config, beater, daily_job)
+                continue
+            for uid in citydb.attack_context_users():
+                citydb.skip_unfinished_auto(uid)
+            citydb.release_due_waits()
+            job = citydb.claim_attack_order()
+            if job:
+                stated = False
+                citydb.clear_attack_hold()
+                log.info("领到订单 %s，城市 %s UID %s",
+                         job["id"], job["city_id"], job["uid"])
+                with _order_account(int(job.get("user_id") or 0)):
+                    _fight_claimed(rec, sock, config, beater, job)
+                continue
+            if citydb.attack_order_open():
+                citydb.set_attack_status("queue")
+                time.sleep(1)
+                continue
             asked = citydb.take_attack_login()
             if asked:
                 _arm_push_keepalive()
-                if not citydb.attack_link_alive():
-                    citydb.set_attack_paused(False)
-                    log.info("点了推送登录，游戏没挂上，准备重连")
-                    return 0
-            citydb.set_attack_status("paused")
+            if not _begin_attack_hold(fresh=not stated):
+                return 0
+            if not citydb.attack_link_alive():
+                log.info("挂机保活游戏心跳没了，准备重连")
+                return 0
+            if not stated:
+                here_at = 0.0
+                path_at = 0.0
+            stated = True
+            here_at, here_id = _refresh_hold_here(
+                rec, sock, config, here_at, here_id)
+            path_at = _watch_blocked_path(rec, sock, config, beater, path_at)
             if not _wait_socket(sock, spec, ctx):
-                raise OSError("服务器关闭连接")
-            continue
-        if _run_requested_move(rec, sock, config, beater):
-            continue
-        daily_job = citydb.claim_daily_job()
-        if daily_job:
-            stated = False
-            with _order_account(int(daily_job.get("user_id") or 0)):
-                _run_one_daily(rec, sock, config, beater, daily_job)
-            continue
-        for uid in citydb.attack_context_users():
-            citydb.skip_unfinished_auto(uid)
-        citydb.release_due_waits()
-        job = citydb.claim_attack_order()
-        if job:
-            stated = False
-            citydb.clear_attack_hold()
-            log.info("领到订单 %s，城市 %s UID %s",
-                     job["id"], job["city_id"], job["uid"])
-            with _order_account(int(job.get("user_id") or 0)):
-                _fight_claimed(rec, sock, config, beater, job)
-            continue
-        if citydb.attack_order_open():
-            citydb.set_attack_status("queue")
+                log.info("挂机时游戏连接断了，准备重连")
+                return 0
+        except sqlite3.Error as exc:
+            log.info("读库失败，游戏先不断开：%s", exc)
             time.sleep(1)
             continue
-        asked = citydb.take_attack_login()
-        if asked:
-            _arm_push_keepalive()
-        if not _begin_attack_hold(fresh=not stated):
-            return 0
-        if not citydb.attack_link_alive():
-            log.info("挂机保活游戏心跳没了，准备重连")
-            return 0
-        if not stated:
-            here_at = 0.0
-            path_at = 0.0
-        stated = True
-        here_at, here_id = _refresh_hold_here(
-            rec, sock, config, here_at, here_id)
-        path_at = _watch_blocked_path(rec, sock, config, beater, path_at)
-        if not _wait_socket(sock, spec, ctx):
-            log.info("挂机时游戏连接断了，准备重连")
-            return 0
 
 
 def _connect_attack_orders(qq, config) -> int:
@@ -2320,11 +2356,10 @@ def _page_login_cookie(user_id: int) -> str:
 def start_unbound_page_qr(config: dict, user_id: int, platform: str = "") -> str:
     """还没绑定攻打 QQ 时，只在网页上出二维码。不读、不拉、不改正在跑的攻打进程。
     扫上并记到这个登录账号之后，立刻拉起这个 QQ 的挂机保活。"""
-    import fcntl
     import os
 
     from . import citydb
-    from .qq_login import QQSession
+    from .qq_login import QQSession, try_lock
 
     user_id = int(user_id)
     with _page_login_guard:
@@ -2339,8 +2374,11 @@ def start_unbound_page_qr(config: dict, user_id: int, platform: str = "") -> str
         pass
     try:
         lockf = open(cookie + ".lock", "a+")
-        fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
+        lockf = None
+    if lockf is None or not try_lock(lockf):
+        if lockf is not None:
+            lockf.close()
         with _page_login_guard:
             _page_login_users.discard(user_id)
         return "qr"
@@ -2483,52 +2521,57 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
             if on_page:
                 citydb.set_page_qr(False, user_id)
         while True:
-            if _shutdown_stop():
-                break
-            if citydb.attack_paused():
-                citydb.set_attack_status("paused")
-                if citydb.take_attack_login():
-                    if any(citydb.attack_qq_blocked(uid)
-                           for uid in citydb.attack_context_users()):
-                        citydb.set_attack_status("login")
-                        if on_page:
-                            citydb.set_page_qr(True, user_id)
-                        relogin_with_push(qq, config, force_qr=True)
-                        if on_page:
-                            citydb.set_page_qr(False, user_id)
-                        continue
+            try:
+                if _shutdown_stop():
+                    break
+                if citydb.attack_paused():
+                    citydb.set_attack_status("paused")
+                    if citydb.take_attack_login():
+                        if any(citydb.attack_qq_blocked(uid)
+                               for uid in citydb.attack_context_users()):
+                            citydb.set_attack_status("login")
+                            if on_page:
+                                citydb.set_page_qr(True, user_id)
+                            relogin_with_push(qq, config, force_qr=True)
+                            if on_page:
+                                citydb.set_page_qr(False, user_id)
+                            continue
+                        _arm_push_keepalive()
+                        if not citydb.attack_in_keepalive(_owner()):
+                            citydb.set_attack_paused(False, _owner())
+                            citydb.set_attack_status("login")
+                            _connect_attack_orders(qq, config)
+                            continue
+                    time.sleep(5)
+                    continue
+                citydb.resume_stranded_orders()
+                citydb.resume_daily_jobs()
+                citydb.release_due_waits()
+                # 新订单本身不登录。先推送登录挂上游戏，这条连接再领单。
+                # 服务器停前正在打的那一单要接着做，不另加挂机时间。
+                # 点了推送登录就先记 180 分钟，连不上也在这段时间里重连，不立刻退出。
+                asked = citydb.take_attack_login()
+                resumed = citydb.attack_resume_marked()
+                if asked:
                     _arm_push_keepalive()
-                    if not citydb.attack_in_keepalive(_owner()):
-                        citydb.set_attack_paused(False, _owner())
+                    if citydb.attack_in_keepalive(_owner()):
+                        citydb.set_attack_status("hold")
+                    else:
                         citydb.set_attack_status("login")
-                        _connect_attack_orders(qq, config)
-                        continue
-                time.sleep(5)
+                holding = citydb.attack_hold_on()
+                if not (asked or resumed or holding or citydb.daily_job_open()):
+                    break
+                _connect_attack_orders(qq, config)
+                if resumed:
+                    citydb.clear_attack_resume()
+                if citydb.attack_hold_on():
+                    time.sleep(1 if citydb.attack_order_open() else 5)
+                elif citydb.daily_job_open():
+                    time.sleep(2)
+            except sqlite3.Error as exc:
+                log.info("读库失败，攻打线程先留着：%s", exc)
+                time.sleep(1)
                 continue
-            citydb.resume_stranded_orders()
-            citydb.resume_daily_jobs()
-            citydb.release_due_waits()
-            # 新订单本身不登录。先推送登录挂上游戏，这条连接再领单。
-            # 服务器停前正在打的那一单要接着做，不另加挂机时间。
-            # 点了推送登录就先记 180 分钟，连不上也在这段时间里重连，不立刻退出。
-            asked = citydb.take_attack_login()
-            resumed = citydb.attack_resume_marked()
-            if asked:
-                _arm_push_keepalive()
-                if citydb.attack_in_keepalive(_owner()):
-                    citydb.set_attack_status("hold")
-                else:
-                    citydb.set_attack_status("login")
-            holding = citydb.attack_hold_on()
-            if not (asked or resumed or holding or citydb.daily_job_open()):
-                break
-            _connect_attack_orders(qq, config)
-            if resumed:
-                citydb.clear_attack_resume()
-            if citydb.attack_hold_on():
-                time.sleep(1 if citydb.attack_order_open() else 5)
-            elif citydb.daily_job_open():
-                time.sleep(2)
     finally:
         if on_page:
             citydb.set_page_qr(False, user_id)
@@ -2687,6 +2730,8 @@ def _connect_and(qq, config: dict, work) -> int:
         return 1
 
     rec = Recorder(config, on_alert=None)
+    rec.login_pf = ctx.get("pf") or (
+        "qqgame" if getattr(qq, "platform", None) == "大厅" else "qzone")
     if spec.get("http_warmup", True):
         _http_warmup(qq, ctx)
     try:

@@ -69,6 +69,7 @@ import re
 import secrets
 import shutil
 import struct
+import sys
 import threading
 import time
 import zlib
@@ -78,10 +79,36 @@ import requests
 from . import (PLATFORM_COOKIE, PLAT_HALL, PLAT_QZONE,
                config_platform, normalize_platform, platform_spec)
 from . import paths
-from .log import get_logger
+from .log import console_lock, get_logger
 from .qzone import fetch_hall_launch, hall_logged_in
 
 log = get_logger()
+
+
+def try_lock(fh) -> bool:
+    """非阻塞独占这份已打开的文件。句柄要一直留着，关掉锁就没了。
+
+    fcntl 只有 Linux / macOS 有。Windows 用 msvcrt 锁文件开头 1 个字节。
+    """
+    if os.name == "nt":
+        import msvcrt
+        fh.seek(0, os.SEEK_END)
+        if fh.tell() == 0:
+            fh.write("0")
+            fh.flush()
+        fh.seek(0)
+        try:
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+    import fcntl
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
 
 PTLOGIN_APPID = "549000912"  # QQ空间的 ptlogin aid（游戏页 302 时携带的就是它）
 DAID = "5"
@@ -450,13 +477,84 @@ def _png_dark(data: bytes) -> list[list[int]]:
     return rows
 
 
+def _paint_qr_win(cells, quiet: int) -> bool:
+    """直接给控制台格子上色。Windows 默认不解释 ANSI，转义码会原样印出来。"""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = wintypes.HANDLE(msvcrt.get_osfhandle(sys.stdout.fileno()))
+        kernel.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel.GetConsoleMode.restype = wintypes.BOOL
+        if not kernel.GetConsoleMode(handle, ctypes.byref(wintypes.DWORD())):
+            return False
+
+        class COORD(ctypes.Structure):
+            _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+        class SMALL_RECT(ctypes.Structure):
+            _fields_ = [("Left", ctypes.c_short), ("Top", ctypes.c_short),
+                        ("Right", ctypes.c_short), ("Bottom", ctypes.c_short)]
+
+        class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", COORD),
+                ("dwCursorPosition", COORD),
+                ("wAttributes", ctypes.c_ushort),
+                ("srWindow", SMALL_RECT),
+                ("dwMaximumWindowSize", COORD),
+            ]
+
+        info = CONSOLE_SCREEN_BUFFER_INFO()
+        kernel.GetConsoleScreenBufferInfo.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(CONSOLE_SCREEN_BUFFER_INFO)]
+        kernel.GetConsoleScreenBufferInfo.restype = wintypes.BOOL
+        if not kernel.GetConsoleScreenBufferInfo(handle, ctypes.byref(info)):
+            return False
+        kernel.SetConsoleTextAttribute.argtypes = [wintypes.HANDLE, wintypes.WORD]
+        kernel.SetConsoleTextAttribute.restype = wintypes.BOOL
+        kernel.WriteConsoleW.argtypes = [
+            wintypes.HANDLE, wintypes.LPCWSTR, wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+        kernel.WriteConsoleW.restype = wintypes.BOOL
+        written = wintypes.DWORD()
+        width = len(cells[0]) + 2 * quiet
+        blank = [0] * width
+        rows = ([blank] * quiet
+                + [[0] * quiet + row + [0] * quiet for row in cells]
+                + [blank] * quiet)
+        sys.stdout.flush()
+        try:
+            for bits in rows:
+                i = 0
+                while i < width:
+                    j = i + 1
+                    while j < width and bits[j] == bits[i]:
+                        j += 1
+                    kernel.SetConsoleTextAttribute(handle, 0x00 if bits[i] else 0xF0)
+                    n = (j - i) * 2
+                    kernel.WriteConsoleW(handle, " " * n, n, ctypes.byref(written), None)
+                    i = j
+                kernel.SetConsoleTextAttribute(handle, info.wAttributes)
+                kernel.WriteConsoleW(handle, "\r\n", 2, ctypes.byref(written), None)
+        finally:
+            kernel.SetConsoleTextAttribute(handle, info.wAttributes)
+        return True
+    except OSError:
+        return False
+
+
 def _print_qr_ascii(png_path: str) -> None:
-    """把二维码打进日志。失败时说明原因，不再静默跳过。
+    """把二维码打进终端。失败时说明原因，不再静默跳过。
 
     旧实现依赖 Pillow，没装就直接 return。服务器上常见只装了 requests，
     于是只剩「二维码已保存」一句，终端里没有码。这里用标准库解 PNG。
-    黑白用 ANSI 背景色写死，不跟终端主题走；白模块仍带 ██，
-    纯文本日志里也能看出形状。四周补白边，方便手机对着屏幕扫。
+    Windows 控制台不解释 ANSI，转义码会原样印成 [107m。那里改成直接上色。
+    别的终端仍用背景色，两格都是半角空格，避免 █ 在中文环境变成全角。
+    四周补白边。
     """
     try:
         with open(png_path, "rb") as f:
@@ -497,12 +595,20 @@ def _print_qr_ascii(png_path: str) -> None:
     quiet = 4
     while quiet and (len(cells[0]) + 2 * quiet) * 2 > cols - 1:
         quiet -= 1
-    # 背景色固定黑/白。██ 留给不解释转义序列的查看器，形状还在。
+    # 一格两个半角空格，黑白只靠颜色，宽度才一致。
     visible = (len(cells[0]) + 2 * quiet) * 2
     if visible > cols:
         log.warning("终端只有 %d 列，二维码大约 %d 列，换行之后扫不中。"
                     "请把窗口拉宽，或打开 %s", cols, visible, png_path)
-    dark_cell, light_cell = "\033[40m  \033[0m", "\033[97;107m██\033[0m"
+    with console_lock():
+        painted = _paint_qr_win(cells, quiet)
+    if painted:
+        log.info("（若扫不出来，请把终端拉宽后重试，或打开 %s）", png_path)
+        return
+    if sys.platform == "win32":
+        log.info("当前输出不是控制台，请打开 %s 扫码", png_path)
+        return
+    dark_cell, light_cell = "\033[40m  \033[0m", "\033[107m  \033[0m"
     pad = light_cell * quiet
     blank = pad + light_cell * len(cells[0]) + pad
     body = "\n".join(

@@ -11,6 +11,7 @@ import logging.handlers
 import os
 import queue
 import sys
+import threading
 from datetime import date
 
 from .paths import user_path                      # noqa: E402
@@ -21,6 +22,15 @@ LOG_DIR = user_path("logs")
 
 _log_listener = None
 _login_logger = None
+_console_handler = None
+
+
+def console_lock():
+    """控制台打印和二维码上色共用这把锁，避免两行叠在一起。"""
+    handler = _console_handler
+    if handler is None or handler.lock is None:
+        return threading.Lock()
+    return handler.lock
 
 
 def _force_utf8_console() -> None:
@@ -92,7 +102,9 @@ def get_logger(name: str = "tankstorm") -> logging.Logger:
     logger.addHandler(fh)
 
     # 控制台写到独立线程：点选窗口卡住的是打印，不能把打人线程一起堵住。
+    global _console_handler
     console = logging.StreamHandler(sys.stdout)
+    _console_handler = console
     console.setLevel(logging.INFO)
     console.setFormatter(fmt)
     q = queue.Queue(-1)

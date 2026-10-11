@@ -470,9 +470,12 @@ def connect(readonly=False, timeout=15):
             _schema_ready = True
         finally:
             setup.close()
+    # URI mode=ro 建不了 WAL 的共享内存文件。Windows 上会间歇报 disk I/O error，
+    # 挂机线程读库一失败就把游戏连接掐掉。query_only 只禁写，仍然能打开 -shm。
     if readonly:
-        uri = Path(DB_FILE).resolve().as_uri() + "?mode=ro"
-        return sqlite3.connect(uri, uri=True, timeout=timeout)
+        conn = sqlite3.connect(DB_FILE, timeout=timeout)
+        conn.execute("PRAGMA query_only=ON")
+        return conn
     return sqlite3.connect(DB_FILE, timeout=timeout)
 
 
@@ -919,17 +922,33 @@ def beijing_clock() -> str:
     return beijing_now().strftime("%H:%M")
 
 
-TIERS = ("初级", "中级", "高级")
+TIERS = ("初级", "中级", "高级", "高级pro")
 
 
 def attack_tier(tier: str) -> bool:
-    """中级和高级可以使用远程扫码攻打。"""
-    return (tier or "初级") in ("中级", "高级")
+    """中级、高级和高级pro可以使用远程扫码攻打。"""
+    return (tier or "初级") in ("中级", "高级", "高级pro")
 
 
 def high_tier(tier: str) -> bool:
-    """只有高级可以使用自动索敌、自动锁敌和清城高级配置。"""
-    return (tier or "初级") == "高级"
+    """高级和高级pro可以使用自动索敌、自动锁敌和清城高级配置。"""
+    return (tier or "初级") in ("高级", "高级pro")
+
+
+def base_tier(tier: str) -> bool:
+    """只有高级pro可以看到和使用基地战。"""
+    return (tier or "") == "高级pro"
+
+
+def user_tier(user_id: int) -> str:
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(tier,'初级') FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+    finally:
+        conn.close()
+    return (row[0] if row else "") or "初级"
 
 
 def account_expired(expires_at: str) -> bool:
@@ -1497,19 +1516,8 @@ def modo_stands(country_id: int) -> list:
     return stands
 
 
-def modo_first_cards(budget) -> int:
-    """两座城共用这些恢复卡。第一座最多用一半，余数留给第二座。0 表示不用卡。"""
-    try:
-        n = int(budget or 0)
-    except (TypeError, ValueError):
-        return 0
-    if n <= 0:
-        return 0
-    return (n + 1) // 2
-
-
 def add_modo_order(user_id: int, cards) -> str:
-    """提交一条刷摩多军团。按攻打号的国家打首都旁边两座。成功返回空字符串。"""
+    """提交一条刷摩多军团。按攻打号的国家打离自己最近的一座。成功返回空字符串。"""
     try:
         n = int(str(cards).strip())
     except (TypeError, ValueError, AttributeError):
@@ -4068,6 +4076,7 @@ DAILY_KIND_LABEL = {
     "daily": "日常任务",
     "pve": "征战世界",
     "fund": "成就拨款",
+    "blast": "爆破兵",
 }
 _DAILY_STATUS = {
     "pending": "排队",
@@ -4487,13 +4496,21 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
             return "拨款次数要在 1 到 999"
         clean["building_id"] = building
         clean["times"] = times
+    elif kind == "blast":
+        try:
+            count = int(str(params.get("count") or "").strip())
+        except (TypeError, ValueError):
+            return "数量要是数字"
+        if not (1 <= count <= 99):
+            return "数量要在 1 到 99"
+        clean["count"] = count
     conn = connect()
     try:
         waiting = conn.execute(
             "SELECT COUNT(*) FROM daily_job WHERE user_id=? AND status IN ('pending','running')",
             (user_id,)).fetchone()[0]
         if int(waiting or 0) >= 3:
-            return "还有日常没做完，先等这几项"
+            return "还有没做完的，先等这几项"
         now = now_ts()
         conn.execute(
             "INSERT INTO daily_job(user_id, kind, params, status, detail, created_at, updated_at) "
@@ -4640,13 +4657,19 @@ def resume_daily_jobs() -> None:
         conn.close()
 
 
-def list_daily_jobs(user_id: int, limit: int = 2) -> list:
+def list_daily_jobs(user_id: int, limit: int = 2, kind: str = "") -> list:
     conn = connect(readonly=True)
     try:
-        rows = conn.execute(
-            "SELECT id, kind, status, detail, created_at FROM daily_job "
-            "WHERE user_id=? ORDER BY id DESC LIMIT ?",
-            (int(user_id), int(limit))).fetchall()
+        if kind:
+            rows = conn.execute(
+                "SELECT id, kind, status, detail, created_at FROM daily_job "
+                "WHERE user_id=? AND kind=? ORDER BY id DESC LIMIT ?",
+                (int(user_id), kind, int(limit))).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, kind, status, detail, created_at FROM daily_job "
+                "WHERE user_id=? AND kind<>'blast' ORDER BY id DESC LIMIT ?",
+                (int(user_id), int(limit))).fetchall()
     finally:
         conn.close()
     from . import daily

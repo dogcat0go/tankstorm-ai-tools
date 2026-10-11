@@ -37,14 +37,13 @@
   python main.py --atk 7826194927704102 --sweep --atk-times 2
   python main.py --atk-city 2302 --sweep          现场翻页打城：先打再看士气，击退/打不过换人
   python main.py --list-cities        列出全部城市 ID 与中文名
-  python main.py --capture            扫码后打开钩子版游戏窗口，实时抓包
+  python main.py --capture            扫码后打开钩子版游戏窗口，实时抓包。开跑前可选空间或大厅
   python main.py --pve                 征战世界，留空只打当前关
   python main.py --pve 20              从当前关打到第 20 关
   python main.py --pve 1-10,15         只打名单里的关（当前关必须在里面）
 """
 
 import argparse
-import fcntl
 import json
 import os
 import sys
@@ -55,7 +54,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from tankstorm import engine, notify, paths, qzone, socket_keepalive  # noqa: E402
 from tankstorm.log import get_logger                 # noqa: E402
-from tankstorm.qq_login import QQSession             # noqa: E402
+from tankstorm.qq_login import QQSession, try_lock  # noqa: E402
 
 log = get_logger()
 
@@ -148,9 +147,7 @@ def _lock_cookie(path: str, fatal: bool = True) -> bool:
         if path in _QQ_LOCKS:
             return True
         fh = open(path + ".lock", "a+")
-        try:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+        if not try_lock(fh):
             fh.close()
             if fatal:
                 log.error("这个号已有进程在用 %s", path)
@@ -284,6 +281,9 @@ def main() -> int:
     g1.add_argument("--import-device", metavar="文件",
                     help="从浏览器搬一次设备记录以启用推送登录（一次性，"
                          "文件里放浏览器的 Cookie；给 - 表示从标准输入读）")
+    g1.add_argument("--platform", default="", metavar="入口",
+                    help="登录入口：空间 或 大厅。"
+                         "--capture 不写时，开跑前会问一句")
 
     g2 = parser.add_argument_group("保活（常驻）")
     g2.add_argument("--keepalive", action="store_true",
@@ -368,7 +368,8 @@ def main() -> int:
     g4 = parser.add_argument_group("其它")
     g4.add_argument("--capture", action="store_true",
                     help="扫码登录后打开钩子版 Flash 窗口，实时抓游戏明文包。"
-                         "不要用 QQ 游戏大厅。请先停掉 --keepalive")
+                         "登录可选空间或大厅。游戏窗口仍是 flash_host，"
+                         "不要开官方大厅客户端。请先停掉 --keepalive")
     g4.add_argument("--task", help="（旧的 HTTP 接口任务，见 endpoints.json）")
     g4.add_argument("--real", action="store_true",
                     help="（已废弃，保留兼容：现在 --daily 一律真实发送）")
@@ -474,6 +475,27 @@ def main() -> int:
         return 1
 
     qq = open_qq(config, args.qq)
+    if args.platform or args.capture:
+        raw = (args.platform or "").strip()
+        if not raw and args.capture and sys.stdin.isatty():
+            default = qq.platform
+            print(f"这次抓包从哪登录？空间 / 大厅（直接回车 = {default}）", flush=True)
+            raw = input().strip() or default
+        elif not raw:
+            raw = qq.platform
+        hall = {"大厅", "hall", "qqgame", "游戏大厅", "qq游戏大厅", "2"}
+        qzone = {"空间", "qzone", "qq空间", "1"}
+        key = raw.lower()
+        if raw in hall or key in hall:
+            plat = "大厅"
+        elif raw in qzone or key in qzone:
+            plat = "空间"
+        else:
+            log.error("登录入口只能是空间或大厅，收到：%s", raw)
+            return 1
+        qq.set_platform(plat)
+        config.setdefault("登录", {})["平台"] = plat
+        log.info("这次登录走%s", plat)
 
     # 一次性引导：把浏览器的设备记录搬进来，之后推送登录才有 dev_mid_sig 可用。
     # pt_fetch_dev_uin 只能给已有的续期，签发不出第一个，所以只能这么来。

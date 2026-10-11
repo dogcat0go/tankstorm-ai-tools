@@ -7,6 +7,7 @@ import AccountBar from "./pages/AccountBar.vue";
 import AttackStatus from "./pages/AttackStatus.vue";
 import AttackPage from "./pages/AttackPage.vue";
 import DailyPage from "./pages/DailyPage.vue";
+import BasePage from "./pages/BasePage.vue";
 import WatchPage from "./pages/WatchPage.vue";
 import QqPage from "./pages/QqPage.vue";
 import ProfilePage from "./pages/ProfilePage.vue";
@@ -76,6 +77,9 @@ const dailyTasks = ref([]);
 const campaignTasks = computed(() => dailyTasks.value.filter((it) => it.extra));
 const progressTasks = computed(() => dailyTasks.value.filter((it) => !it.extra));
 const dailyJobs = ref([]);
+const baseCount = ref("1");
+const baseJobs = ref([]);
+const baseNote = ref("");
 const pveStages = ref("");
 let pveStagesReady = false;
 const fundBuilding = ref("");
@@ -184,6 +188,31 @@ async function saveDailyAt() {
   dailyAtNote.value = data.schedule ? "已设定每天 " + data.schedule : "已关掉定时";
 }
 
+async function refreshBase() {
+  if (!me.value) {
+    baseJobs.value = [];
+    return;
+  }
+  const data = await api("/api/base");
+  dailyQq.value = data.qq || dailyQq.value;
+  baseJobs.value = data.jobs || [];
+}
+
+async function runBase(count) {
+  showErr("");
+  baseNote.value = "";
+  await api("/api/base", { count });
+  baseNote.value = "已交给绑定的攻打号";
+  await refreshBase();
+  await refreshAttacks();
+}
+
+async function cancelBase(it) {
+  showErr("", "base");
+  await api("/api/daily/cancel", { id: it.id });
+  await refreshBase();
+}
+
 async function runDaily(kind, extra) {
   showErr("");
   dailyNote.value = "";
@@ -196,6 +225,7 @@ async function runDaily(kind, extra) {
 function pickTab(key) {
   tab.value = key;
   if (key === "daily") refreshDaily().catch((e) => showErr(e.message, "daily"));
+  if (key === "base") refreshBase().catch((e) => showErr(e.message, "base"));
 }
 
 function openProfile() {
@@ -328,6 +358,7 @@ async function loadMe() {
 
 function takeUser(user) {
   me.value = user;
+  if (!user.base_war && tab.value === "base") tab.value = "attack";
   pveStagesReady = false;
   dailyAtReady = false;
   qqTarget.value = user.qq_target || "";
@@ -781,6 +812,7 @@ onMounted(async () => {
     if (!me.value) return;
     refreshAttacks().catch(() => {});
     if (tab.value === "daily") refreshDaily().catch(() => {});
+    if (tab.value === "base") refreshBase().catch(() => {});
   }, 2000);
   clockTimer = setInterval(() => {
     clock.value = Date.now();
@@ -851,6 +883,7 @@ onUnmounted(() => {
       <el-menu v-if="toolsOn" class="page-nav" mode="horizontal" :ellipsis="false" :default-active="sideOn ? '' : tab" :key="tab" aria-label="功能" @select="pickTab">
         <el-menu-item index="attack">国战助手</el-menu-item>
         <el-menu-item index="daily">日常任务</el-menu-item>
+        <el-menu-item v-if="me && me.base_war" index="base">基地战助手</el-menu-item>
         <el-menu-item index="watch">监控敌人</el-menu-item>
       </el-menu>
       <ProfilePage
@@ -975,6 +1008,18 @@ onUnmounted(() => {
         :order-status="orderStatus"
         :order-open="orderOpen"
         :hold-cell="holdCell"
+        :show-err="showErr"
+      />
+      <BasePage
+        v-show="toolsOn && me && me.base_war && tab === 'base'"
+        v-model:count="baseCount"
+        :daily-qq="dailyQq"
+        :jobs="baseJobs"
+        :note="baseNote"
+        :err="err"
+        :err-at="errAt"
+        :run-blast="runBase"
+        :cancel-job="cancelBase"
         :show-err="showErr"
       />
     </template>

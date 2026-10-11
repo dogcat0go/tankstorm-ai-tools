@@ -40,6 +40,7 @@ ORDER_LAST 里的排到末尾。
 """
 
 import json
+import math
 import os
 import re
 import select
@@ -1868,6 +1869,213 @@ _HERO_CENTER = 56
 _TRAIN_METAL = 10000          # HeroBaseData.trainCostR1，表里 42 个英雄全是这个数
 _TRAIN_OIL = 5000             # trainCostR2，同样全表一个价
 _HERO_LEVEL_CAP = 80          # HERO_LEVEL_TOP_LIMIT，到了就不再培养
+
+# 爆破兵兵营。客户端 getBuildingByType(29)，不写死 10004。
+_BLAST_BUILDING = 29
+_BLAST_ARMY = 7
+
+
+def _blast_medal(seconds, qq_hall, yellow, blue):
+    """STORE.TimeToCredits 的 1 参调用。返回要花的勋章，0 才能发快速制造。"""
+    t = int(seconds)
+    if t <= 0:
+        return 0
+    if qq_hall and t <= 600 and blue:
+        return 0
+    if not qq_hall and t <= 600 and yellow:
+        return 0
+    if t <= 300:
+        return 0
+    a = math.ceil((t + 400000) ** 0.47 - 429.32)
+    b = math.ceil((t + 700000) ** 0.514 - 1010.8)
+    cost = a if a > b else b
+    if cost < 1:
+        cost = 1 if t > 300 else 0
+    return int(cost) * 5
+
+
+def _blast_cap(qq_hall, yellow, blue):
+    """剩余秒数降到这以下，加速才是 0 勋章。"""
+    if (qq_hall and blue) or (not qq_hall and yellow):
+        return 600
+    return 300
+
+
+def _blast_flags(rec, config):
+    init = (rec.latest.get("RseInit") or (None, None))[1] if rec else None
+    yellow = blue = False
+    if isinstance(init, dict):
+        yellow = init.get("isYellowVip") is True
+        blue = any(init.get(k) is True for k in (
+            "isQHallDmd", "isQHallDmdYear",
+            "isHighQHallDmd", "isHighQHallDmdYear"))
+    pf = str(getattr(rec, "login_pf", "") or "")
+    if pf == "qqgame":
+        qq_hall = True
+    elif pf in ("qzone", "pengyou"):
+        qq_hall = False
+    else:
+        plat = str(((config or {}).get("登录") or {}).get("平台") or "").strip().lower()
+        qq_hall = plat in {"大厅", "hall", "qqgame", "游戏大厅", "qq游戏大厅", "2"}
+    return qq_hall, yellow, blue
+
+
+def _blast_queue(building):
+    """兵营生产槽。(兵种, 正在造的兵种, 剩余秒)。没有槽就是空闲。读不懂返回 None。
+
+    2026-10-11 18:06 登录包：类型 29 的生产槽是 field25，
+    field3 是正在造的兵种，field4 是剩余秒。空闲时是 {field3:0, field4:0}。
+    field20 在这份包里是整数，不是队列。
+    """
+    raw = building.get("field25")
+    if not isinstance(raw, dict):
+        alt = building.get("field20")
+        raw = alt if isinstance(alt, dict) else None
+    if raw is None:
+        return 0, 0, 0
+    left = _one(raw.get("field4"))
+    making = _one(raw.get("field3"))
+    army = _one(raw.get("field1"))
+    if left is None and making is None and army is None:
+        return 0, 0, 0
+    if left is None or left < 0:
+        return None
+    return army or 0, making or 0, left
+
+
+def _wallet_credit(data):
+    if not isinstance(data, dict):
+        return None
+    for key in ("credit", "credits"):
+        raw = data.get(key)
+        if isinstance(raw, bool):
+            continue
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, str) and raw.lstrip("-").isdigit():
+            return int(raw)
+    return None
+
+
+def _blast_once(rec, sock, config, assume_idle=False, on_progress=None):
+    """造一个爆破兵。快速制造只在勋章花费为 0 时发，credit 固定写 0。
+
+    assume_idle：上一只刚造完。登录包里的队列还是旧的，按空闲开工。
+    """
+    load = (rec.latest.get("RseLoad") or (None, None))[1] if rec else None
+    if not isinstance(load, dict):
+        return False, "读不到基地数据，不造爆破兵"
+    buildings = _rows(load.get("buildingdata"))
+    if not buildings:
+        return False, "读不到建筑，不造爆破兵"
+    barracks = None
+    for b in buildings:
+        if b.get("field5") != _BLAST_BUILDING:
+            continue
+        bid = _one(b.get("field4"))
+        if not bid or bid <= 0:
+            continue
+        queue = _blast_queue(b)
+        if queue is None:
+            return False, f"兵营 {bid} 的生产状态读不懂，不造"
+        barracks = (bid, queue)
+        if queue[2] > 0:
+            break
+    if barracks is None:
+        return False, "读不到兵营，不造爆破兵"
+    bid, (army, making, left) = barracks
+    if assume_idle:
+        army, making, left = 0, 0, 0
+    elif left > 0 and making not in (0, _BLAST_ARMY) and army not in (0, _BLAST_ARMY):
+        return False, f"兵营正在造别的兵（{making or army}），不打断"
+
+    qq_hall, yellow, blue = _blast_flags(rec, config)
+    wallet = None
+
+    def send(kind, fields):
+        mark = rec.seq_mark()
+        sender.send_frame(sock, "0414",
+                          encode_message(fields, omit_zero=False),
+                          rec.rc4_c2s)
+        return _await_response(sock, rec, "RseBuildingModify", mark, 6,
+                               want=lambda d, kind=kind: d.get("type") == kind)
+
+    if left <= 0:
+        _nap(0.4)
+        got = send(1, {2: ("int32", bid), 3: ("int32", 1),
+                       6: ("int32", _BLAST_ARMY)})
+        if not isinstance(got, dict):
+            return False, "开工没有回包"
+        err = got.get("error")
+        if not isinstance(err, int) or isinstance(err, bool) or err != 0:
+            return False, f"开工服务器返回 error={err}"
+        wallet = _wallet_credit(got)
+        building = got.get("building")
+        queue = _blast_queue(building) if isinstance(building, dict) else None
+        if queue is None:
+            return False, "开工回包读不到剩余时间，不加速"
+        _army, making, left = queue
+        if left <= 0 or making not in (0, _BLAST_ARMY):
+            return False, f"开工后没有进入爆破兵队列（剩余 {left} 秒）"
+
+    if wallet is None:
+        for name in ("RseUserInfo", "RseInit", "RseSave"):
+            wallet = _wallet_credit((rec.latest.get(name) or (None, None))[1])
+            if wallet is not None:
+                break
+
+    cost = _blast_medal(left, qq_hall, yellow, blue)
+    cap = _blast_cap(qq_hall, yellow, blue)
+    if cost != 0:
+        gap = left - cap
+        if 0 < gap <= 900:
+            if on_progress:
+                on_progress(f"剩余 {left} 秒，要 {cost} 勋章，等到 0 勋章再加速")
+            _nap(gap + 2)
+            left -= int(gap + 2)
+            if left < 1:
+                left = 1
+            cost = _blast_medal(left, qq_hall, yellow, blue)
+            gap = left - cap
+        if cost != 0:
+            return False, f"剩余 {left} 秒，加速要 {cost} 勋章，不加速"
+
+    _nap(0.4)
+    got = send(37, {2: ("int32", bid), 3: ("int32", 37),
+                    10: ("int32", 0), 11: ("int32", left)})
+    if not isinstance(got, dict):
+        return False, "快速制造没有回包"
+    err = got.get("error")
+    after = _wallet_credit(got)
+    if wallet is not None and after is not None and after < wallet:
+        return False, f"勋章从 {wallet} 变成 {after}，已停"
+    if not isinstance(err, int) or isinstance(err, bool) or err != 0:
+        return False, f"快速制造服务器返回 error={err}"
+    return True, f"成功：兵营 {bid} 按剩余 {left} 秒、0 勋章加速完成"
+
+
+def daily_blast(rec, sock, config, count=1, on_progress=None):
+    """按数量循环造爆破兵。每一只都要等到 0 勋章才加速。"""
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        return False, "数量不对"
+    if not 1 <= count <= 99:
+        return False, "数量要在 1 到 99"
+    done = 0
+    assume_idle = False
+    while done < count:
+        raise_if_stopped()
+        ok, why = _blast_once(
+            rec, sock, config, assume_idle=assume_idle, on_progress=on_progress)
+        if not ok:
+            head = f"完成 {done}/{count}。" if done else ""
+            return False, head + why
+        done += 1
+        assume_idle = True
+        if on_progress:
+            on_progress(f"爆破兵 {done}/{count}")
+    return True, f"成功：造了 {done} 个爆破兵，都是 0 勋章加速"
 
 
 def _one(v):

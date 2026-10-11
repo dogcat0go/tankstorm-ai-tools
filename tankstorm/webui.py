@@ -247,7 +247,9 @@ def _handler(config: dict):
                 if not int(user.get("region") or 0):
                     from .socket_keepalive import schedule_region_from_login
                     schedule_region_from_login(user["id"])
-                _json(self, 200, {"user": _user_out(user), "invite": bool(invite)})
+                who = _user_out(user)
+                who["storm_day"] = citydb.storm_rejects_day(user["id"])
+                _json(self, 200, {"user": who, "invite": bool(invite)})
                 return
             if path == "/api/cities":
                 user = self._user()
@@ -298,6 +300,7 @@ def _handler(config: dict):
                     "items": citydb.list_attack_orders(user["id"]),
                     "process": citydb.attack_status(user["id"]),
                     "storms": citydb.list_storm_rejects(user["id"]),
+                    "storm_day": citydb.storm_rejects_day(user["id"]),
                 })
                 return
             if path == "/api/daily":

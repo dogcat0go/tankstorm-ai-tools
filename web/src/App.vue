@@ -223,6 +223,9 @@ async function refreshAttacks() {
   const atk = await api("/api/attacks");
   orders.value = atk.items || [];
   storms.value = atk.storms || [];
+  if (me.value && typeof atk.storm_day === "number") {
+    me.value = { ...me.value, storm_day: atk.storm_day };
+  }
   proc.value = atk.process || null;
   const left = proc.value && proc.value.hold_left;
   holdUntil.value = left > 0 ? Date.now() + left * 1000 : 0;

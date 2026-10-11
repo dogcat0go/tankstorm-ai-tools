@@ -29,7 +29,7 @@
 任务顺序
 --------
 "每日任务领奖"(RceDailyTask) 排在会产生进度的任务之后，先领就漏了。
-将领授勋不推进它，再排在领奖后面。TASKS 表的顺序即执行顺序，
+将领授勋和加强授勋不推进它，再排在领奖后面。TASKS 表的顺序即执行顺序，
 ORDER_LAST 里的排到末尾。
 
 参数来源
@@ -501,8 +501,8 @@ DANGER_FIELD = re.compile(
 SAFE_FIELDS = {("0463", "count")}
 
 # 周任务、每日任务领的是前面动作累积出来的奖励，所以排在后面。
-# 将领授勋不推进这两项，再排在它们之后。
-ORDER_LAST = {"每日任务", "周任务", "将领授勋"}
+# 将领授勋和加强授勋不推进这两项，再排在它们之后。
+ORDER_LAST = {"每日任务", "周任务", "将领授勋", "将领加强授勋"}
 
 # 军事演习会把有人的场地逐个打下去，服务器回 ret=4，最后把连接打断。
 # 矿区争夺同样不稳。先不做。开关保持关，最近执行里写明。
@@ -1182,6 +1182,16 @@ TASKS = [
        "nCastNum>0 才发。不带点券、不用道具。回包看 nType 和 nResult",
        runner=lambda rec, sock, config: daily_medal(rec, sock, config)),
 
+    # 2026-10-11 抓包。查询仍是 type=1。加强拨款是 type=17，只写 type。
+    # nStrongCastNum 15→8，nStrongTokenNum 78→85，nGetToken 为 7 个 1。
+    # 金属和石油各少 3500 万，合每枚 500 万。普通铸造次数和普通代币不动。
+    _t("将领加强授勋", "将领·加强授勋拨款", "04c1", "RceMedalHonorOpt",
+       {}, "实测",
+       "2026-10-11：同一条查询 {type:1}，nStrongCastNum>0 才发 {type:17}。"
+       "不带点券、不用道具。每枚加强代币扣 500 万金属和 500 万石油，"
+       "付不起的次数留下。回包看 nType 和 nResult",
+       runner=lambda rec, sock, config: daily_medal(rec, sock, config, strong=True)),
+
     # 将领和参谋是两份独立的技能书，各领各的。原先是一个任务 max_per_day=2，
     # 但 fields 写死 ActiveType=0，跑第二次只是把将领那份又领一遍。
     # 8/10 抓包实测客户端确实发了两组：{0,0}→{1,0} 和 {0,1}→{1,1}。
@@ -1505,8 +1515,8 @@ def ordered_tasks():
     """按执行顺序返回任务：普通任务在前，ORDER_LAST 里的排到最后。"""
     head = [t for t in TASKS if t.key not in ORDER_LAST]
     tail = [t for t in TASKS if t.key in ORDER_LAST]
-    # 尾部内部再排：周任务 → 每日任务 → 将领授勋
-    rank = {"周任务": 0, "每日任务": 1, "将领授勋": 2}
+    # 尾部内部再排：周任务 → 每日任务 → 将领授勋 → 将领加强授勋
+    rank = {"周任务": 0, "每日任务": 1, "将领授勋": 2, "将领加强授勋": 3}
     tail.sort(key=lambda t: rank.get(t.key, 9))
     return head + tail
 
@@ -1933,12 +1943,20 @@ def _ready_heroes(panel, busy):
     return ready
 
 
-def daily_medal(rec, sock, config):
-    """将领授勋拨款。2026-10-10 抓包：开将领面板后查 nCastNum，大于 0 才发 type=11。
+def daily_medal(rec, sock, config, strong=False):
+    """将领授勋拨款。普通发 type=11，加强发 type=17。
 
-    一次请求只兑掉一部分（实测 42→20，代币 +22），所以拨到 0 或不再减少为止。
-    拨款包只写 type。不带点券、不用道具。回包步骤是 nType，nResult=0 才算成。
+    先开将领面板，再 type=1 查询。普通看 nCastNum，加强看 nStrongCastNum，
+    大于 0 才拨款。拨款包只写 type，不带点券、不用道具。
+    一次请求只兑掉付得起的那一部分，拨到 0 或不再减少为止。
+    回包步骤是 nType，nResult=0 才算成。
+    加强这一档扣金属和石油。2026-10-11 实测 7 枚各扣 500 万金属和 500 万石油。
     """
+    cast_key = "nStrongCastNum" if strong else "nCastNum"
+    token_key = "nStrongTokenNum" if strong else "nTokenNum"
+    action = 17 if strong else 11
+    kind = "加强" if strong else ""
+
     def _num(data, key):
         v = data.get(key) if isinstance(data, dict) else None
         if isinstance(v, bool) or not isinstance(v, int):
@@ -1958,26 +1976,26 @@ def daily_medal(rec, sock, config):
     panel = _await_response(
         sock, rec, "RseMedalHonorOpt", before, 6.0,
         want=lambda d: isinstance(d, dict) and d.get("nType") == 1)
-    left = _num(panel, "nCastNum")
-    tokens = _num(panel, "nTokenNum")
+    left = _num(panel, cast_key)
+    tokens = _num(panel, token_key)
     if panel is None or left is None:
-        return False, "失败：未收到授勋面板，读不到铸造次数"
+        return False, f"失败：未收到授勋面板，读不到{kind}铸造次数"
     if left <= 0:
-        return True, "成功：没有可拨款的铸造次数"
+        return True, f"成功：没有可拨款的{kind}铸造次数"
     start = tokens
     rounds = 0
     while left > 0 and rounds < 20:
         raise_if_stopped()
         mark = rec.seq_mark() if rec else 0
         sender.send_frame(sock, "04c1",
-                          encode_message({2: ("int32", 11)}),
+                          encode_message({2: ("int32", action)}),
                           rec.rc4_c2s)
         got = _await_response(
             sock, rec, "RseMedalHonorOpt", mark, 6.0,
-            want=lambda d: isinstance(d, dict) and d.get("nType") == 11)
+            want=lambda d: isinstance(d, dict) and d.get("nType") == action)
         result = _num(got, "nResult")
-        now = _num(got, "nCastNum")
-        now_tokens = _num(got, "nTokenNum")
+        now = _num(got, cast_key)
+        now_tokens = _num(got, token_key)
         if got is None or result is None:
             if rounds:
                 break
@@ -1994,11 +2012,11 @@ def daily_medal(rec, sock, config):
             tokens = now_tokens
         _nap(0.4)
     if rounds == 0:
-        return False, "失败：铸造次数没有减少"
+        return False, f"失败：{kind}铸造次数没有减少"
     gain = ""
     if isinstance(start, int) and isinstance(tokens, int):
-        gain = f"，代币 {start}→{tokens}"
-    tail = "铸造次数已用完" if left <= 0 else f"还剩铸造 {left} 次"
+        gain = f"，{kind}代币 {start}→{tokens}"
+    tail = f"{kind}铸造次数已用完" if left <= 0 else f"还剩{kind}铸造 {left} 次"
     return True, f"成功：拨款 {rounds} 次{gain}，{tail}"
 
 

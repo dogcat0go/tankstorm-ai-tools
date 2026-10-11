@@ -33,7 +33,7 @@ import time
 from contextlib import contextmanager
 
 from . import daily, notify, protocol, sender
-from .log import get_logger
+from .log import get_logger, task_log
 from .qzone import get_game_context
 from .recorder import Recorder
 
@@ -1820,6 +1820,7 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
     def _show(text):
         citydb.touch_daily_job(job["id"], text)
         citydb.set_attack_status("daily", task=label, note=text)
+        task_log(citydb.attack_context_qq(), label, text)
 
     def _show_stage(stage):
         n = daily.current_campaign_round()
@@ -1835,6 +1836,7 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
         if citydb.daily_job_stopped():
             raise daily.Stopped()
         citydb.set_attack_status("daily", task=label)
+        task_log(citydb.attack_context_qq(), label, "开始")
         log.info("开始做日常：%s", label)
         if rec and getattr(rec, "auto_reject", False):
             class _QQ:
@@ -1901,13 +1903,17 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
             citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
         else:
             citydb.finish_daily_job(job["id"], "failed", "没有这项日常")
+            task_log(citydb.attack_context_qq(), label, "没有这项日常")
     except daily.Stopped:
         if citydb.shutdown_due():
             citydb.shelve_shutdown_work()
+            task_log(citydb.attack_context_qq(), label, "定时关闭，停下")
             log.info("定时关闭，日常停下：%s", label)
         else:
+            task_log(citydb.attack_context_qq(), label, "已手动关停")
             log.info("日常已手动关停：%s", label)
     except OSError:
+        task_log(citydb.attack_context_qq(), label, "连接中断")
         citydb.set_attack_status("daily", task=label, note="连接中断")
         if kind == "daily":
             citydb.touch_daily_job(job["id"], "连接中断，重连后再做")
@@ -1916,9 +1922,11 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
         raise
     except Exception as exc:
         log.info("日常没做成", exc_info=True)
+        task_log(citydb.attack_context_qq(), label, f"没做成：{exc}")
         citydb.set_attack_status("daily", task=label, note=str(exc))
         citydb.finish_daily_job(job["id"], "failed", str(exc))
     else:
+        task_log(citydb.attack_context_qq(), label, "这一项结束")
         log.info("日常做完：%s", label)
     finally:
         citydb.set_running_daily(0)

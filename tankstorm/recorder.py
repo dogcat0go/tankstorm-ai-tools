@@ -286,6 +286,7 @@ class Recorder:
         # 于是 `到达时刻 > 发送时刻` 不成立，明明收到了却判成超时。
         # 序号是精确的，不受时钟粒度影响。
         self.latest = {}
+        self.latest_at = {}
         self._latest_seq = 0
         # 同名消息的近几条历史 {消息名: [(序号, 字段字典), ...]}。
         # 服务器常常连着推同名但 type 不同的两条（实测 RseWPCBaseOpen 先来
@@ -643,6 +644,7 @@ class Recorder:
                             self._latest_seq += 1
                             nm = rec.get("msg", op)
                             self.latest[nm] = (self._latest_seq, data)
+                            self.latest_at[nm] = time.monotonic()
                             hist = self.recent.setdefault(nm, [])
                             hist.append((self._latest_seq, data))
                             # 城市玩家列表（RseCountryUserLst）一条城可能推很多人，

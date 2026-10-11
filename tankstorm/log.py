@@ -87,6 +87,35 @@ def get_login_logger() -> logging.Logger:
     return logger
 
 
+_task_loggers = {}
+_task_log_lock = threading.Lock()
+
+
+def task_log(qq: str, task: str, msg: str) -> None:
+    """按攻打 QQ 和任务名各写一份日志。文件在 logs/task/QQ/任务名.log。"""
+    digits = "".join(ch for ch in str(qq or "") if ch.isdigit())
+    who = digits or "未知QQ"
+    title = " ".join(str(task or "未知任务").split())[:40] or "未知任务"
+    safe = "".join(ch for ch in title if ch not in '\\/:*?"<>|') or "任务"
+    key = (who, safe)
+    with _task_log_lock:
+        logger = _task_loggers.get(key)
+        if logger is None:
+            logger = logging.getLogger(f"tankstorm.task.{who}.{safe}")
+            logger.setLevel(logging.INFO)
+            logger.propagate = False
+            folder = os.path.join(LOG_DIR, "task", who)
+            os.makedirs(folder, exist_ok=True)
+            fh = logging.handlers.TimedRotatingFileHandler(
+                os.path.join(folder, safe + ".log"),
+                when="midnight", backupCount=14, encoding="utf-8")
+            fh.setFormatter(logging.Formatter(
+                "%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+            logger.addHandler(fh)
+            _task_loggers[key] = logger
+    logger.info("%s %s %s", who, title, " ".join(str(msg or "").split()))
+
+
 def get_logger(name: str = "tankstorm") -> logging.Logger:
     logger = logging.getLogger(name)
     if logger.handlers:

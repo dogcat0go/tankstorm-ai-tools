@@ -50,7 +50,7 @@ from datetime import date
 
 from . import schema as _schema
 from . import sender
-from .log import LOG_DIR, get_logger
+from .log import LOG_DIR, get_logger, task_log
 from .proto_encode import encode_message
 
 log = get_logger()
@@ -1901,6 +1901,19 @@ def _blast_cap(qq_hall, yellow, blue):
     return 300
 
 
+def _passed(mark):
+    """从 monotonic 时刻到现在过了多少秒。没有时刻就返回 None。"""
+    if isinstance(mark, bool) or not isinstance(mark, (int, float)):
+        return None
+    passed = int(time.monotonic() - mark)
+    return 0 if passed < 0 else passed
+
+
+def _blast_log(text):
+    from . import citydb
+    task_log(citydb.attack_context_qq(), "爆破兵", text)
+
+
 def _blast_flags(rec, config):
     init = (rec.latest.get("RseInit") or (None, None))[1] if rec else None
     yellow = blue = False
@@ -2012,8 +2025,27 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None):
     elif left > 0 and making not in (0, _BLAST_ARMY) and army not in (0, _BLAST_ARMY):
         return False, f"兵营正在造别的兵（{making or army}），不打断"
 
+    seen_left, seen_at = left, time.monotonic()
+    if not assume_idle and left > 0:
+        snap = (getattr(rec, "latest_at", {}) or {}).get("RseLoad") if rec else None
+        passed = _passed(snap)
+        aged = left if passed is None else max(0, left - passed)
+        _blast_log(
+            f"兵营 {bid} 登录包剩余 {left} 秒，这份数据已过 "
+            f"{'未知' if passed is None else passed} 秒，按 {aged} 秒算")
+        if passed is not None and aged <= 0:
+            _blast_log(f"兵营 {bid} 里那一只剩余时间已经走完，算进数量")
+            return True, f"兵营 {bid} 里那一只剩余时间已经走完，算进数量"
+        seen_left, seen_at = aged, time.monotonic()
+
     qq_hall, yellow, blue = _blast_flags(rec, config)
     wallet = None
+
+    def current_left():
+        passed = _passed(seen_at)
+        if passed is None:
+            return int(seen_left)
+        return max(0, int(seen_left) - passed)
 
     def send(kind, fields):
         mark = rec.seq_mark()
@@ -2040,6 +2072,8 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None):
         _army, making, left = queue
         if left <= 0 or making not in (0, _BLAST_ARMY):
             return False, f"开工后没有进入爆破兵队列（剩余 {left} 秒）"
+        seen_left, seen_at = left, time.monotonic()
+        _blast_log(f"兵营 {bid} 开工，服务器剩余 {left} 秒")
 
     if wallet is None:
         for name in ("RseUserInfo", "RseInit", "RseSave"):
@@ -2047,33 +2081,49 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None):
             if wallet is not None:
                 break
 
-    cost = _blast_medal(left, qq_hall, yellow, blue)
+    def medal_now():
+        sec = current_left()
+        return sec, _blast_medal(sec, qq_hall, yellow, blue)
+
+    left, cost = medal_now()
     cap = _blast_cap(qq_hall, yellow, blue)
     if cost != 0:
         gap = left - cap
         if 0 < gap <= 900:
             if on_progress:
                 on_progress(f"剩余 {left} 秒，要 {cost} 勋章，等到 0 勋章再加速")
+            _blast_log(
+                f"兵营 {bid} 剩余 {left} 秒，要 {cost} 勋章，"
+                f"大厅={qq_hall} 黄钻={yellow} 蓝钻={blue}，等到 0 勋章")
             _nap(gap + 2)
-            left -= int(gap + 2)
-            if left < 1:
-                left = 1
-            cost = _blast_medal(left, qq_hall, yellow, blue)
-            gap = left - cap
+            left, cost = medal_now()
         if cost != 0:
+            _blast_log(f"兵营 {bid} 剩余 {left} 秒，加速要 {cost} 勋章，不发")
             return False, f"剩余 {left} 秒，加速要 {cost} 勋章，不加速"
 
     _nap(0.4)
+    left, cost = medal_now()
+    if cost != 0:
+        _blast_log(f"兵营 {bid} 等到发出时剩余 {left} 秒，要 {cost} 勋章，不发")
+        return False, f"剩余 {left} 秒，加速要 {cost} 勋章，不加速"
+    if left < 1:
+        left = 1
+    _blast_log(
+        f"快速制造 兵营 {bid} time={left} 勋章花费={cost} "
+        f"大厅={qq_hall} 黄钻={yellow} 蓝钻={blue} 当前勋章={wallet}")
     got = send(37, {2: ("int32", bid), 3: ("int32", 37),
                     10: ("int32", 0), 11: ("int32", left)})
     if not isinstance(got, dict):
+        _blast_log(f"快速制造没有回包 兵营 {bid} time={left}")
         return False, "快速制造没有回包"
     err = got.get("error")
     after = _wallet_credit(got)
     if wallet is not None and after is not None and after < wallet:
+        _blast_log(f"勋章从 {wallet} 变成 {after}，已停 兵营 {bid} time={left}")
         return False, f"勋章从 {wallet} 变成 {after}，已停"
     if not isinstance(err, int) or isinstance(err, bool) or err != 0:
-        return False, f"快速制造服务器返回 error={err}"
+        _blast_log(f"快速制造被拒 error={err} 兵营 {bid} time={left} 勋章 {wallet}->{after}")
+        return False, f"快速制造服务器返回 error={err}，兵营 {bid}，发出的剩余时间 {left} 秒"
     army = got.get("army")
     new_id = army.get("field2") if isinstance(army, dict) else 0
     note_blast_count(rec, new_id if isinstance(new_id, int) and not isinstance(new_id, bool) else 0)

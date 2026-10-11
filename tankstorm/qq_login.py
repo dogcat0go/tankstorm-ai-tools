@@ -535,7 +535,7 @@ class QQSession:
         self._load_cookies()
         found = self._detect_platform()
         if found:
-            self._platform = found
+            self.set_platform(found)
 
     # ---------- cookie 持久化 ----------
 
@@ -677,9 +677,14 @@ class QQSession:
         return raw.lstrip("o0")
 
     def set_platform(self, name) -> str:
-        """这次扫码/续期走空间还是大厅。写进 cookie，下次打开同一份票据还能认。"""
+        """这次扫码/续期走空间还是大厅。写进 cookie，下次打开同一份票据还能认。
+
+        值只用 hall/qzone，域名用 ts.local：中文进不了 Cookie 头，也不能把自定义
+        标记发给 qq.com。
+        """
         self._platform = normalize_platform(name)
-        self._set_cookie(PLATFORM_COOKIE, self._platform, domain=".qq.com")
+        marker = "hall" if self._platform == PLAT_HALL else "qzone"
+        self._set_cookie(PLATFORM_COOKIE, marker, domain="ts.local")
         return self._platform
 
     def apply_config_platform(self, config: dict | None) -> None:

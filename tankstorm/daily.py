@@ -2091,17 +2091,24 @@ def daily_blast(rec, sock, config, count=1, on_progress=None):
     note_blast_count(rec)
     done = 0
     assume_idle = False
+
+    def progress(text=""):
+        if not on_progress:
+            return
+        head = f"爆破兵 {done}/{count}"
+        on_progress(f"{head}，{text}" if text else head)
+
+    progress()
     while done < count:
         raise_if_stopped()
         ok, why = _blast_once(
-            rec, sock, config, assume_idle=assume_idle, on_progress=on_progress)
+            rec, sock, config, assume_idle=assume_idle, on_progress=progress)
         if not ok:
             head = f"完成 {done}/{count}。" if done else ""
             return False, head + why
         done += 1
         assume_idle = True
-        if on_progress:
-            on_progress(f"爆破兵 {done}/{count}")
+        progress()
     return True, f"成功：造了 {done} 个爆破兵，都是 0 勋章加速"
 
 

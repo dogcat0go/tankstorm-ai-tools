@@ -3385,7 +3385,7 @@ def set_attack_status(phase: str, task: str = "", note: str = "") -> None:
     here = _kept_here(prev)
     if here:
         data["here"] = here
-    for key in ("morale", "power", "blast"):
+    for key in ("morale", "power", "blast", "metal", "oil", "credit"):
         val = _kept_int(prev, key)
         if val is not None:
             data[key] = val
@@ -3473,6 +3473,43 @@ def attack_blast_count(user_id: int):
     """网页上的当前爆破兵数量。还没读到兵册是 None，可以是 0。"""
     parsed, _seen, _online = _read_user_proc(int(user_id))
     return _kept_int(parsed, "blast")
+
+
+def note_attack_wallet(metal=None, oil=None, credit=None) -> bool:
+    """记下基地里的金属、石油和勋章。没变就不写库。写失败返回 False。"""
+    vals = {}
+    for key, raw in (("metal", metal), ("oil", oil), ("credit", credit)):
+        if raw is None:
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            continue
+        vals[key] = int(raw)
+    if not vals:
+        return False
+    if not attack_context_user() and not attack_context_qq():
+        return False
+    name = _mark_name("proc")
+    try:
+        data = _proc_payload(_signal_value(name))
+        if not data or data.get("phase") == "offline":
+            return False
+        if all(data.get(key) == val for key, val in vals.items()):
+            return True
+        data.update(vals)
+        _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def attack_wallet(user_id: int) -> dict:
+    """网页上的基地金属、石油和勋章。还没读到的那一项是 None，可以是 0。"""
+    parsed, _seen, _online = _read_user_proc(int(user_id))
+    return {
+        "metal": _kept_int(parsed, "metal"),
+        "oil": _kept_int(parsed, "oil"),
+        "credit": _kept_int(parsed, "credit"),
+    }
 
 
 def note_attack_move_text(text: str, user_id: int = 0) -> None:

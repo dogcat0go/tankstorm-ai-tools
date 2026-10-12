@@ -314,9 +314,13 @@ def _handler(config: dict):
                 if not citydb.base_tier(user.get("tier") or ""):
                     _json(self, 403, {"error": "基地战需要高级pro订阅"})
                     return
+                wallet = citydb.attack_wallet(user["id"])
                 _json(self, 200, {
                     "qq": citydb.attack_qq_of(user["id"]),
                     "blast": citydb.attack_blast_count(user["id"]),
+                    "metal": wallet["metal"],
+                    "oil": wallet["oil"],
+                    "credit": wallet["credit"],
                     "jobs": citydb.list_daily_jobs(user["id"], limit=8, kind="blast"),
                 })
                 return

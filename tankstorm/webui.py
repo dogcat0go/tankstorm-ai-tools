@@ -171,6 +171,9 @@ def _member_views() -> list:
         item = _user_out(user)
         item["attack_qq"] = user.get("attack_qq") or ""
         item["daily_at"] = user.get("daily_at") or ""
+        cap = user.get("storm_cap", None)
+        item["storm_cap"] = None if cap is None else int(cap)
+        item["storm_used"] = int(user.get("storm_used") or 0)
         items.append(item)
     return items
 
@@ -692,6 +695,18 @@ def _handler(config: dict):
                     except (TypeError, ValueError):
                         raise ValueError("账号编号不对") from None
                     why = citydb.reset_member_settings(user_id)
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "members": _member_views()})
+                elif path == "/api/admin/members/storm-cap":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能改超级强攻拒绝上限"})
+                        return
+                    try:
+                        user_id = int(str(data.get("user_id", "")).strip())
+                    except (TypeError, ValueError):
+                        raise ValueError("账号编号不对") from None
+                    why = citydb.set_storm_cap(user_id, data.get("cap"))
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "members": _member_views()})

@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS app_user (
     daily_last      TEXT NOT NULL DEFAULT '',
     off_at          TEXT NOT NULL DEFAULT '',
     region          INTEGER NOT NULL DEFAULT 0,
+    storm_cap       INTEGER,
+    storm_used      INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -392,6 +394,13 @@ def connect(readonly=False, timeout=15):
             if ucols and "region" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN region INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "storm_cap" not in ucols:
+                setup.execute("ALTER TABLE app_user ADD COLUMN storm_cap INTEGER")
+                setup.commit()
+            if ucols and "storm_used" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN storm_used INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             _fix_region_face(setup)
             _forget_page_names(setup)
@@ -1139,7 +1148,8 @@ def list_members() -> list:
             "IFNULL(retreat_mode,'hops'), IFNULL(retreat_hops,3), "
             "IFNULL(retreat_city,0), IFNULL(retreat_fail,0), "
             "IFNULL(lock_cards,3), IFNULL(modo_cards,0), IFNULL(region,0), "
-            "IFNULL(off_at,''), IFNULL(attack_qq,''), IFNULL(daily_at,'') "
+            "IFNULL(off_at,''), IFNULL(attack_qq,''), IFNULL(daily_at,''), "
+            "storm_cap, IFNULL(storm_used,0) "
             "FROM app_user ORDER BY id").fetchall()
     finally:
         conn.close()
@@ -1166,6 +1176,8 @@ def list_members() -> list:
             "off_at": str(row[17] or "").strip(),
             "attack_qq": str(row[18] or "").strip(),
             "daily_at": str(row[19] or "").strip(),
+            "storm_cap": None if row[20] is None else int(row[20]),
+            "storm_used": int(row[21] or 0),
         })
     return items
 
@@ -2390,15 +2402,104 @@ def lock_cards_active() -> bool:
     return bool(getattr(_attack_local, "lock_cards", False))
 
 
+def set_storm_cap(user_id: int, cap) -> str:
+    """这个登录账号最多自动拒绝几次超级强攻。空着表示不限制。
+
+    0 表示一次都不拒绝。成功返回空字符串。
+    """
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return "没有这个账号"
+    if cap is None or (isinstance(cap, str) and not cap.strip()):
+        value = None
+    else:
+        try:
+            value = int(str(cap).strip())
+        except (TypeError, ValueError):
+            return "拒绝次数要是整数"
+        if value < 0 or value > 1000000:
+            return "拒绝次数要在 0 到 1000000 之间"
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET storm_cap=? WHERE id=?", (value, user_id))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "没有这个账号"
+    finally:
+        conn.close()
+    if value is None:
+        log.info("登录账号 %s 的超级强攻拒绝不限次数", username_of(user_id))
+    else:
+        log.info("登录账号 %s 的超级强攻最多拒绝 %s 次", username_of(user_id), value)
+    return ""
+
+
+def storm_subject(user_id: int = 0, qq: str = "") -> int:
+    """这次拒绝记在哪个登录账号上。没绑到账号返回 0。"""
+    user_id = int(user_id or 0)
+    if not user_id:
+        user_id = int(attack_context_user() or 0)
+    qq = str(qq or "").strip() or attack_context_qq()
+    if not user_id and qq:
+        user_id, _ = attack_qq_owner(qq)
+    return int(user_id or 0)
+
+
+def reserve_storm_reject(user_id: int) -> str:
+    """占用一次拒绝额度。空字符串表示可以发拒绝包。
+
+    没配上限也把次数加一，管理员能看见已经拒绝了多少次。
+    没绑到登录账号时不加，仍然可以拒绝。
+    """
+    user_id = int(user_id or 0)
+    if not user_id:
+        return ""
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET storm_used=IFNULL(storm_used,0)+1 "
+            "WHERE id=? AND (storm_cap IS NULL OR IFNULL(storm_used,0)<storm_cap)",
+            (user_id,))
+        conn.commit()
+        if cur.rowcount == 1:
+            return ""
+        row = conn.execute(
+            "SELECT storm_cap, IFNULL(storm_used,0) FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row or row[0] is None:
+        return ""
+    return f"超级强攻已拒绝 {int(row[1])} 次，达到上限 {int(row[0])}，这次不拒绝"
+
+
+def release_storm_reject(user_id: int) -> None:
+    """拒绝包没发出去，把刚占用的一次还回去。"""
+    user_id = int(user_id or 0)
+    if not user_id:
+        return
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return
+    try:
+        conn.execute(
+            "UPDATE app_user SET storm_used=MAX(IFNULL(storm_used,0)-1, 0) WHERE id=?",
+            (user_id,))
+        conn.commit()
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
+
+
 def note_storm_reject(name: str, user_id: int = 0, qq: str = "") -> None:
     """记下一次已经发出去的超级强攻拒绝。没绑到登录账号的不进页面。"""
     name = " ".join(str(name or "").split()).strip() or "未知玩家"
     if len(name) > 32:
         name = name[:32]
-    user_id = int(user_id or attack_context_user() or 0)
-    qq = str(qq or attack_context_qq() or "").strip()
-    if not user_id and qq:
-        user_id, _ = attack_qq_owner(qq)
+    user_id = storm_subject(user_id, qq)
     if not user_id:
         log.info("超级强攻已拒绝（%s），这个号没绑登录账号，页面上看不到", name)
         return

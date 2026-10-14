@@ -119,6 +119,8 @@ table.members button.ghost { padding: 4px 10px; }
 table.members button.ghost + button.ghost { margin-left: 8px; }
 table.members td.member-cfg { background: #fafaf7; }
 table.members td.member-cfg p { margin: 4px 0; }
+table.members td.member-cfg form.storm-cap { margin-top: 8px; }
+table.members td.member-cfg form.storm-cap input { width: 7em; }
 th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e6e6e6; vertical-align: top; }
 th { font-size: 13px; color: #555; }
 .on { color: #0b6b2f; font-weight: 700; }

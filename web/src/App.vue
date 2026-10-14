@@ -81,6 +81,9 @@ const baseCount = ref("1");
 const baseJobs = ref([]);
 const baseNote = ref("");
 const baseBlast = ref(null);
+const baseMetal = ref(null);
+const baseOil = ref(null);
+const baseCredit = ref(null);
 const pveStages = ref("");
 let pveStagesReady = false;
 const fundBuilding = ref("");
@@ -193,12 +196,18 @@ async function refreshBase() {
   if (!me.value) {
     baseJobs.value = [];
     baseBlast.value = null;
+    baseMetal.value = null;
+    baseOil.value = null;
+    baseCredit.value = null;
     return;
   }
   const data = await api("/api/base");
   dailyQq.value = data.qq || dailyQq.value;
   baseJobs.value = data.jobs || [];
   baseBlast.value = data.blast == null ? null : data.blast;
+  baseMetal.value = data.metal == null ? null : data.metal;
+  baseOil.value = data.oil == null ? null : data.oil;
+  baseCredit.value = data.credit == null ? null : data.credit;
 }
 
 async function runBase(count) {
@@ -1019,6 +1028,9 @@ onUnmounted(() => {
         :daily-qq="dailyQq"
         :jobs="baseJobs"
         :blast="baseBlast"
+        :metal="baseMetal"
+        :oil="baseOil"
+        :credit="baseCredit"
         :note="baseNote"
         :err="err"
         :err-at="errAt"

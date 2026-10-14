@@ -117,6 +117,13 @@ def bind_sock(sock):
     return prev
 
 
+def bind_rec(rec):
+    """这一线程做任务时，资源数从哪份已经收到的包里读。返回换之前的那个。"""
+    prev = getattr(_sock_local, "rec", None)
+    _sock_local.rec = rec
+    return prev
+
+
 def _drain_incoming() -> None:
     """把已经到的包读掉。超级强攻靠这次读取才会走拒绝。
 
@@ -164,6 +171,7 @@ def _nap(seconds: float) -> None:
             return
         _beat()
         _drain_incoming()
+        note_base_wallet(getattr(_sock_local, "rec", None))
         time.sleep(min(left, 0.5))
 
 
@@ -1968,6 +1976,34 @@ def _wallet_credit(data):
         if isinstance(raw, str) and raw.lstrip("-").isdigit():
             return int(raw)
     return None
+
+
+def note_base_wallet(rec) -> None:
+    """每 10 秒把基地里的金属、石油和勋章写给网页。
+
+    只读已经收到的用户信息，不另向游戏要一份。
+    """
+    if rec is None:
+        return
+    now = time.monotonic()
+    if now - float(getattr(rec, "_wallet_at", 0.0) or 0.0) < 10.0:
+        return
+    data = (rec.latest.get("RseUserInfo") or (None, None))[1]
+    if not isinstance(data, dict):
+        return
+
+    def num(key):
+        raw = data.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            return None
+        return int(raw)
+
+    metal, oil, credit = num("metal"), num("oil"), num("credit")
+    if metal is None and oil is None and credit is None:
+        return
+    from . import citydb
+    if citydb.note_attack_wallet(metal, oil, credit):
+        rec._wallet_at = now
 
 
 def note_blast_count(rec, new_id=0):

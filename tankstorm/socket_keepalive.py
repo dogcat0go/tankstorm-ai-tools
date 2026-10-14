@@ -1841,6 +1841,7 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
             _show(f"征战世界：当前第 {int(stage)} 关")
 
     prev_sock = daily.bind_sock(sock)
+    prev_rec = daily.bind_rec(rec)
     daily.set_campaign_progress(_show_stage)
     try:
         citydb.set_running_daily(job["id"])
@@ -1942,6 +1943,7 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
     finally:
         citydb.set_running_daily(0)
         daily.set_campaign_progress(None)
+        daily.bind_rec(prev_rec)
         daily.bind_sock(prev_sock)
 
 
@@ -1974,6 +1976,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
             if _shutdown_stop():
                 return 0
             daily.note_blast_count(rec)
+            daily.note_base_wallet(rec)
             if citydb.attack_paused():
                 asked = citydb.take_attack_login()
                 if asked:

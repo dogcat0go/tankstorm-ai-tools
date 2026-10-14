@@ -5,6 +5,9 @@ defineProps({
   dailyQq: { type: String, default: "" },
   jobs: { type: Array, required: true },
   blast: { default: null },
+  metal: { default: null },
+  oil: { default: null },
+  credit: { default: null },
   note: { type: String, default: "" },
   err: { type: String, default: "" },
   errAt: { type: String, default: "" },
@@ -12,6 +15,13 @@ defineProps({
   cancelJob: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
+
+function resText(n) {
+  if (n === null || n === undefined || n === "") return "还没读到";
+  const num = Number(n);
+  if (!Number.isFinite(num)) return "还没读到";
+  return Math.trunc(num).toLocaleString("zh-CN");
+}
 </script>
 
 <template>
@@ -20,6 +30,10 @@ defineProps({
     <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
     <p v-else class="muted">还没绑定攻打 QQ。按页面上方的步骤点登录并扫码。一个登录账号只绑一个攻打号，这里的制造用那个号做。</p>
     <p class="muted">由这个账号的攻打线程执行，不另开连接。正在打的那一单会先打完，然后做这项。</p>
+    <h2>基地内资源</h2>
+    <p>金属 {{ resText(metal) }} · 石油 {{ resText(oil) }}</p>
+    <p>勋章 {{ resText(credit) }}</p>
+    <p class="muted">每 10 秒从攻打号已经收到的资源里更新一次。不另向游戏要一份。还没收到就显示还没读到。</p>
     <h2>兵营</h2>
     <p>当前爆破兵 {{ blast === null || blast === undefined ? "还没读到" : blast }}</p>
     <form class="lock-row" @submit.prevent="runBlast(count).catch((e) => showErr(e.message))">

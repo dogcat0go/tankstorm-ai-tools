@@ -2193,11 +2193,21 @@ _MOVE_CD = {"cd_sec": float(_CD_GEARS[0]), "last_act": 0.0,
             "cd_until": 0.0, "_n21": 0, "_cd_hold": 0}
 
 
+def _low_stamina(power, need=0) -> str:
+    """体力不够。页面上叫体力，停手判断认的是行动力，两句都写上。"""
+    if isinstance(power, int) and not isinstance(power, bool) and need:
+        return f"体力不够，行动力 {power}，这一步要 {need}"
+    if isinstance(power, int) and not isinstance(power, bool):
+        return f"体力不够，行动力 {power}"
+    return "体力不够"
+
+
 def _commit_move(sock, rec, city, owner, my=0):
     """发占领前再开一次面板：人在哪、城里还有没有别人、城属于谁。
 
     人已经在目标城就不再发。敌城还有人也不发。所属以这次面板为准。
     移动和占领的间隔也是 6.5、10、15 秒。ret=30 升一档再试。
+    体力不够时，移动和后退服务端都回 ret=9。面板已经标了这一步要多少，就先别发。
     """
     for _ in range(6):
         info = _open_city(sock, rec, city, owner, retry=False)
@@ -2220,6 +2230,13 @@ def _commit_move(sock, rec, city, owner, my=0):
         send_country = int(my if action == "移动" else owner)
         log.info("[移动] 查看：人在 %s，目标 %s 所属 %s，其他人 %d，选择%s（国家 %s）",
                  here, city, owner, cnt, action, send_country)
+        power = info.get("power")
+        need = int(info.get("need") or 0)
+        if (isinstance(power, int) and not isinstance(power, bool)
+                and need > 0 and power < need):
+            why = _low_stamina(power, need)
+            log.info("[移动] %s，不发%s", why, action)
+            return None, why
         _sleep_cd(_MOVE_CD.get("last_act") or 0, _MOVE_CD.get("cd_until") or 0,
                   _MOVE_CD.get("cd_sec"), "移动")
         sent = time.time()
@@ -2233,6 +2250,8 @@ def _commit_move(sock, rec, city, owner, my=0):
                 return None, f"移动后位置是 {here}，不是 {city}"
             _apply_cd(_MOVE_CD, sent, got, _CD_GEARS[0])
             return {"here": int(here or city), "power": _read_path(got, F_POWER)}, ""
+        if got.get("ret") == 9:
+            return None, _low_stamina(power)
         if got.get("ret") != 30:
             return None, f"移动被拒 ret={got.get('ret')}"
         if _retry_cd21(_MOVE_CD, _MOVE_CD.get("last_act") or 0, _CD_GEARS[0],

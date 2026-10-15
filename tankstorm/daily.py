@@ -29,8 +29,9 @@
 任务顺序
 --------
 "每日任务领奖"(RceDailyTask) 排在会产生进度的任务之后，先领就漏了。
-将领授勋和加强授勋不推进它，再排在领奖后面。TASKS 表的顺序即执行顺序，
-ORDER_LAST 里的排到末尾。
+第三次、第4次征战排在领奖后面。将领授勋和加强授勋不推进领奖，
+再排在这两次征战之后。TASKS 表的顺序即普通任务的顺序，
+ORDER_LAST 里的排到表尾；其中授勋两项由 iter_run() 挪到征战加次之后。
 
 参数来源
 --------
@@ -510,8 +511,10 @@ DANGER_FIELD = re.compile(
 SAFE_FIELDS = {("0463", "count")}
 
 # 周任务、每日任务领的是前面动作累积出来的奖励，所以排在后面。
-# 将领授勋和加强授勋不推进这两项，再排在它们之后。
+# 将领授勋和加强授勋不推进这两项。第三次、第4次征战排在领奖之后，
+# 授勋再排在这两次后面：加强授勋要扣金属和石油。
 ORDER_LAST = {"每日任务", "周任务", "将领授勋", "将领加强授勋"}
+ORDER_AFTER_CAMPAIGN = frozenset({"将领授勋", "将领加强授勋"})
 
 HELD_TASKS = ()
 HELD_STATUS = "暂不执行，反复被拒会打断连接"
@@ -1497,11 +1500,11 @@ TASKS = [
            "tankstorm.guild", fromlist=["daily_donate"]
        ).daily_donate(rec, sock, config)),
 
-    # ---- 必须最后执行 ----
+    # ---- 领奖排在会产生进度的任务之后 ----
     _t("周任务", "周任务领奖", "04de", "RceWeekQuestOpt",
        {1: ("int32", 0), 2: ("int32", 0)}, "待确认", "需实测"),
 
-    # 必须最后执行：前面每做一项，活跃度就涨一截，先领就少领。
+    # 排在会产生进度的任务之后：前面每做一项，活跃度就涨一截，先领就少领。
     # 实测活跃度 64 时能领 10/30/50 三档，80/100 没达标领不了。
     _t("每日任务", "每日任务·按活跃度领奖", "043d", "RceDailyTask",
        {5: ("int32", FromResponse("RseDailyTask", _eligible_gift_tier,
@@ -1521,13 +1524,26 @@ ALLOWED_OPCODES = ({t.opcode for t in TASKS}
 
 
 def ordered_tasks():
-    """按执行顺序返回任务：普通任务在前，ORDER_LAST 里的排到最后。"""
+    """页面上的顺序：普通任务在前，领奖和授勋排到最后。"""
     head = [t for t in TASKS if t.key not in ORDER_LAST]
     tail = [t for t in TASKS if t.key in ORDER_LAST]
     # 尾部内部再排：周任务 → 每日任务 → 将领授勋 → 将领加强授勋
     rank = {"周任务": 0, "每日任务": 1, "将领授勋": 2, "将领加强授勋": 3}
     tail.sort(key=lambda t: rank.get(t.key, 9))
     return head + tail
+
+
+def iter_run():
+    """一轮的执行顺序。None 表示这里做第三次、第4次征战。
+
+    领奖之后做这两次征战，将领授勋和加强授勋再排在征战之后。
+    """
+    before, after = [], []
+    for task in ordered_tasks():
+        (after if task.key in ORDER_AFTER_CAMPAIGN else before).append(task)
+    yield from before
+    yield None
+    yield from after
 
 
 # 免费两次走「征战世界」。这两项默认关，打开后跑一轮再做对应的那一次。
@@ -3092,7 +3108,15 @@ def _run(rec, sock, config, schema, on_fail=None):
 
     # 某一项失败、抛异常，都只记下这一项，接着做下一项。
     # 连接断了才停，后面的任务没有连接可发。
-    for task in ordered_tasks():
+    # 授勋排在第三次、第4次之后，加强授勋才有征战打出来的金属和石油。
+    for task in iter_run():
+        if task is None:
+            _run_campaign_extras(
+                rec, sock, switches, st, results,
+                stages=_campaign_goal(config) or "",
+                interval=_campaign_interval(config),
+                on_fail=on_fail)
+            continue
         try:
             raise_if_stopped()
             if task.key in HELD_TASKS:
@@ -3217,12 +3241,6 @@ def _run(rec, sock, config, schema, on_fail=None):
             if results.get(task.key) not in (None, "未开启"):
                 _publish_current(task.key, results.get(task.key), on_fail)
 
-
-    _run_campaign_extras(
-        rec, sock, switches, st, results,
-        stages=_campaign_goal(config) or "",
-        interval=_campaign_interval(config),
-        on_fail=on_fail)
     got = (rec.latest.get("RseRedwarMonthCard") if rec else None) or (None, None)
     panel = got[1] if isinstance(got, tuple) and isinstance(got[1], dict) else None
     if panel:
@@ -3245,7 +3263,8 @@ def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1
                          on_fail=None):
     """第三次、第4次。开关在登录账号上，默认关。免费两次仍走「征战世界」。
 
-    重开之后必须从第 1 关打到终点，打完才算这一次做成。只重开不算完成。
+    排在每日领奖之后、将领授勋之前。重开之后必须从第 1 关打到终点，
+    打完才算这一次做成。只重开不算完成。
     这一轮还在往终点打时先不做。第三次没打到终点时，不发第4次。
     """
     from . import pve

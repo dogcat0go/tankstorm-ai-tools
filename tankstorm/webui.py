@@ -523,10 +523,15 @@ def _handler(config: dict):
                     if not citydb.base_tier(user.get("tier") or ""):
                         raise ValueError("基地战需要高级pro订阅")
                     kind = str(data.get("kind") or "blast").strip()
-                    if kind not in ("blast", "cards"):
+                    if kind not in ("blast", "factory", "cards"):
                         raise ValueError("没有这项")
-                    payload = {} if kind == "cards" else {"count": data.get("count")}
-                    why = citydb.enqueue_daily_job(user["id"], kind, payload)
+                    if kind == "cards":
+                        params = {}
+                    elif kind == "factory":
+                        params = {"count": data.get("count"), "army": data.get("army")}
+                    else:
+                        params = {"count": data.get("count")}
+                    why = citydb.enqueue_daily_job(user["id"], kind, params)
                     if why:
                         raise ValueError(why)
                     from .socket_keepalive import kick_attack_login

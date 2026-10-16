@@ -1314,6 +1314,11 @@ def _order_account(user_id: int):
 
 
 def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
+    with daily.lane_hold():
+        return _fight_locked(rec, sock, config, beater, job, from_chain)
+
+
+def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
     from . import citydb, country_war
 
     if str(job.get("kind") or "") == "modo":
@@ -1621,7 +1626,8 @@ def _refresh_hold_here(rec, sock, config, last_at, last_here):
             log.info("挂机保活读不到自己的国家，所在城市先不更新")
         return now, last_here
     try:
-        _power, loc, _times, panel = country_war._panel(sock, rec, int(country))
+        with daily.lane_hold():
+            _power, loc, _times, panel = country_war._panel(sock, rec, int(country))
     except Exception:
         log.info("挂机保活时没读到所在城市", exc_info=True)
         return now, last_here
@@ -1655,13 +1661,14 @@ def _blocked_path_open(rec, sock, config, job):
     my = _my_country(rec, config)
     if not my:
         return False, "读不到自己的国家ID"
-    _power, loc, _times, panel = country_war._panel(sock, rec, my)
-    if panel is None or isinstance(loc, bool) or not isinstance(loc, int) or loc <= 0:
-        return False, "读不到当前所在城市"
-    citydb.note_attack_here(loc)
-    plan = country_war.live_plan(
-        sock, rec, loc, int(job["city_id"]), my,
-        stop_on_block=bool(job.get("auto")))
+    with daily.lane_hold():
+        _power, loc, _times, panel = country_war._panel(sock, rec, my)
+        if panel is None or isinstance(loc, bool) or not isinstance(loc, int) or loc <= 0:
+            return False, "读不到当前所在城市"
+        citydb.note_attack_here(loc)
+        plan = country_war.live_plan(
+            sock, rec, loc, int(job["city_id"]), my,
+            stop_on_block=bool(job.get("auto")))
     if plan.get("暂停") or not plan.get("路径"):
         return False, plan.get("暂停") or plan.get("原因") or "没有通路"
     return True, ""
@@ -1713,9 +1720,10 @@ def _run_requested_move(rec, sock, config, beater) -> bool:
     label = f"{city} {citydb.city_name(city) or ''}".strip()
     citydb.note_attack_move_text(f"正在移动到 {label}")
     try:
-        out = country_war.walk_to(
-            rec, sock, config, city, beat=beater,
-            march_only=True, enter_target=True)
+        with daily.lane_hold():
+            out = country_war.walk_to(
+                rec, sock, config, city, beat=beater,
+                march_only=True, enter_target=True)
     except OSError:
         citydb.note_attack_move_text(f"移动到 {label} 时连接中断")
         raise
@@ -1850,75 +1858,89 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
         citydb.set_attack_status("daily", task=label)
         task_log(citydb.attack_context_qq(), label, "开始")
         log.info("开始做日常：%s", label)
-        if rec and getattr(rec, "auto_reject", False):
-            class _QQ:
-                uin = citydb.attack_context_qq()
-            _arm_super_storm(rec, sock, config, _QQ())
-        if kind == "daily":
-            cfg = copy.deepcopy(config)
-            block = cfg.setdefault("每日任务", {})
-            block["启用"] = True
-            user_id = citydb.attack_context_user()
-            if user_id:
-                block["任务"] = citydb.daily_switches(
-                    user_id, (config.get("每日任务") or {}).get("任务") or {})
-            cfg.setdefault("征战", {})["终点"] = _campaign_end(params, user_id)
-            path = daily.state_path_for_qq(citydb.attack_context_qq())
-            with daily.using_state(path):
-                results, _details = daily.run(
-                    rec, sock, cfg, beat=beater, on_fail=_show)
-            text = daily.page_brief(results) or "这一轮没有要做的"
-            citydb.set_attack_status("daily", task=label, note=text)
-            citydb.finish_daily_job(job["id"], "done", text)
-        elif kind == "pve":
-            user_id = citydb.attack_context_user()
-            raw = _campaign_end(params, user_id)
-            raw_gap = (config.get("征战") or {}).get("间隔秒", 1)
-            if raw_gap is None or raw_gap == "":
-                raw_gap = 1
-            interval = float(raw_gap)
-            path = daily.state_path_for_qq(citydb.attack_context_qq())
-            with daily.using_state(path):
-                ok, why = daily.campaign_round(rec, sock, raw, interval)
-                switches = citydb.daily_switches(
-                    user_id, (config.get("每日任务") or {}).get("任务") or {}
-                ) if user_id else {}
-                if daily.campaign_pushing():
-                    if switches.get("征战第三次") or switches.get("征战第4次"):
-                        why = f"{why}。第三次、第4次这一轮先不做"
-                else:
-                    extra = {}
-                    daily._run_campaign_extras(
-                        rec, sock, switches, daily._load_state(), extra,
-                        stages=raw, interval=interval)
-                    tail = daily.page_brief(extra)
-                    if tail:
-                        why = f"{why}。{tail}" if why else tail
-            why = daily.page_result(why)
-            if not ok:
-                citydb.set_attack_status("daily", task=label, note=why)
-            citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
-        elif kind == "fund":
-            ok, why = fund.fund(
-                rec, sock, params.get("building_id"), params.get("times") or 1,
-                on_progress=_show)
-            _show(why)
-            citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
-        elif kind in ("blast", "cards"):
-            if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
-                citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
-                return
-            if kind == "cards":
-                ok, why = fund.open_base_cards(rec, sock, on_progress=_show)
-            else:
+        with daily.lane_hold():
+            if rec and getattr(rec, "auto_reject", False):
+                class _QQ:
+                    uin = citydb.attack_context_qq()
+                _arm_super_storm(rec, sock, config, _QQ())
+            if kind == "daily":
+                cfg = copy.deepcopy(config)
+                block = cfg.setdefault("每日任务", {})
+                block["启用"] = True
+                user_id = citydb.attack_context_user()
+                if user_id:
+                    block["任务"] = citydb.daily_switches(
+                        user_id, (config.get("每日任务") or {}).get("任务") or {})
+                cfg.setdefault("征战", {})["终点"] = _campaign_end(params, user_id)
+                path = daily.state_path_for_qq(citydb.attack_context_qq())
+                with daily.using_state(path):
+                    results, _details = daily.run(
+                        rec, sock, cfg, beat=beater, on_fail=_show)
+                text = daily.page_brief(results) or "这一轮没有要做的"
+                citydb.set_attack_status("daily", task=label, note=text)
+                citydb.finish_daily_job(job["id"], "done", text)
+            elif kind == "pve":
+                user_id = citydb.attack_context_user()
+                raw = _campaign_end(params, user_id)
+                raw_gap = (config.get("征战") or {}).get("间隔秒", 1)
+                if raw_gap is None or raw_gap == "":
+                    raw_gap = 1
+                interval = float(raw_gap)
+                path = daily.state_path_for_qq(citydb.attack_context_qq())
+                with daily.using_state(path):
+                    ok, why = daily.campaign_round(rec, sock, raw, interval)
+                    switches = citydb.daily_switches(
+                        user_id, (config.get("每日任务") or {}).get("任务") or {}
+                    ) if user_id else {}
+                    if daily.campaign_pushing():
+                        if switches.get("征战第三次") or switches.get("征战第4次"):
+                            why = f"{why}。第三次、第4次这一轮先不做"
+                    else:
+                        extra = {}
+                        daily._run_campaign_extras(
+                            rec, sock, switches, daily._load_state(), extra,
+                            stages=raw, interval=interval)
+                        tail = daily.page_brief(extra)
+                        if tail:
+                            why = f"{why}。{tail}" if why else tail
+                why = daily.page_result(why)
+                if not ok:
+                    citydb.set_attack_status("daily", task=label, note=why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind == "fund":
+                ok, why = fund.fund(
+                    rec, sock, params.get("building_id"), params.get("times") or 1,
+                    on_progress=_show)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind == "blast":
+                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                    citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
+                    return
                 ok, why = daily.daily_blast(
                     rec, sock, config, count=params.get("count") or 1,
                     on_progress=_show)
-            _show(why)
-            citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
-        else:
-            citydb.finish_daily_job(job["id"], "failed", "没有这项日常")
-            task_log(citydb.attack_context_qq(), label, "没有这项日常")
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind == "factory":
+                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                    citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
+                    return
+                ok, why = daily.daily_factory(
+                    rec, sock, config, count=params.get("count") or 1,
+                    army=params.get("army") or 0, on_progress=_show)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind == "cards":
+                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                    citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
+                    return
+                ok, why = fund.open_base_cards(rec, sock, on_progress=_show)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            else:
+                citydb.finish_daily_job(job["id"], "failed", "没有这项日常")
+                task_log(citydb.attack_context_qq(), label, "没有这项日常")
     except daily.Stopped:
         if citydb.shutdown_due():
             citydb.shelve_shutdown_work()
@@ -1967,77 +1989,171 @@ def _shutdown_stop() -> bool:
 
 
 def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
-    """同一条游戏连接上把排队的单打完。打完或打不过之后，按挂机时长继续心跳。"""
+    """同一条游戏连接上，国战、日常、兵营、战车工厂和开资源卡各做各的。
+
+    发包仍然排队。哪一路在等剩余时间，就把连接让出来。
+    """
     from . import citydb
 
-    stated = False
-    here_at = 0.0
-    here_id = 0
-    path_at = 0.0
-    while True:
-        try:
-            if _shutdown_stop():
-                return 0
-            daily.note_blast_count(rec)
-            daily.note_base_wallet(rec)
-            if citydb.attack_paused():
+    user = citydb.attack_context_user()
+    qq = citydb.attack_context_qq()
+    stop = threading.Event()
+    dead = threading.Event()
+    idle_exit = threading.Event()
+
+    def _spawn(name, fn):
+        def run():
+            citydb.set_attack_context(user, qq)
+            citydb.set_lane(name)
+            prev = daily.bind_stop(stop)
+            try:
+                fn()
+            except OSError:
+                log.info("%s 这条连接断了", name)
+                dead.set()
+            except Exception:
+                log.info("%s 并行任务出错", name, exc_info=True)
+                dead.set()
+            finally:
+                daily.bind_stop(prev)
+        thread = threading.Thread(target=run, name=f"lane-{name}", daemon=True)
+        thread.start()
+        return thread
+
+    def _jobs_open():
+        return (citydb.daily_job_open() or citydb.attack_order_open()
+                or citydb.attack_move_pending() > 0)
+
+    def _war():
+        stated = False
+        here_at = 0.0
+        here_id = 0
+        path_at = 0.0
+        hold_closed = False
+        while not stop.is_set() and not dead.is_set():
+            try:
+                if citydb.attack_paused():
+                    time.sleep(0.5)
+                    continue
+                if _run_requested_move(rec, sock, config, beater):
+                    idle_exit.clear()
+                    continue
+                for uid in citydb.attack_context_users():
+                    citydb.skip_unfinished_auto(uid)
+                citydb.release_due_waits()
+                job = citydb.claim_attack_order()
+                if job:
+                    stated = False
+                    hold_closed = False
+                    idle_exit.clear()
+                    citydb.clear_attack_hold()
+                    log.info("领到订单 %s，城市 %s UID %s",
+                             job["id"], job["city_id"], job["uid"])
+                    with _order_account(int(job.get("user_id") or 0)):
+                        _fight_claimed(rec, sock, config, beater, job)
+                    continue
+                if citydb.attack_order_open():
+                    hold_closed = False
+                    idle_exit.clear()
+                    citydb.set_attack_status("queue")
+                    time.sleep(1)
+                    continue
+                if not citydb.attack_hold_on() and _jobs_open():
+                    time.sleep(0.5)
+                    continue
+                if citydb.attack_hold_on():
+                    hold_closed = False
+                if hold_closed:
+                    idle_exit.set()
+                    time.sleep(1)
+                    continue
+                if not _begin_attack_hold(fresh=not stated):
+                    hold_closed = True
+                    idle_exit.set()
+                    time.sleep(1)
+                    continue
+                idle_exit.clear()
+                if not citydb.attack_link_alive():
+                    log.info("挂机保活游戏心跳没了，准备重连")
+                    dead.set()
+                    return
+                if not stated:
+                    here_at = 0.0
+                    path_at = 0.0
+                stated = True
+                here_at, here_id = _refresh_hold_here(
+                    rec, sock, config, here_at, here_id)
+                path_at = _watch_blocked_path(rec, sock, config, beater, path_at)
+                if not _wait_socket(sock, spec, ctx):
+                    log.info("挂机时游戏连接断了，准备重连")
+                    dead.set()
+                    return
+            except sqlite3.Error as exc:
+                log.info("读库失败，游戏先不断开：%s", exc)
+                time.sleep(1)
+
+    def _lane_jobs(kinds):
+        busy = False
+        while not stop.is_set() and not dead.is_set():
+            try:
+                if citydb.attack_paused():
+                    time.sleep(0.5)
+                    continue
+                job = citydb.claim_daily_job(kinds)
+                if not job:
+                    if busy:
+                        citydb.set_attack_status("hold")
+                        busy = False
+                    time.sleep(0.5)
+                    continue
+                busy = True
+                idle_exit.clear()
+                with _order_account(int(job.get("user_id") or 0)):
+                    _run_one_daily(rec, sock, config, beater, job)
+            except sqlite3.Error as exc:
+                log.info("读库失败，游戏先不断开：%s", exc)
+                time.sleep(1)
+
+    threads = [
+        _spawn("war", _war),
+        _spawn("daily", lambda: _lane_jobs(("daily", "pve", "fund"))),
+        _spawn("blast", lambda: _lane_jobs(("blast",))),
+        _spawn("factory", lambda: _lane_jobs(("factory",))),
+        _spawn("cards", lambda: _lane_jobs(("cards",))),
+    ]
+    try:
+        while not stop.is_set():
+            try:
+                if dead.is_set() or _shutdown_stop():
+                    return 0
+                daily.note_blast_count(rec)
+                daily.note_base_wallet(rec)
+                if citydb.attack_paused():
+                    asked = citydb.take_attack_login()
+                    if asked:
+                        _arm_push_keepalive()
+                        if not citydb.attack_link_alive():
+                            citydb.set_attack_paused(False)
+                            log.info("点了推送登录，游戏没挂上，准备重连")
+                            return 0
+                    citydb.set_attack_status("paused")
+                    if not _wait_socket(sock, spec, ctx):
+                        raise OSError("服务器关闭连接")
+                    continue
                 asked = citydb.take_attack_login()
                 if asked:
                     _arm_push_keepalive()
-                    if not citydb.attack_link_alive():
-                        citydb.set_attack_paused(False)
-                        log.info("点了推送登录，游戏没挂上，准备重连")
-                        return 0
-                citydb.set_attack_status("paused")
-                if not _wait_socket(sock, spec, ctx):
-                    raise OSError("服务器关闭连接")
-                continue
-            if _run_requested_move(rec, sock, config, beater):
-                continue
-            daily_job = citydb.claim_daily_job()
-            if daily_job:
-                stated = False
-                with _order_account(int(daily_job.get("user_id") or 0)):
-                    _run_one_daily(rec, sock, config, beater, daily_job)
-                continue
-            for uid in citydb.attack_context_users():
-                citydb.skip_unfinished_auto(uid)
-            citydb.release_due_waits()
-            job = citydb.claim_attack_order()
-            if job:
-                stated = False
-                citydb.clear_attack_hold()
-                log.info("领到订单 %s，城市 %s UID %s",
-                         job["id"], job["city_id"], job["uid"])
-                with _order_account(int(job.get("user_id") or 0)):
-                    _fight_claimed(rec, sock, config, beater, job)
-                continue
-            if citydb.attack_order_open():
-                citydb.set_attack_status("queue")
+                if (idle_exit.is_set() and not citydb.attack_hold_on()
+                        and not _jobs_open() and not citydb.attack_paused()):
+                    return 0
+                time.sleep(0.5)
+            except sqlite3.Error as exc:
+                log.info("读库失败，游戏先不断开：%s", exc)
                 time.sleep(1)
-                continue
-            asked = citydb.take_attack_login()
-            if asked:
-                _arm_push_keepalive()
-            if not _begin_attack_hold(fresh=not stated):
-                return 0
-            if not citydb.attack_link_alive():
-                log.info("挂机保活游戏心跳没了，准备重连")
-                return 0
-            if not stated:
-                here_at = 0.0
-                path_at = 0.0
-            stated = True
-            here_at, here_id = _refresh_hold_here(
-                rec, sock, config, here_at, here_id)
-            path_at = _watch_blocked_path(rec, sock, config, beater, path_at)
-            if not _wait_socket(sock, spec, ctx):
-                log.info("挂机时游戏连接断了，准备重连")
-                return 0
-        except sqlite3.Error as exc:
-            log.info("读库失败，游戏先不断开：%s", exc)
-            time.sleep(1)
-            continue
+    finally:
+        stop.set()
+        for thread in threads:
+            thread.join(timeout=5)
 
 
 def _connect_attack_orders(qq, config) -> int:

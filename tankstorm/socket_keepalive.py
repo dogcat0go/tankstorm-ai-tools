@@ -1059,7 +1059,7 @@ def _lock_no_chain(why: str, status: str) -> bool:
         return True
     if "连接中断" in text or "攻打中断" in text:
         return True
-    if "行动力" in text or _cards_used_up(text) or "遣返" in text:
+    if "行动力" in text or "体力不够" in text or _cards_used_up(text) or "遣返" in text:
         return True
     return False
 
@@ -1110,7 +1110,7 @@ def _clear_hard_stop(reason: str) -> bool:
     """这种停手不能过一会儿再清。"""
     text = str(reason or "")
     return any(k in text for k in (
-        "行动力", "已暂停", "已定时关闭", "已手动关停", "被别人打败", "回到首都", "出不了首都",
+        "行动力", "体力不够", "已暂停", "已定时关闭", "已手动关停", "被别人打败", "回到首都", "出不了首都",
         "遣返", "不相邻", "恢复卡", "位置变了", "连接中断", "攻打中断"))
 
 

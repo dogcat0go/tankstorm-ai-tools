@@ -1873,6 +1873,10 @@ _HERO_LEVEL_CAP = 80          # HERO_LEVEL_TOP_LIMIT，到了就不再培养
 # 爆破兵兵营。客户端 getBuildingByType(29)，不写死 10004。
 _BLAST_BUILDING = 29
 _BLAST_ARMY = 7
+# 战车工厂 getBuildingByType(30)。防空车是兵种表 type=12（Humvee）。
+# 2026-10-16 客户端：开工 type=1，快速制造 type=37，和兵营同一条。
+_FACTORY_BUILDING = 30
+_AA_ARMY = 12
 
 
 def _blast_medal(seconds, qq_hall, yellow, blue):
@@ -1909,9 +1913,9 @@ def _passed(mark):
     return 0 if passed < 0 else passed
 
 
-def _blast_log(text):
+def _blast_log(text, label="爆破兵"):
     from . import citydb
-    task_log(citydb.attack_context_qq(), "爆破兵", text)
+    task_log(citydb.attack_context_qq(), label, text)
 
 
 def _blast_flags(rec, config):
@@ -1993,8 +1997,8 @@ def note_blast_count(rec, new_id=0):
         rec._blast_published = total
 
 
-def _blast_recent(rec, bid):
-    """上一包建筑修改里这个兵营的队列。登录包不会在开工后更新。"""
+def _blast_recent(rec, bid, army_type=_BLAST_ARMY):
+    """上一包建筑修改里这个厂房的队列。登录包不会在开工后更新。"""
     if rec is None:
         return None
     item = rec.latest.get("RseBuildingModify")
@@ -2007,39 +2011,44 @@ def _blast_recent(rec, bid):
         return None
     army, making, left = queue
     mark = (getattr(rec, "latest_at", {}) or {}).get("RseBuildingModify")
-    if left > 0 and making not in (0, _BLAST_ARMY) and army not in (0, _BLAST_ARMY):
+    if left > 0 and making not in (0, army_type) and army not in (0, army_type):
         return "other", army, making, left, mark
     if left <= 0:
         return "idle", army, making, 0, mark
-    return "blast", army, making, left, mark
+    return "ours", army, making, left, mark
 
 
-def _blast_once(rec, sock, config, assume_idle=False, on_progress=None):
-    """造一个爆破兵。快速制造只在勋章花费为 0 时发，credit 固定写 0。
+def _blast_once(rec, sock, config, assume_idle=False, on_progress=None,
+                building_type=_BLAST_BUILDING, army_type=_BLAST_ARMY,
+                place="兵营", unit="爆破兵", track=True):
+    """造一个单位。快速制造只在勋章花费为 0 时发，credit 固定写 0。
 
     assume_idle：上一只刚造完。登录包里的队列还是旧的，按空闲开工。
     """
+    def say(text):
+        _blast_log(text, unit)
+
     load = (rec.latest.get("RseLoad") or (None, None))[1] if rec else None
     if not isinstance(load, dict):
-        return False, "读不到基地数据，不造爆破兵"
+        return False, f"读不到基地数据，不造{unit}"
     buildings = _rows(load.get("buildingdata"))
     if not buildings:
-        return False, "读不到建筑，不造爆破兵"
+        return False, f"读不到建筑，不造{unit}"
     barracks = None
     for b in buildings:
-        if b.get("field5") != _BLAST_BUILDING:
+        if b.get("field5") != building_type:
             continue
         bid = _one(b.get("field4"))
         if not bid or bid <= 0:
             continue
         queue = _blast_queue(b)
         if queue is None:
-            return False, f"兵营 {bid} 的生产状态读不懂，不造"
+            return False, f"{place} {bid} 的生产状态读不懂，不造"
         barracks = (bid, queue)
         if queue[2] > 0:
             break
     if barracks is None:
-        return False, "读不到兵营，不造爆破兵"
+        return False, f"读不到{place}，不造{unit}"
     bid, (army, making, left) = barracks
     snap = (getattr(rec, "latest_at", {}) or {}).get("RseLoad") if rec else None
     snap_name = "登录包"
@@ -2047,30 +2056,30 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None):
         army, making, left = 0, 0, 0
         snap = None
     else:
-        recent = _blast_recent(rec, bid)
+        recent = _blast_recent(rec, bid, army_type)
         if recent and recent[0] == "other":
-            return False, f"兵营正在造别的兵（{recent[2] or recent[1]}），不打断"
-        if recent and recent[0] == "blast":
+            return False, f"{place}正在造别的（{recent[2] or recent[1]}），不打断"
+        if recent and recent[0] == "ours":
             load_at = snap
             mod_at = recent[4]
             if left <= 0 or load_at is None or (mod_at is not None and mod_at >= load_at):
                 army, making, left = recent[1], recent[2], recent[3]
                 snap = mod_at
                 snap_name = "上一包"
-                _blast_log(f"兵营 {bid} 上一包还在造爆破兵，剩余 {left} 秒，不重新开工")
-        elif left > 0 and making not in (0, _BLAST_ARMY) and army not in (0, _BLAST_ARMY):
-            return False, f"兵营正在造别的兵（{making or army}），不打断"
+                say(f"{place} {bid} 上一包还在造{unit}，剩余 {left} 秒，不重新开工")
+        elif left > 0 and making not in (0, army_type) and army not in (0, army_type):
+            return False, f"{place}正在造别的（{making or army}），不打断"
 
     seen_left, seen_at = left, time.monotonic()
     if not assume_idle and left > 0:
         passed = _passed(snap)
         aged = left if passed is None else max(0, left - passed)
-        _blast_log(
-            f"兵营 {bid} {snap_name}剩余 {left} 秒，这份数据已过 "
+        say(
+            f"{place} {bid} {snap_name}剩余 {left} 秒，这份数据已过 "
             f"{'未知' if passed is None else passed} 秒，按 {aged} 秒算")
         if passed is not None and aged <= 0:
-            _blast_log(f"兵营 {bid} 里那一只剩余时间已经走完，算进数量")
-            return True, f"兵营 {bid} 里那一只剩余时间已经走完，算进数量"
+            say(f"{place} {bid} 里那一只剩余时间已经走完，算进数量")
+            return True, f"{place} {bid} 里那一只剩余时间已经走完，算进数量"
         seen_left, seen_at = aged, time.monotonic()
 
     qq_hall, yellow, blue = _blast_flags(rec, config)
@@ -2093,7 +2102,7 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None):
     if left <= 0:
         _nap(0.4)
         got = send(1, {2: ("int32", bid), 3: ("int32", 1),
-                       6: ("int32", _BLAST_ARMY)})
+                       6: ("int32", army_type)})
         if not isinstance(got, dict):
             return False, "开工没有回包"
         err = got.get("error")
@@ -2105,10 +2114,10 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None):
         if queue is None:
             return False, "开工回包读不到剩余时间，不加速"
         _army, making, left = queue
-        if left <= 0 or making not in (0, _BLAST_ARMY):
-            return False, f"开工后没有进入爆破兵队列（剩余 {left} 秒）"
+        if left <= 0 or making not in (0, army_type):
+            return False, f"开工后没有进入{unit}队列（剩余 {left} 秒）"
         seen_left, seen_at = left, time.monotonic()
-        _blast_log(f"兵营 {bid} 开工，服务器剩余 {left} 秒")
+        say(f"{place} {bid} 开工，服务器剩余 {left} 秒")
 
     if wallet is None:
         for name in ("RseUserInfo", "RseInit", "RseSave"):
@@ -2126,78 +2135,92 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None):
     if left > send_at:
         gap = left - send_at
         if gap > 900 or _blast_medal(send_at, qq_hall, yellow, blue) != 0:
-            _blast_log(f"兵营 {bid} 剩余 {left} 秒，加速要 {cost} 勋章，不发")
+            say(f"{place} {bid} 剩余 {left} 秒，加速要 {cost} 勋章，不发")
             return False, f"剩余 {left} 秒，加速要 {cost} 勋章，不加速"
         if on_progress:
             on_progress(f"剩余 {left} 秒，要 {cost} 勋章，等到 {send_at} 秒再加速")
-        _blast_log(
-            f"兵营 {bid} 剩余 {left} 秒，要 {cost} 勋章，"
+        say(
+            f"{place} {bid} 剩余 {left} 秒，要 {cost} 勋章，"
             f"大厅={qq_hall} 黄钻={yellow} 蓝钻={blue}，等到 {send_at} 秒")
         _nap(gap)
         left, cost = send_at, 0
     elif cost != 0:
-        _blast_log(f"兵营 {bid} 剩余 {left} 秒，加速要 {cost} 勋章，不发")
+        say(f"{place} {bid} 剩余 {left} 秒，加速要 {cost} 勋章，不发")
         return False, f"剩余 {left} 秒，加速要 {cost} 勋章，不加速"
     else:
         _nap(0.4)
         left, cost = medal_now()
         if cost != 0:
-            _blast_log(f"兵营 {bid} 等到发出时剩余 {left} 秒，要 {cost} 勋章，不发")
+            say(f"{place} {bid} 等到发出时剩余 {left} 秒，要 {cost} 勋章，不发")
             return False, f"剩余 {left} 秒，加速要 {cost} 勋章，不加速"
         if left < 1:
             left = 1
-    _blast_log(
-        f"快速制造 兵营 {bid} time={left} 勋章花费={cost} "
+    say(
+        f"快速制造 {place} {bid} time={left} 勋章花费={cost} "
         f"大厅={qq_hall} 黄钻={yellow} 蓝钻={blue} 当前勋章={wallet}")
     got = send(37, {2: ("int32", bid), 3: ("int32", 37),
                     10: ("int32", 0), 11: ("int32", left)})
     if not isinstance(got, dict):
-        _blast_log(f"快速制造没有回包 兵营 {bid} time={left}")
+        say(f"快速制造没有回包 {place} {bid} time={left}")
         return False, "快速制造没有回包"
     err = got.get("error")
     after = _wallet_credit(got)
     if wallet is not None and after is not None and after < wallet:
-        _blast_log(f"勋章从 {wallet} 变成 {after}，已停 兵营 {bid} time={left}")
+        say(f"勋章从 {wallet} 变成 {after}，已停 {place} {bid} time={left}")
         return False, f"勋章从 {wallet} 变成 {after}，已停"
     if not isinstance(err, int) or isinstance(err, bool) or err != 0:
-        _blast_log(f"快速制造被拒 error={err} 兵营 {bid} time={left} 勋章 {wallet}->{after}")
-        return False, f"快速制造服务器返回 error={err}，兵营 {bid}，发出的剩余时间 {left} 秒"
-    army = got.get("army")
-    new_id = army.get("field2") if isinstance(army, dict) else 0
-    note_blast_count(rec, new_id if isinstance(new_id, int) and not isinstance(new_id, bool) else 0)
-    return True, f"成功：兵营 {bid} 按剩余 {left} 秒、0 勋章加速完成"
+        say(f"快速制造被拒 error={err} {place} {bid} time={left} 勋章 {wallet}->{after}")
+        return False, f"快速制造服务器返回 error={err}，{place} {bid}，发出的剩余时间 {left} 秒"
+    if track:
+        army = got.get("army")
+        new_id = army.get("field2") if isinstance(army, dict) else 0
+        note_blast_count(rec, new_id if isinstance(new_id, int) and not isinstance(new_id, bool) else 0)
+    return True, f"成功：{place} {bid} 按剩余 {left} 秒、0 勋章加速完成"
 
 
-def daily_blast(rec, sock, config, count=1, on_progress=None):
-    """按数量循环造爆破兵。每一只都要等到 0 勋章才加速。"""
+def daily_blast(rec, sock, config, count=1, on_progress=None,
+                building_type=_BLAST_BUILDING, army_type=_BLAST_ARMY,
+                place="兵营", unit="爆破兵", track=True):
+    """按数量循环造。每一只都要等到 0 勋章才加速。"""
     try:
         count = int(count)
     except (TypeError, ValueError):
         return False, "数量不对"
     if not 1 <= count <= 399:
         return False, "数量要在 1 到 399"
-    note_blast_count(rec)
+    if track:
+        note_blast_count(rec)
     done = 0
     assume_idle = False
 
     def progress(text=""):
         if not on_progress:
             return
-        head = f"爆破兵 {done}/{count}"
+        head = f"{unit} {done}/{count}"
         on_progress(f"{head}，{text}" if text else head)
 
     progress()
     while done < count:
         raise_if_stopped()
         ok, why = _blast_once(
-            rec, sock, config, assume_idle=assume_idle, on_progress=progress)
+            rec, sock, config, assume_idle=assume_idle, on_progress=progress,
+            building_type=building_type, army_type=army_type,
+            place=place, unit=unit, track=track)
         if not ok:
             head = f"完成 {done}/{count}。" if done else ""
             return False, head + why
         done += 1
         assume_idle = True
         progress()
-    return True, f"成功：造了 {done} 个爆破兵，都是 0 勋章加速"
+    return True, f"成功：造了 {done} 个{unit}，都是 0 勋章加速"
+
+
+def daily_aa(rec, sock, config, count=1, on_progress=None):
+    """战车工厂造防空车。加速门槛和兵营同一套，600 秒内才是 0 勋章。"""
+    return daily_blast(
+        rec, sock, config, count=count, on_progress=on_progress,
+        building_type=_FACTORY_BUILDING, army_type=_AA_ARMY,
+        place="战车工厂", unit="防空车", track=False)
 
 
 def _one(v):

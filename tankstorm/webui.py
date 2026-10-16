@@ -314,10 +314,14 @@ def _handler(config: dict):
                 if not citydb.base_tier(user.get("tier") or ""):
                     _json(self, 403, {"error": "基地战需要高级pro订阅"})
                     return
+                jobs = (
+                    citydb.list_daily_jobs(user["id"], limit=8, kind="blast")
+                    + citydb.list_daily_jobs(user["id"], limit=8, kind="aa"))
+                jobs.sort(key=lambda it: it["id"], reverse=True)
                 _json(self, 200, {
                     "qq": citydb.attack_qq_of(user["id"]),
                     "blast": citydb.attack_blast_count(user["id"]),
-                    "jobs": citydb.list_daily_jobs(user["id"], limit=8, kind="blast"),
+                    "jobs": jobs[:8],
                 })
                 return
             if path == "/api/daily":
@@ -515,8 +519,9 @@ def _handler(config: dict):
                         raise ValueError("账号已过期")
                     if not citydb.base_tier(user.get("tier") or ""):
                         raise ValueError("基地战需要高级pro订阅")
+                    kind = "aa" if str(data.get("unit") or "") == "aa" else "blast"
                     why = citydb.enqueue_daily_job(
-                        user["id"], "blast", {"count": data.get("count")})
+                        user["id"], kind, {"count": data.get("count")})
                     if why:
                         raise ValueError(why)
                     from .socket_keepalive import kick_attack_login

@@ -1,5 +1,6 @@
 <script setup>
 const count = defineModel("count", { type: String, required: true });
+const aaCount = defineModel("aaCount", { type: String, required: true });
 
 defineProps({
   dailyQq: { type: String, default: "" },
@@ -9,6 +10,7 @@ defineProps({
   err: { type: String, default: "" },
   errAt: { type: String, default: "" },
   runBlast: { type: Function, required: true },
+  runAa: { type: Function, required: true },
   cancelJob: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
@@ -28,8 +30,13 @@ defineProps({
       <button type="submit" :disabled="!dailyQq">开始制造</button>
     </form>
     <p class="muted">按这个数量循环。每次先生产一个，剩余时间算出 0 勋章才快速制造，credit 固定写 0。要花勋章就停在这一只，不发。大厅蓝钻大约要等剩余降到 600 秒，一只一分多钟。消耗金属和石油。数量 1 到 399。兵营里已经在造的那一只算进数量。</p>
-    <h2>战场工厂</h2>
-    <p class="muted">还没有制造项。</p>
+    <h2>战车工厂</h2>
+    <form class="lock-row" @submit.prevent="runAa(aaCount).catch((e) => showErr(e.message))">
+      <span class="switch">防空车制造</span>
+      <label>数量<input v-model="aaCount" class="mins" inputmode="numeric" required /></label>
+      <button type="submit" :disabled="!dailyQq">开始制造</button>
+    </form>
+    <p class="muted">按这个数量循环造防空车。每次先开工，剩余时间算出 0 勋章才快速制造，credit 固定写 0。大厅蓝钻剩余降到 600 秒以内才发。要花勋章就停在这一辆，不发。工厂里已经在造防空车的那一辆算进数量，正在造别的就不打断。消耗金属和石油。数量 1 到 399。</p>
     <p v-if="note" class="muted">{{ note }}</p>
     <p v-if="err && errAt === 'base'" class="err">{{ err }}</p>
     <h2>最近执行</h2>

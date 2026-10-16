@@ -4103,6 +4103,7 @@ DAILY_KIND_LABEL = {
     "pve": "征战世界",
     "fund": "成就拨款",
     "blast": "爆破兵",
+    "aa": "防空车",
 }
 _DAILY_STATUS = {
     "pending": "排队",
@@ -4522,7 +4523,7 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
             return "拨款次数要在 1 到 999"
         clean["building_id"] = building
         clean["times"] = times
-    elif kind == "blast":
+    elif kind in ("blast", "aa"):
         try:
             count = int(str(params.get("count") or "").strip())
         except (TypeError, ValueError):
@@ -4694,7 +4695,7 @@ def list_daily_jobs(user_id: int, limit: int = 2, kind: str = "") -> list:
         else:
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
-                "WHERE user_id=? AND kind<>'blast' ORDER BY id DESC LIMIT ?",
+                "WHERE user_id=? AND kind NOT IN ('blast','aa') ORDER BY id DESC LIMIT ?",
                 (int(user_id), int(limit))).fetchall()
     finally:
         conn.close()

@@ -1931,6 +1931,13 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                     army=params.get("army") or 0, on_progress=_show)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind == "cards":
+                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                    citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
+                    return
+                ok, why = fund.open_base_cards(rec, sock, on_progress=_show)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             else:
                 citydb.finish_daily_job(job["id"], "failed", "没有这项日常")
                 task_log(citydb.attack_context_qq(), label, "没有这项日常")
@@ -1982,7 +1989,7 @@ def _shutdown_stop() -> bool:
 
 
 def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
-    """同一条游戏连接上，国战、日常、兵营和战车工厂各做各的。
+    """同一条游戏连接上，国战、日常、兵营、战车工厂和开资源卡各做各的。
 
     发包仍然排队。哪一路在等剩余时间，就把连接让出来。
     """
@@ -2112,6 +2119,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
         _spawn("daily", lambda: _lane_jobs(("daily", "pve", "fund"))),
         _spawn("blast", lambda: _lane_jobs(("blast",))),
         _spawn("factory", lambda: _lane_jobs(("factory",))),
+        _spawn("cards", lambda: _lane_jobs(("cards",))),
     ]
     try:
         while not stop.is_set():

@@ -210,11 +210,14 @@ async function refreshBase() {
   baseCredit.value = data.credit == null ? null : data.credit;
 }
 
-async function runBase(count) {
-  showErr("");
+async function runBase(countOrBody) {
+  showErr("", "base");
   baseNote.value = "";
-  await api("/api/base", { kind: "blast", count });
-  baseNote.value = "爆破兵已交给绑定的攻打号";
+  const body = countOrBody && typeof countOrBody === "object"
+    ? countOrBody
+    : { kind: "blast", count: countOrBody };
+  await api("/api/base", body);
+  baseNote.value = body.kind === "cards" ? "开资源卡已交给绑定的攻打号" : "爆破兵已交给绑定的攻打号";
   await refreshBase();
   await refreshAttacks();
 }
@@ -1047,6 +1050,7 @@ onUnmounted(() => {
         :err-at="errAt"
         :run-blast="runBase"
         :run-factory="runFactory"
+        :run-cards="() => runBase({ kind: 'cards' })"
         :cancel-job="cancelBase"
         :show-err="showErr"
       />

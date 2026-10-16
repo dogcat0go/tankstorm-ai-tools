@@ -3185,7 +3185,7 @@ def _kept_int(data: dict, key: str):
 
 _attack_local = threading.local()
 _proc_lock = threading.Lock()
-_LANE_RANK = {"war": 0, "daily": 1, "blast": 2, "factory": 3}
+_LANE_RANK = {"war": 0, "daily": 1, "blast": 2, "factory": 3, "cards": 4}
 
 
 def _assign_legacy_fails(conn) -> None:
@@ -3479,7 +3479,7 @@ def clear_login_for() -> None:
 
 
 def _foreground(lanes, phase, task, note):
-    """几路同时在做时，页面阶段按国战、日常、兵营、战车工厂这个顺序取。"""
+    """几路同时在做时，页面阶段按国战、日常、兵营、战车工厂、开资源卡这个顺序取。"""
     if phase in ("offline", "paused", "login"):
         return phase, "", ""
     best = None
@@ -4298,8 +4298,9 @@ DAILY_KIND_LABEL = {
     "fund": "成就拨款",
     "blast": "爆破兵",
     "factory": "战车工厂",
+    "cards": "开资源卡",
 }
-_BASE_LANE = ("blast", "factory")
+_BASE_LANE = ("blast", "factory", "cards")
 _DAILY_STATUS = {
     "pending": "排队",
     "running": "正在做",
@@ -4910,12 +4911,14 @@ def resume_daily_jobs() -> None:
 
 
 def list_daily_jobs(user_id: int, limit: int = 2, kind: str = "") -> list:
+    """kind 为空时不带基地战。kind 为 base 时只带爆破兵、战车工厂和开资源卡。"""
     conn = connect(readonly=True)
     try:
         if kind == "base":
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
-                "WHERE user_id=? AND kind IN ('blast','factory') ORDER BY id DESC LIMIT ?",
+                "WHERE user_id=? AND kind IN ('blast','factory','cards') "
+                "ORDER BY id DESC LIMIT ?",
                 (int(user_id), int(limit))).fetchall()
         elif kind:
             rows = conn.execute(
@@ -4925,7 +4928,7 @@ def list_daily_jobs(user_id: int, limit: int = 2, kind: str = "") -> list:
         else:
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
-                "WHERE user_id=? AND kind NOT IN ('blast','factory') "
+                "WHERE user_id=? AND kind NOT IN ('blast','factory','cards') "
                 "ORDER BY id DESC LIMIT ?",
                 (int(user_id), int(limit))).fetchall()
     finally:

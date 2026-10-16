@@ -15,6 +15,7 @@ defineProps({
   errAt: { type: String, default: "" },
   runBlast: { type: Function, required: true },
   runFactory: { type: Function, required: true },
+  runCards: { type: Function, required: true },
   cancelJob: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
@@ -32,11 +33,16 @@ function resText(n) {
     <h2>基地战</h2>
     <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
     <p v-else class="muted">还没绑定攻打 QQ。按页面上方的步骤点登录并扫码。一个登录账号只绑一个攻打号，这里的制造用那个号做。</p>
-    <p class="muted">由这个账号的攻打线程执行，不另开连接。基地战、国战助手和日常任务同时做。兵营和战车工厂也同时造，不等另一边做完。</p>
+    <p class="muted">由这个账号的攻打线程执行，不另开连接。基地战、国战助手和日常任务同时做。兵营、战车工厂和开资源卡也同时做，不等另一边做完。</p>
     <h2>基地内资源</h2>
     <p>金属 {{ resText(metal) }} · 石油 {{ resText(oil) }}</p>
     <p>勋章 {{ resText(credit) }}</p>
     <p class="muted">每 10 秒从攻打号已经收到的资源里更新一次。不另向游戏要一份。还没收到就显示还没读到。</p>
+    <form class="lock-row" @submit.prevent="runCards().catch((e) => showErr(e.message))">
+      <span class="switch">开资源卡</span>
+      <button type="submit" :disabled="!dailyQq">开卡</button>
+    </form>
+    <p class="muted">和成就拨款前开卡一样。各开 4 张 1000 万金属卡和石油卡，一次只开 1 张。背包没有，或者这一张没开成，这种就停，另一种接着开。</p>
     <h2>兵营</h2>
     <p>当前爆破兵 {{ blast === null || blast === undefined ? "还没读到" : blast }}</p>
     <form class="lock-row" @submit.prevent="runBlast(count).catch((e) => showErr(e.message))">

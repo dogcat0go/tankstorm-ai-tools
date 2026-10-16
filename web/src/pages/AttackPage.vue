@@ -1,4 +1,6 @@
 <script setup>
+import { computed } from "vue";
+
 const attackCity = defineModel("attackCity", { type: String, required: true });
 const attackUid = defineModel("attackUid", { type: String, required: true });
 const cardMax = defineModel("cardMax", { type: String, required: true });
@@ -50,6 +52,13 @@ function dropPriority(uid) {
   clearRows.value = clearRows.value.filter((item) => item.uid !== uid);
 }
 
+const attackCities = computed(() =>
+  props.cities
+    .filter((c) => !/魔多|摩多/.test(c.name || ""))
+    .sort((a, b) =>
+      String(a.name || "").localeCompare(String(b.name || ""), "zh-CN")
+      || Number(a.id) - Number(b.id)));
+
 function pinClearRetreat() {
   if (clearRetreatMode.value !== "hops" || String(clearRetreatCity.value) !== "0") return;
   const hit = props.cities.find((c) => c.name === "马奇诺");
@@ -88,7 +97,7 @@ function fightingLine(it) {
         <label>城市
           <select v-model="attackCity" required>
             <option value="" disabled>选择城市</option>
-            <option v-for="c in cities.filter((c) => !/魔多|摩多/.test(c.name || ''))" :key="c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
+            <option v-for="c in attackCities" :key="c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
           </select>
         </label>
         <label>UID<input v-model="attackUid" inputmode="numeric" placeholder="留空则打整座城" /></label>

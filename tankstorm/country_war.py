@@ -2202,13 +2202,33 @@ def _low_stamina(power, need=0) -> str:
     return "体力不够"
 
 
-def _commit_move(sock, rec, city, owner, my=0):
+def _spend_move_card(sock, rec, config, cards, power, need=0):
+    """移动或后退体力不够时用一张恢复卡。返回 (是否用上, 停手说明)。"""
+    conf = (config or {}).get("国战") or {}
+    item = int(conf.get("国战恢复卡物品ID") or CARD_ITEM_ID)
+    limit = max(0, int(conf.get("单次最多用几张恢复卡", 100)))
+    box = cards if isinstance(cards, dict) else None
+    used = int((box or {}).get("used") or 0)
+    if used >= limit:
+        return False, _low_stamina(power, need) + f"；本次已用 {used}/{limit} 张恢复卡"
+    sent, msg = _use_recovery_card(sock, rec, item)
+    if not sent:
+        return False, _low_stamina(power, need) + f"；{msg}"
+    if box is not None:
+        box["used"] = used + 1
+    log.info("[移动] %s，%s（%d/%d）", _low_stamina(power, need), msg, used + 1, limit)
+    _nap(2.0)
+    return True, ""
+
+
+def _commit_move(sock, rec, city, owner, my=0, config=None, cards=None):
     """发占领前再开一次面板：人在哪、城里还有没有别人、城属于谁。
 
     人已经在目标城就不再发。敌城还有人也不发。所属以这次面板为准。
     移动和占领的间隔也是 6.5、10、15 秒。ret=30 升一档再试。
-    体力不够时，移动和后退服务端都回 ret=9。面板已经标了这一步要多少，就先别发。
+    体力不够时，移动和后退服务端都回 ret=9。先开一张恢复卡再走；开不了就停下。
     """
+    refilled = False
     for _ in range(6):
         info = _open_city(sock, rec, city, owner, retry=False)
         if not info:
@@ -2232,11 +2252,14 @@ def _commit_move(sock, rec, city, owner, my=0):
                  here, city, owner, cnt, action, send_country)
         power = info.get("power")
         need = int(info.get("need") or 0)
-        if (isinstance(power, int) and not isinstance(power, bool)
-                and need > 0 and power < need):
-            why = _low_stamina(power, need)
-            log.info("[移动] %s，不发%s", why, action)
-            return None, why
+        short = (isinstance(power, int) and not isinstance(power, bool)
+                 and need > 0 and power < need)
+        if short and not refilled:
+            ok, why = _spend_move_card(sock, rec, config, cards, power, need)
+            if not ok:
+                return None, why
+            refilled = True
+            continue
         _sleep_cd(_MOVE_CD.get("last_act") or 0, _MOVE_CD.get("cd_until") or 0,
                   _MOVE_CD.get("cd_sec"), "移动")
         sent = time.time()
@@ -2251,7 +2274,13 @@ def _commit_move(sock, rec, city, owner, my=0):
             _apply_cd(_MOVE_CD, sent, got, _CD_GEARS[0])
             return {"here": int(here or city), "power": _read_path(got, F_POWER)}, ""
         if got.get("ret") == 9:
-            return None, _low_stamina(power)
+            if refilled:
+                return None, _low_stamina(power)
+            ok, why = _spend_move_card(sock, rec, config, cards, power, need)
+            if not ok:
+                return None, why
+            refilled = True
+            continue
         if got.get("ret") != 30:
             return None, f"移动被拒 ret={got.get('ret')}"
         if _retry_cd21(_MOVE_CD, _MOVE_CD.get("last_act") or 0, _CD_GEARS[0],
@@ -2492,7 +2521,8 @@ def retreat_toward(rec, sock, config, name="马奇诺", hops=3, beat=None,
 def walk_to(rec, sock, config, target, sweep=False, beat=None,
              avoid=None, replanned=False, uid="", hold_if_blocked=False,
              tally=None, avoid_why=None, march_only=False, max_steps=None,
-             enter_target=False, clear_plan=None, leave_capital=True) -> dict:
+             enter_target=False, clear_plan=None, leave_capital=True,
+             move_cards=None) -> dict:
     """先按最短路径走。敌城打不过就避开它重算一次；再受阻就停。
 
     本国城可以一次走到最远。敌城有人就先打，空城直接占领。
@@ -2505,6 +2535,8 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
     from . import citydb
 
     target = int(target or 0)
+    if not isinstance(move_cards, dict):
+        move_cards = {"used": 0}
     conf = config.get("国战") or {}
     my = int(conf.get("自己国家ID") or 0) or _daily.read_my_country(rec)
     out = {"停止原因": "", "走到": 0, "移动": 0, "目标": target, "击退": 0, "步数": 0}
@@ -2597,7 +2629,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 log.info("[移动] %s %s 实际归属 %s，不是本国，改为从下一座城逐城走",
                          city, name, info["owner"])
             else:
-                moved, why = _commit_move(sock, rec, city, info["owner"], my)
+                moved, why = _commit_move(sock, rec, city, info["owner"], my, config, move_cards)
                 if not moved:
                     out["停止原因"] = f"{city} {name}：{why}"
                     return out
@@ -2682,7 +2714,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                     log.info("[移动] 人已经在 %s %s，不用再发占领", city, name)
                 elif owner == my or not cnt:
                     log.info("[移动] %s %s 人已清空，占领", city, name)
-                    moved, why = _commit_move(sock, rec, city, owner or my, my)
+                    moved, why = _commit_move(sock, rec, city, owner or my, my, config, move_cards)
                     if not moved and "ret=30" in (why or ""):
                         blocked_at = city
                         log.info("[移动] %s %s 占领被拒 ret=30，避开它重新规划",
@@ -2697,23 +2729,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 info = _open_city(sock, rec, city, owner, retry=False)
                 if info:
                     owner = info["owner"] or owner
-                    need = info.get("need") or 0
-                    power = info.get("power")
                     cnt = info["userCnt"]
                     if info.get("here") == int(city) and cnt:
                         cnt -= 1
-                    if (isinstance(power, int) and not isinstance(power, bool)
-                            and need and power < need and not cnt
-                            and owner != my):
-                        item = int(conf.get("国战恢复卡物品ID") or CARD_ITEM_ID)
-                        sent, msg = _use_recovery_card(sock, rec, item)
-                        log.info("[移动] 行动力 %s < 这一步要的 %s，%s",
-                                 power, need, msg)
-                        if not sent:
-                            out["停止原因"] = (f"行动力 {power} 不够占领 "
-                                              f"{city} {name}（要 {need}）；{msg}")
-                            break
-                        _nap(2.0)
                 if cnt and owner != my:
                     log.info("[移动] %s %s 再看还有 %d 人，所属 %s，改为先打",
                              city, name, cnt, owner)
@@ -2734,15 +2752,16 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                         moved = {"here": int(city), "power": info.get("power")}
                         why = ""
                     elif info and (info["owner"] == my or not info["userCnt"]):
-                        moved, why = _commit_move(sock, rec, city,
-                                                  info["owner"] or owner, my)
+                        moved, why = _commit_move(
+                            sock, rec, city, info["owner"] or owner, my,
+                            config, move_cards)
                     else:
                         blocked_at = city
                         block_who = fought.get("挡路") or block_who
                         log.info("[移动] %s %s 打完还有人，避开这座城重新规划",
                                  city, name)
                 else:
-                    moved, why = _commit_move(sock, rec, city, owner or my, my)
+                    moved, why = _commit_move(sock, rec, city, owner or my, my, config, move_cards)
                 if not moved and "城里还有" in (why or ""):
                     log.info("[移动] %s %s %s，改为先打", city, name, why)
                     fought = farm_city(rec, sock, config, city, sweep=True,
@@ -2760,8 +2779,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                     info = _open_city(sock, rec, city, owner or my)
                     if info and (info.get("here") == int(city)
                                  or info["owner"] == my or not info["userCnt"]):
-                        moved, why = _commit_move(sock, rec, city,
-                                                  info["owner"] or my, my)
+                        moved, why = _commit_move(
+                            sock, rec, city, info["owner"] or my, my,
+                            config, move_cards)
                 if not moved and "ret=30" in (why or ""):
                     log.info("[移动] %s %s 占领被拒 ret=30，先尝试攻打", city, name)
                     fought = farm_city(rec, sock, config, city, sweep=True,
@@ -2788,15 +2808,16 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                         moved = {"here": int(city), "power": info.get("power")}
                         why = ""
                     elif info and not info["userCnt"]:
-                        moved, why = _commit_move(sock, rec, city,
-                                                  info["owner"] or owner, my)
+                        moved, why = _commit_move(
+                            sock, rec, city, info["owner"] or owner, my,
+                            config, move_cards)
                     if not moved:
                         blocked_at = city
                         block_who = fought.get("挡路") or block_who
                         log.info("[移动] %s %s 打完仍进不去，避开这座城重新规划",
                                  city, name)
             else:
-                moved, why = _commit_move(sock, rec, city, my, my)
+                moved, why = _commit_move(sock, rec, city, my, my, config, move_cards)
                 if not moved and "ret=7" in (why or ""):
                     moved = {"here": int(city), "power": info.get("power")}
                     why = ""
@@ -2822,7 +2843,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                         moved, why = {"here": int(city), "power": info.get("power")}, ""
                     elif info and not info["userCnt"]:
                         log.info("[移动] %s %s 人已清空，再走进去", city, name)
-                        moved, why = _commit_move(sock, rec, city, my, my)
+                        moved, why = _commit_move(sock, rec, city, my, my, config, move_cards)
             if blocked_at:
                 break
             if not moved:
@@ -2864,7 +2885,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                           uid=uid, tally=tally, avoid_why=why,
                           march_only=march_only, max_steps=left,
                           enter_target=enter_target, clear_plan=clear_plan,
-                          leave_capital=leave_capital)
+                          leave_capital=leave_capital, move_cards=move_cards)
             out["移动"] += nxt.get("移动") or 0
             out["步数"] = int(out.get("步数") or 0) + int(nxt.get("步数") or 0)
             if nxt.get("走到"):

@@ -4241,6 +4241,7 @@ DAILY_KIND_LABEL = {
     "pve": "征战世界",
     "fund": "成就拨款",
     "blast": "爆破兵",
+    "cards": "开资源卡",
 }
 _DAILY_STATUS = {
     "pending": "排队",
@@ -4822,9 +4823,15 @@ def resume_daily_jobs() -> None:
 
 
 def list_daily_jobs(user_id: int, limit: int = 2, kind: str = "") -> list:
+    """kind 为空时不带基地战的两项。kind 为 base 时只带爆破兵和开资源卡。"""
     conn = connect(readonly=True)
     try:
-        if kind:
+        if kind == "base":
+            rows = conn.execute(
+                "SELECT id, kind, status, detail, created_at FROM daily_job "
+                "WHERE user_id=? AND kind IN ('blast','cards') ORDER BY id DESC LIMIT ?",
+                (int(user_id), int(limit))).fetchall()
+        elif kind:
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
                 "WHERE user_id=? AND kind=? ORDER BY id DESC LIMIT ?",
@@ -4832,7 +4839,7 @@ def list_daily_jobs(user_id: int, limit: int = 2, kind: str = "") -> list:
         else:
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
-                "WHERE user_id=? AND kind<>'blast' ORDER BY id DESC LIMIT ?",
+                "WHERE user_id=? AND kind NOT IN ('blast','cards') ORDER BY id DESC LIMIT ?",
                 (int(user_id), int(limit))).fetchall()
     finally:
         conn.close()

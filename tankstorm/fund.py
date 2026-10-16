@@ -128,6 +128,74 @@ def _fund_value(got):
     return None
 
 
+def open_resource_cards(rec, sock, bag=None, on_progress=None, label="开卡"):
+    """各开最多 4 张 1000 万金属卡和石油卡。一次一张。
+
+    bag 不传就用最近的背包。返回 (背包, [(资源, 开了几张, 原因)])。
+    没有背包时不发请求。某一张没开成就停这种，另一种接着开。
+    """
+    if bag is None:
+        got_bag = rec.latest.get(RSE_BAG) if rec else None
+        bag = got_bag[1] if got_bag and isinstance(got_bag[1], dict) else None
+    names = ((ITEM_METAL, "金属"), (ITEM_OIL, "石油"))
+    if not isinstance(bag, dict):
+        return None, [(name, 0, "没有背包") for _item, name in names]
+    log.info("[%s] 先各开 %d 张金属卡和石油卡", label, MAX_OPEN)
+    rows = []
+    for item_id, name in names:
+        raise_if_stopped()
+        slot, count = _find_card(bag, item_id)
+        if not count:
+            log.info("[%s] 背包没有 1000 万%s卡", label, name)
+            rows.append((name, 0, "背包没有"))
+            continue
+        opened = 0
+        why = ""
+        while opened < MAX_OPEN and slot is not None and count > 0:
+            ok, reason = use_card(rec, sock, slot, item_id, 1)
+            if not ok:
+                tail = "，接着拨款" if "拨款" in label else ""
+                log.info("[%s] %s卡第 %d 张没开成（%s）%s",
+                         label, name, opened + 1, reason, tail)
+                why = str(reason)
+                break
+            opened += 1
+            metal, oil = _wallet(_pick_recent(rec, RSE_USER, 0))
+            log.info("[%s] 开了 1 张 1000 万%s卡（%d/%d），基地金属 %s 石油 %s",
+                     label, name, opened, MAX_OPEN, _wan(metal), _wan(oil))
+            if on_progress:
+                on_progress(f"{name} {opened}/{MAX_OPEN}")
+            _nap(0.4)
+            bag = _pick_recent(rec, RSE_BAG, 0) or bag
+            slot, count = _find_card(bag, item_id)
+        rows.append((name, opened, why))
+    return bag, rows
+
+
+def open_base_cards(rec, sock, on_progress=None):
+    """基地战开资源卡。各开最多 4 张，规则和拨款前开卡一样。"""
+    _bag, rows = open_resource_cards(rec, sock, on_progress=on_progress, label="开卡")
+    if any(why == "没有背包" for _name, _opened, why in rows):
+        return False, "登录包里没有背包，没有开卡"
+    bits = []
+    for name, opened, why in rows:
+        if why == "背包没有":
+            bits.append(f"没有 1000 万{name}卡")
+        elif why:
+            bits.append(f"{name}开了 {opened} 张，下一张没开成（{why}）")
+        else:
+            bits.append(f"{name}开了 {opened} 张")
+    metal, oil = _wallet(_pick_recent(rec, RSE_USER, 0))
+    text = "，".join(bits)
+    if isinstance(metal, int) or isinstance(oil, int):
+        from . import citydb
+        citydb.note_attack_wallet(
+            metal if isinstance(metal, int) else None,
+            oil if isinstance(oil, int) else None)
+        text += f"。基地金属 {_wan(metal)} 石油 {_wan(oil)}"
+    return True, text
+
+
 def fund(rec, sock, building_id, times, on_progress=None):
     """每次全部拨款之前，各开 4 张 1000 万金属卡和石油卡。
 
@@ -148,27 +216,8 @@ def fund(rec, sock, building_id, times, on_progress=None):
     for i in range(1, times + 1):
         raise_if_stopped()
         if isinstance(bag, dict):
-            log.info("[拨款] 第 %d/%d 次：先各开 %d 张金属卡和石油卡",
-                     i, times, MAX_OPEN)
-            for item_id, name in ((ITEM_METAL, "金属"), (ITEM_OIL, "石油")):
-                slot, count = _find_card(bag, item_id)
-                if not count:
-                    log.info("[拨款] 背包没有 1000 万%s卡", name)
-                opened = 0
-                while opened < MAX_OPEN and slot is not None and count > 0:
-                    ok, why = use_card(rec, sock, slot, item_id, 1)
-                    if not ok:
-                        log.info("[拨款] %s卡第 %d 张没开成（%s），接着拨款",
-                                 name, opened + 1, why)
-                        break
-                    opened += 1
-                    metal, oil = _wallet(_pick_recent(rec, RSE_USER, 0))
-                    log.info("[拨款] 第 %d 次 开了 1 张 1000 万%s卡（%d/%d），"
-                             "基地金属 %s 石油 %s",
-                             i, name, opened, MAX_OPEN, _wan(metal), _wan(oil))
-                    _nap(0.4)
-                    bag = _pick_recent(rec, RSE_BAG, 0) or bag
-                    slot, count = _find_card(bag, item_id)
+            bag, _rows = open_resource_cards(
+                rec, sock, bag, label=f"拨款 第 {i}/{times} 次")
         metal, oil = _wallet(_pick_recent(rec, RSE_USER, 0))
         log.info("[拨款] 第 %d 次拨款前 基地金属 %s 石油 %s",
                  i, _wan(metal), _wan(oil))

@@ -208,10 +208,11 @@ async function refreshBase() {
   baseCredit.value = data.credit == null ? null : data.credit;
 }
 
-async function runBase(count) {
+async function runBase(countOrBody) {
   showErr("");
   baseNote.value = "";
-  await api("/api/base", { count });
+  const body = countOrBody && typeof countOrBody === "object" ? countOrBody : { count: countOrBody };
+  await api("/api/base", body);
   baseNote.value = "已交给绑定的攻打号";
   await refreshBase();
   await refreshAttacks();
@@ -1033,6 +1034,7 @@ onUnmounted(() => {
         :err="err"
         :err-at="errAt"
         :run-blast="runBase"
+        :run-cards="() => runBase({ kind: 'cards' })"
         :cancel-job="cancelBase"
         :show-err="showErr"
       />

@@ -1288,7 +1288,7 @@ TASKS = [
        "RceArenaRankInfo{type:2,nIndex,nCountry} 取可挑战名单 → "
        "RceArenaOpt{type:1,uidself,uidfight,indexself,indexfight,"
        "countryidself} 挑战。打到 nCanFightTimes 归零，不留剩余。"
-       "优先打 NPC（短 uid）；已经是第一名时改打第 2～10 名。"
+       "优先打 NPC（短 uid）；已经是第一名时改打后面的人。名次写成 0 和写成 1 都是第一名。"
        "成败以面板变化为准",
        runner=lambda rec, sock, config: __import__(
            "tankstorm.arena", fromlist=["daily_challenge"]

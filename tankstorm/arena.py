@@ -140,6 +140,16 @@ NPC = {
 }
 
 
+def _at_top(rank) -> bool:
+    """第一名。有的面板把第一名写成 1，有的写成 0。"""
+    return rank in (0, 1)
+
+
+def _top_low(rank) -> int:
+    """第一名要打的起始名次。自己是 0 时，紧挨着的那个人在榜上是第 1 名。"""
+    return 1 if rank == 0 else 2
+
+
 def npc_id(uid) -> int:
     """uid 是 NPC 就返回它的 NPC 编号，是真人（十几位长 uid）则返回 0。"""
     s = str(uid or "")
@@ -202,7 +212,8 @@ def _read_panel(data):
             data.get("nIntegralScore"))
 
 
-def rank_window(sock, rec, my_rank, country, timeout=6.0, behind_top=False):
+def rank_window(sock, rec, my_rank, country, timeout=6.0, behind_top=False,
+                 low=2):
     """取可挑战名单。返回 (名单, 真人名字表)，名单是 [(名次, uid), …]。
 
     一条请求会引来**两条**同名回包：type:2 是"名次→uid"，type:3 是
@@ -210,7 +221,8 @@ def rank_window(sock, rec, my_rank, country, timeout=6.0, behind_top=False):
 
     ⚠️ 只取 field2.field3 —— 那才是可挑战的窗口（十个人都排在自己前面）。
     同一条回包里的 field4 是**全国前十**，拿它当目标就等于去打榜首。
-    behind_top 只在自己已经是第一名时打开：前面没有人，改从第 2～10 名里挑。
+    behind_top 只在自己已经是第一名时打开：前面没有人，改从后面的名次里挑。
+    第一名写成 1 时从第 2 名开始；写成 0 时从第 1 名开始。
     """
     since = _send(sock, rec, OP_RANK,
                   {1: ("int32", 2), 2: ("int32", my_rank),
@@ -231,7 +243,7 @@ def rank_window(sock, rec, my_rank, country, timeout=6.0, behind_top=False):
             if isinstance(e, dict) and isinstance(e.get("field1"), str):
                 names[e["field1"]] = e.get("field2")
 
-    return _parse_board(board, country, behind_top=behind_top), names
+    return _parse_board(board, country, behind_top=behind_top, low=low), names
 
 
 def _entry_rows(raw):
@@ -249,12 +261,13 @@ def _entry_rows(raw):
     return out
 
 
-def _parse_board(board, country, behind_top=False):
+def _parse_board(board, country, behind_top=False, low=2):
     """从榜单回包里抽出本国的 [(名次, uid), …]。
 
     ⚠️ 只取 field3。同一条回包里的 field4 是**全国前十**，拿它当目标就等于
     去打榜首。唯一的例外是自己已经是第一名（behind_top）：前面没有人，
-    这时才把 field4 里的第 2～10 名并进来。
+    这时才把 field4 里从 low 到第 10 名并进来。自己是第 1 名时 low 是 2；
+    面板把第一名写成 0 时，紧挨着的是第 1 名，low 是 1。
     type:1（全服榜）是六个国家一段一段的，所以必须按国家挑对那段。
     """
     blocks = board.get("field2") or []
@@ -268,10 +281,10 @@ def _parse_board(board, country, behind_top=False):
             continue
         rows = _entry_rows(b.get("field3"))
         if behind_top:
-            rows = rows + _entry_rows(b.get("field4"))
+            rows = [e for e in rows if e[0] >= low]
+            rows = rows + [e for e in _entry_rows(b.get("field4"))
+                           if low <= e[0] <= 10]
         for rank, uid in rows:
-            if behind_top and not (2 <= rank <= 10):
-                continue
             if (rank, uid) in seen:
                 continue
             seen.add((rank, uid))
@@ -322,15 +335,20 @@ def pick_target(entries, my_rank, prefer="最弱优先", allow_player=True,
     真人只在名单里一个 NPC 都没有时才打，且取**名次离自己最近**的那个，
     也就是窗口里最保守的一个。
 
-    自己已经是第一名时，前面没有对手。名单改成第 2～10 名，挑法不变：
-    还是 NPC 优先；真人都在自己后面，名次数字最小的（第 2 名）离得最近。
+    自己已经是第一名时，前面没有对手。名单改成后面几名，挑法不变：
+    还是 NPC 优先；真人都在自己后面，名次数字最小的那个离得最近。
+    第一名在面板上有时是 1，有时是 0。是 0 时，没有名次小于 0 的人，
+    必须改打第 1 名及以后，不能再用「名次比自己小」来挑。
 
     avoid 是已经打输过的 (名次, uid)。打输了名次不动，下一轮拿到的名单
     一模一样，不排掉就会对着同一个人一直撞到次数耗光。
     """
     avoid = set(avoid)
-    if my_rank == 1:
-        usable = [e for e in entries if 2 <= e[0] <= 10 and e not in avoid]
+    if _at_top(my_rank):
+        low = _top_low(my_rank)
+        usable = [e for e in entries if low <= e[0] <= 10 and e not in avoid]
+        if not usable:
+            usable = [e for e in entries if e[0] > my_rank and e not in avoid]
     else:
         usable = [e for e in entries if e[0] < my_rank and e not in avoid]
     npcs = [(r, u) for r, u in usable if npc_id(u)]
@@ -343,7 +361,7 @@ def pick_target(entries, my_rank, prefer="最弱优先", allow_player=True,
     players = [(r, u) for r, u in usable if not npc_id(u)]
     if not players:
         return None
-    if my_rank == 1:
+    if _at_top(my_rank):
         return min(players, key=lambda x: x[0])
     return max(players, key=lambda x: x[0])
 
@@ -502,16 +520,19 @@ def _loop(rec, sock, rounds, country, gap, prefer, allow_player, out):
             out["停止原因"] = "今日挑战次数已用完（nCanFightTimes=0）"
             break
 
-        if my_rank == 1 and not told_top:
-            log.info("[争霸战] 当前已是第一名，改为挑战第 2～10 名")
+        top = _at_top(my_rank)
+        if top and not told_top:
+            log.info("[争霸战] 当前已是第一名（名次 %s），改为挑战第 %s～10 名",
+                     my_rank, _top_low(my_rank))
             told_top = True
         entries, names = rank_window(
-            sock, rec, my_rank, country, behind_top=(my_rank == 1))
-        if my_rank == 1:
+            sock, rec, my_rank, country, behind_top=top,
+            low=_top_low(my_rank) if top else 2)
+        if top:
             entries = [e for e in entries if str(e[1]) != me]
         if not entries:
-            out["停止原因"] = ("已是第一名，但取不到第 2～10 名，停手"
-                             if my_rank == 1 else "取不到可挑战名单，停手")
+            out["停止原因"] = ("已是第一名，但取不到后面的名次，停手"
+                             if top else "取不到可挑战名单，停手")
             break
         target = pick_target(entries, my_rank, prefer, allow_player, lost_to)
         if target is None and lost_to:
@@ -522,6 +543,9 @@ def _loop(rec, sock, rounds, country, gap, prefer, allow_player, out):
             lost_to.clear()
             target = pick_target(entries, my_rank, prefer, allow_player)
         if target is None:
+            shown = "、".join(f"{r}" for r, _uid in entries[:12])
+            log.info("[争霸战] 名单有 %d 人，名次 %s，自己名次 %s，挑不出目标",
+                     len(entries), shown, my_rank)
             out["停止原因"] = ("名单里没有 NPC，且配置不允许打真人"
                              if not allow_player else "名单里挑不出可打的目标")
             break
@@ -564,10 +588,11 @@ def _loop(rec, sock, rounds, country, gap, prefer, allow_player, out):
 
         fails = 0
         out["挑战"] += 1
-        # 打前面的人：名次数字变小才是赢。已经是第一名、改打第 2～10 名时，
+        # 打前面的人：名次数字变小才是赢。已经是第一名、改打后面的人时，
         # 赢了会变成对方的名次（数字变大），名次不动则是没打过。
+        # 第一名写成 0 时同样算：赢了名次从 0 变成对方的名次。
         won = new_rank is not None and (
-            new_rank < my_rank or (my_rank == 1 and new_rank != my_rank))
+            new_rank < my_rank or (_at_top(my_rank) and new_rank != my_rank))
         if won:
             out["胜"] += 1
         else:

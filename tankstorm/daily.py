@@ -1086,8 +1086,25 @@ TASKS = [
        # "数组里第 day-1 格"，要补得先扩 success_flag 的写法。
        report=("logonDays", "field3")),
 
-    _t("每日资源", "每日免费资源", "0444", "RceGetDailyRes",
-       {}, "待确认", "无字段或字段未知，需实测"),
+    # 2026-10-11 19:33 满仓时客户端发 time=0，能收。没满时 time 是
+    # (容量-已攒)×周期/产量，数字来自建筑表，不是按仓库涨速倒推。
+    _t("每日资源", "每日免费资源", "0414", "RceBuildingModify",
+       {}, "实测",
+       "2026-10-11：类型 1 金属厂、类型 2 油井。field6=0 发 time=0；"
+       "field6=1 时 field7 是已攒量，time=(容量-已攒)×15/产量。"
+       "到手看 resources。不花点券",
+       runner=lambda rec, sock, config: daily_collect_res(rec, sock, config)),
+
+    # 2026-10-11 19:44 抓包。5 个工程师先修猛犸再修 T99。
+    # 上行是 RceBaseBattleModify type=0，army 里只有被修的坦克，血量按大约
+    # 12 秒一包往上加。回包 RseBaseBattleModify error=0。不花资源。
+    _t("修复坦克", "工程师修复坦克", "0427", "RceBaseBattleModify",
+       {}, "实测",
+       "2026-10-11：先读 RseLoadArmy，有工程师才修残血坦克。"
+       "坐标本地算，超出射程 50 就把坦克报到工程师旁边。不寻路",
+       runner=lambda rec, sock, config: __import__(
+           "tankstorm.repair", fromlist=["repair_tanks"]).repair_tanks(
+               rec, sock, config)),
 
     _t("战功排名", "战功榜奖励", "04a2", "RceZhanGongRank",
        {1: ("int32", 0)}, "待确认", "需实测"),
@@ -2223,6 +2240,138 @@ def daily_aa(rec, sock, config, count=1, on_progress=None):
         place="战车工厂", unit="防空车", track=False)
 
 
+# 2026-10-17 00:20 抓包。豪饮是英雄招募高级档，用背包里的 10061。
+# 高级将领是将领招募：单抽 type=2、credit=250；十连 type=12、credit=-250。
+# 两次都带道具槽 10020，勋章没变。槽位不写死，按物品号现查。
+_DRAW_DRINK = 10061
+_DRAW_TICKET = 10020
+
+
+def _draw_slot(rec, item_id):
+    """背包里这个物品的 (槽位, 数量)。后到的背包包为准。"""
+    hist = list((getattr(rec, "recent", {}) or {}).get("RseBagItemLst") or [])
+    one = (getattr(rec, "latest", {}) or {}).get("RseBagItemLst")
+    if one and one not in hist:
+        hist.append(one)
+    found = None
+    for item in hist:
+        data = item[1] if isinstance(item, tuple) and len(item) > 1 else item
+        if not isinstance(data, dict):
+            continue
+        rows = data.get("bagItem")
+        if isinstance(rows, dict):
+            nested = rows.get("field1") or rows.get("field2")
+            rows = nested if isinstance(nested, list) else [rows]
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            tid = row.get("field2")
+            slot = row.get("field1")
+            count = row.get("field4") or 0
+            if tid != item_id or not isinstance(slot, int) or isinstance(slot, bool) or slot <= 0:
+                continue
+            found = (slot, int(count) if isinstance(count, int) and not isinstance(count, bool) else 0)
+    return found
+
+
+def _draw_send(rec, sock, opcode, fields, reply, kind):
+    mark = rec.seq_mark()
+    sender.send_frame(sock, opcode, encode_message(fields, omit_zero=False),
+                      rec.rc4_c2s)
+    return _await_response(
+        sock, rec, reply, mark, 6,
+        want=lambda d, kind=kind: isinstance(d, dict) and d.get("type") == kind)
+
+
+def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):
+    """抽指定次数。by_card 时 count 是卡的张数，十连次数为张数除以 10 向下取整。
+
+    成功看回包 ret=0。
+    """
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        return False, "数量要是数字"
+    if not 1 <= count <= 999:
+        return False, "卡数量要在 1 到 999"
+    per = 10 if mode == "admiral10" else 1
+    times = count // per if by_card else count
+    if times < 1:
+        return False, f"十连至少要 10 张卡，这次 {count} 张，向下取整是 0 次，不发"
+    title = {"haoyin": "豪饮", "admiral": "高级将领单抽", "admiral10": "高级将领十连"}.get(mode, mode)
+    item_id = _DRAW_DRINK if mode == "haoyin" else _DRAW_TICKET
+    card = "豪饮卡" if mode == "haoyin" else "高级招募卡"
+    if mode == "haoyin":
+        _draw_send(rec, sock, "0400", {3: ("int32", 0)}, "RseHeroOpen", 0)
+    else:
+        _draw_send(rec, sock, "044e", {3: ("int32", 0)}, "RseAdmiralOpen", 0)
+    _nap(0.3)
+    done = 0
+    while done < times:
+        raise_if_stopped()
+        item = _draw_slot(rec, item_id)
+        have = 0 if not item else item[1]
+        if not item or have < per:
+            head = f"完成 {done}/{times}。" if done else ""
+            return False, f"{head}{card}只有 {have} 张，这次要 {per} 张，已停"
+        if mode == "haoyin":
+            sent = f"0402 type=2 item槽={item[0]}"
+            got = _draw_send(rec, sock, "0402", {
+                1: ("int32", 0), 2: ("int32", item[0]), 3: ("int32", 0),
+                4: ("int32", 2), 5: ("int32", 0),
+            }, "RseHeroVisit", 2)
+        else:
+            kind, credit = (12, -250) if mode == "admiral10" else (2, 250)
+            sent = f"0450 type={kind} credit={credit} item槽={item[0]}"
+            got = _draw_send(rec, sock, "0450", {
+                2: ("int32", item[0]), 3: ("int32", 0),
+                4: ("int32", kind), 5: ("int32", credit),
+            }, "RseAdmiralVisit", kind)
+        ok, why = _draw_done(title, sent, got, "")
+        if not ok:
+            head = f"完成 {done}/{times}。" if done else ""
+            return False, head + why
+        done += 1
+        deadline = time.time() + 0.8
+        while time.time() < deadline:
+            _beat()
+            try:
+                sock.settimeout(0.3)
+                if not sock.recv(8192):
+                    break
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+        left = _draw_slot(rec, item_id)
+        remain = left[1] if left else "未知"
+        if on_progress:
+            on_progress(f"{done}/{times}，{card}剩余={remain}")
+        _nap(0.3)
+    left = _draw_slot(rec, item_id)
+    remain = left[1] if left else "未知"
+    used = done * per
+    if by_card and mode == "admiral10":
+        tail = f"指定 {count} 张，向下取整抽 {done} 次、用 {used} 张"
+    else:
+        tail = f"抽了 {done} 次、用 {used} 张"
+    return True, f"成功：{title}{tail}，{card}剩余={remain}"
+
+
+def _draw_done(name, sent, got, extra):
+    if not isinstance(got, dict):
+        return False, f"{name} 已发出 {sent}，没有回包"
+    ret = got.get("ret")
+    head = f"{name} 已发出 {sent}，收到 type={got.get('type')} ret={ret}"
+    if extra:
+        head += "，" + extra
+    if ret != 0:
+        return False, head + "，未成功"
+    return True, head
+
+
 def _one(v):
     if isinstance(v, bool) or not isinstance(v, int):
         return None
@@ -2371,6 +2520,129 @@ def daily_medal(rec, sock, config, strong=False):
         gain = f"，{kind}代币 {start}→{tokens}"
     tail = f"{kind}铸造次数已用完" if left <= 0 else f"还剩{kind}铸造 {left} 次"
     return True, f"成功：拨款 {rounds} 次{gain}，{tail}"
+
+
+def daily_collect_res(rec, sock, config):
+    """一键收取金属厂和油井。不花点券，不花勋章。
+
+    建筑从登录的 RseLoad 里取：field5=1 金属厂，2 油井，field4 是 id。
+    field6=0 表示已经装满，发 time=0。
+    field6=1 时 field7 是已攒数量。time 用建筑表：
+    (容量[等级-1] - 已攒) * 周期 / 产量，取整。金属厂和油井是同一套数。
+    """
+    # RedWar_2026100801 建筑表，等级 1 到 12。周期每级都是 15 秒。
+    cap = (10800, 14520, 21600, 32760, 48720, 74880,
+           110160, 156000, 213840, 285120, 420000, 640000)
+    produce = (9, 11, 15, 21, 29, 39, 51, 65, 81, 99, 125, 167)
+
+    def collect_time(level, state, stored):
+        if state == 0:
+            return 0
+        if not isinstance(level, int) or level < 1 or level > len(cap):
+            return None
+        if stored is None or stored < 0:
+            return None
+        room = cap[level - 1] - stored
+        if room <= 0:
+            return 0
+        return room * 15 // produce[level - 1]
+
+    load = (rec.latest.get("RseLoad") or (None, None))[1] if rec else None
+    buildings = _rows(load.get("buildingdata")) if isinstance(load, dict) else None
+    if not buildings:
+        return False, "失败：读不到基地建筑"
+    targets = []
+    unknown = []
+    for b in buildings:
+        kind = b.get("field5")
+        if kind not in (1, 2):
+            continue
+        bid = _one(b.get("field4"))
+        level = _one(b.get("field1"))
+        state = _one(b.get("field6"))
+        stored = _one(b.get("field7"))
+        if not bid or bid <= 0 or state is None:
+            continue
+        wait = collect_time(level, state, stored)
+        if wait is None:
+            unknown.append(bid)
+            continue
+        targets.append((bid, wait))
+    if not targets and not unknown:
+        return False, "失败：读不到金属厂或油井"
+
+    def num(v):
+        if isinstance(v, bool) or v is None:
+            return None
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str) and v.lstrip("-").isdigit():
+            return int(v)
+        return None
+
+    def pair(data):
+        if not isinstance(data, dict):
+            return None
+        res = data.get("resources")
+        if isinstance(res, list) and len(res) >= 2:
+            metal, oil = num(res[0]), num(res[1])
+            if metal is not None and oil is not None:
+                return metal, oil
+        metal, oil = num(data.get("metal")), num(data.get("oil"))
+        if metal is not None and oil is not None:
+            return metal, oil
+        return None
+
+    before = pair((rec.latest.get("RseBuildingModify") or (None, None))[1])
+    if before is None:
+        before = pair((rec.latest.get("RseUserInfo") or (None, None))[1])
+    got_n = refused = 0
+    bad = ""
+    after = None
+    for bid, wait in targets:
+        raise_if_stopped()
+        mark = rec.seq_mark()
+        sender.send_frame(
+            sock, "0414",
+            encode_message({2: ("int32", bid), 3: ("int32", 12),
+                            11: ("int32", wait)}, omit_zero=False),
+            rec.rc4_c2s)
+        got = _await_response(
+            sock, rec, "RseBuildingModify", mark, 6,
+            want=lambda d, bid=bid: isinstance(d, dict)
+            and d.get("type") == 12 and d.get("id") == bid)
+        err = got.get("error") if isinstance(got, dict) else None
+        if not isinstance(err, int) or isinstance(err, bool):
+            bad = bad or f"建筑 {bid} 没有回包"
+        elif err == 27:
+            refused += 1
+            bad = bad or f"建筑 {bid} time={wait} 被拒 error=27"
+        elif err != 0:
+            bad = bad or f"建筑 {bid} 被拒 error={err}"
+        else:
+            got_n += 1
+            now = pair(got)
+            if now:
+                after = now
+        _nap(0.3)
+    parts = []
+    if got_n:
+        parts.append(f"收了 {got_n} 座")
+    if refused:
+        parts.append(f"{refused} 座被拒")
+    if unknown:
+        parts.append(f"{len(unknown)} 座等级没有产量数据")
+    if before and after and after != before:
+        parts.append(f"金属 {after[0] - before[0]:+}、石油 {after[1] - before[1]:+}")
+    text = "，".join(parts)
+    if not got_n:
+        why = bad or "没有收上"
+        if text:
+            why = why + "。" + text
+        return False, "失败：" + why
+    if bad or unknown:
+        return False, f"失败：{bad or '有的楼没发'}。{text}"
+    return True, "成功：" + text
 
 
 def daily_scene_tree(rec, sock, config):

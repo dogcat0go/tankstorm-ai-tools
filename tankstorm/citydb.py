@@ -4104,6 +4104,9 @@ DAILY_KIND_LABEL = {
     "fund": "成就拨款",
     "blast": "爆破兵",
     "aa": "防空车",
+    "haoyin": "英雄豪饮",
+    "admiral": "高级将领单抽",
+    "admiral10": "高级将领十连",
 }
 _DAILY_STATUS = {
     "pending": "排队",
@@ -4523,12 +4526,17 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
             return "拨款次数要在 1 到 999"
         clean["building_id"] = building
         clean["times"] = times
-    elif kind in ("blast", "aa"):
+    elif kind in ("blast", "aa", "haoyin", "admiral", "admiral10"):
         try:
             count = int(str(params.get("count") or "").strip())
         except (TypeError, ValueError):
             return "数量要是数字"
-        if not (1 <= count <= 399):
+        if kind in ("haoyin", "admiral", "admiral10"):
+            if not (1 <= count <= 999):
+                return "卡数量要在 1 到 999"
+            if kind == "admiral10" and count < 10:
+                return "十连至少要 10 张卡"
+        elif not (1 <= count <= 399):
             return "数量要在 1 到 399"
         clean["count"] = count
     conn = connect()
@@ -4695,7 +4703,7 @@ def list_daily_jobs(user_id: int, limit: int = 2, kind: str = "") -> list:
         else:
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
-                "WHERE user_id=? AND kind NOT IN ('blast','aa') ORDER BY id DESC LIMIT ?",
+                "WHERE user_id=? AND kind NOT IN ('blast','aa','fund','haoyin','admiral','admiral10') ORDER BY id DESC LIMIT ?",
                 (int(user_id), int(limit))).fetchall()
     finally:
         conn.close()

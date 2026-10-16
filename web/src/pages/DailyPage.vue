@@ -4,8 +4,6 @@ import "element-plus/es/components/switch/style/css";
 
 const dailyAt = defineModel("dailyAt", { type: String, required: true });
 const pveStages = defineModel("pveStages", { type: String, required: true });
-const fundBuilding = defineModel("fundBuilding", { type: String, required: true });
-const fundTimes = defineModel("fundTimes", { type: String, required: true });
 const modoCards = defineModel("modoCards", { type: String, required: true });
 
 defineProps({
@@ -16,7 +14,6 @@ defineProps({
   dailyAtNote: { type: String, default: "" },
   dailyNote: { type: String, default: "" },
   dailySwitching: { type: String, default: "" },
-  fundBuildings: { type: Array, required: true },
   err: { type: String, default: "" },
   errAt: { type: String, default: "" },
   proc: { type: Object, default: null },
@@ -72,18 +69,6 @@ defineProps({
       </div>
       <p class="muted">征战和命令行 --pve 同一套。填一个终点，就从当前关打到这一关。还没到就接着打，不重开。已经到了或超过，免费重开一次，再从第 1 关打到终点；打到了还有免费次数，再重开一次，再从第 1 关打。这一轮没打过就停，不再重开。一天最多 2 次。留空只打当前这一关。第三次、第4次排在后面；还在往终点打的这一轮先不做。第三次重开之后要从第 1 关打到终点，打完才发第4次；第4次也是重开后再打到终点。只重开没打完不算完成。第4次扣 100 勋章。第三次是付费重征。默认关。</p>
     </details>
-    <form class="lock-row" @submit.prevent="runDaily('fund', { building_id: fundBuilding, times: fundTimes }).catch((e) => showErr(e.message))">
-      <span class="switch">成就拨款</span>
-      <label>建筑
-        <select v-model="fundBuilding" class="fund-building" required>
-          <option value="" disabled>选择建筑</option>
-          <option v-for="b in fundBuildings" :key="b.id" :value="b.id">{{ b.name }}</option>
-        </select>
-      </label>
-      <label>次数<input v-model="fundTimes" class="mins" inputmode="numeric" required /></label>
-      <button type="submit" :disabled="!dailyQq">拨款</button>
-    </form>
-    <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 999。</p>
     <form class="lock-row" @submit.prevent="addModo().catch((e) => showErr(e.message))">
       <span class="switch">刷摩多军团</span>
       <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>

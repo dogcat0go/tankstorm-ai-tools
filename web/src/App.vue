@@ -79,6 +79,9 @@ const progressTasks = computed(() => dailyTasks.value.filter((it) => !it.extra))
 const dailyJobs = ref([]);
 const baseCount = ref("1");
 const aaCount = ref("1");
+const drinkCount = ref("1");
+const admiralCount = ref("1");
+const admiral10Count = ref("10");
 const baseJobs = ref([]);
 const baseNote = ref("");
 const baseBlast = ref(null);
@@ -215,6 +218,24 @@ async function runAa(count) {
   showErr("");
   baseNote.value = "";
   await api("/api/base", { count, unit: "aa" });
+  baseNote.value = "已交给绑定的攻打号";
+  await refreshBase();
+  await refreshAttacks();
+}
+
+async function runDraw(mode, count) {
+  showErr("");
+  baseNote.value = "";
+  await api("/api/base", { count, unit: mode });
+  baseNote.value = "已交给绑定的攻打号";
+  await refreshBase();
+  await refreshAttacks();
+}
+
+async function runFund(building, times) {
+  showErr("");
+  baseNote.value = "";
+  await api("/api/daily", { kind: "fund", building_id: building, times });
   baseNote.value = "已交给绑定的攻打号";
   await refreshBase();
   await refreshAttacks();
@@ -911,8 +932,6 @@ onUnmounted(() => {
         v-show="toolsOn && tab === 'daily'"
         v-model:daily-at="dailyAt"
         v-model:pve-stages="pveStages"
-        v-model:fund-building="fundBuilding"
-        v-model:fund-times="fundTimes"
         v-model:modo-cards="modoCards"
         :daily-qq="dailyQq"
         :campaign-tasks="campaignTasks"
@@ -921,7 +940,6 @@ onUnmounted(() => {
         :daily-at-note="dailyAtNote"
         :daily-note="dailyNote"
         :daily-switching="dailySwitching"
-        :fund-buildings="fundBuildings"
         :err="err"
         :err-at="errAt"
         :proc="proc"
@@ -1027,14 +1045,22 @@ onUnmounted(() => {
         v-show="toolsOn && me && me.base_war && tab === 'base'"
         v-model:count="baseCount"
         v-model:aa-count="aaCount"
+        v-model:drink-count="drinkCount"
+        v-model:admiral-count="admiralCount"
+        v-model:admiral10-count="admiral10Count"
+        v-model:fund-building="fundBuilding"
+        v-model:fund-times="fundTimes"
         :daily-qq="dailyQq"
         :jobs="baseJobs"
         :blast="baseBlast"
+        :fund-buildings="fundBuildings"
         :note="baseNote"
         :err="err"
         :err-at="errAt"
         :run-blast="runBase"
         :run-aa="runAa"
+        :run-draw="runDraw"
+        :run-fund="runFund"
         :cancel-job="cancelBase"
         :show-err="showErr"
       />

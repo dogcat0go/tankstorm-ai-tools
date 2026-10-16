@@ -1,16 +1,24 @@
 <script setup>
 const count = defineModel("count", { type: String, required: true });
 const aaCount = defineModel("aaCount", { type: String, required: true });
+const drinkCount = defineModel("drinkCount", { type: String, required: true });
+const admiralCount = defineModel("admiralCount", { type: String, required: true });
+const admiral10Count = defineModel("admiral10Count", { type: String, required: true });
+const fundBuilding = defineModel("fundBuilding", { type: String, required: true });
+const fundTimes = defineModel("fundTimes", { type: String, required: true });
 
 defineProps({
   dailyQq: { type: String, default: "" },
   jobs: { type: Array, required: true },
   blast: { default: null },
+  fundBuildings: { type: Array, required: true },
   note: { type: String, default: "" },
   err: { type: String, default: "" },
   errAt: { type: String, default: "" },
   runBlast: { type: Function, required: true },
   runAa: { type: Function, required: true },
+  runDraw: { type: Function, required: true },
+  runFund: { type: Function, required: true },
   cancelJob: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
@@ -37,6 +45,35 @@ defineProps({
       <button type="submit" :disabled="!dailyQq">开始制造</button>
     </form>
     <p class="muted">按这个数量循环造防空车。每次先开工，剩余时间算出 0 勋章才快速制造，credit 固定写 0。大厅蓝钻剩余降到 600 秒以内才发。要花勋章就停在这一辆，不发。工厂里已经在造防空车的那一辆算进数量，正在造别的就不打断。消耗金属和石油。数量 1 到 399。</p>
+    <h2>用卡</h2>
+    <form class="lock-row" @submit.prevent="runFund(fundBuilding, fundTimes).catch((e) => showErr(e.message))">
+      <span class="switch">成就拨款</span>
+      <label>建筑
+        <select v-model="fundBuilding" class="fund-building" required>
+          <option value="" disabled>选择建筑</option>
+          <option v-for="b in fundBuildings" :key="b.id" :value="b.id">{{ b.name }}</option>
+        </select>
+      </label>
+      <label>次数<input v-model="fundTimes" class="mins" inputmode="numeric" required /></label>
+      <button type="submit" :disabled="!dailyQq">拨款</button>
+    </form>
+    <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 999。</p>
+    <form class="lock-row" @submit.prevent="runDraw('haoyin', drinkCount).catch((e) => showErr(e.message))">
+      <span class="switch">英雄豪饮</span>
+      <label>卡数量<input v-model="drinkCount" class="mins" inputmode="numeric" required /></label>
+      <button type="submit" :disabled="!dailyQq">抽取</button>
+    </form>
+    <form class="lock-row" @submit.prevent="runDraw('admiral', admiralCount).catch((e) => showErr(e.message))">
+      <span class="switch">高级将领单抽</span>
+      <label>卡数量<input v-model="admiralCount" class="mins" inputmode="numeric" required /></label>
+      <button type="submit" :disabled="!dailyQq">抽取</button>
+    </form>
+    <form class="lock-row" @submit.prevent="runDraw('admiral10', admiral10Count).catch((e) => showErr(e.message))">
+      <span class="switch">高级将领十连</span>
+      <label>卡数量<input v-model="admiral10Count" class="mins" inputmode="numeric" required /></label>
+      <button type="submit" :disabled="!dailyQq">抽取</button>
+    </form>
+    <p class="muted">数量是要消耗的卡。豪饮用物品 10061，一张抽一次。高级将领用物品 10020，单抽一张一次。十连按卡数除以 10 向下取整，例如 25 张抽 2 次、用 20 张。不够就停，并写出剩余张数。1 到 999，十连至少 10 张。</p>
     <p v-if="note" class="muted">{{ note }}</p>
     <p v-if="err && errAt === 'base'" class="err">{{ err }}</p>
     <h2>最近执行</h2>

@@ -859,6 +859,103 @@ def run_city_players_once(qq, config: dict, city_id: int,
     return _connect_and(qq, config, _work)
 
 
+def run_base_atk_once(qq, config: dict, uid) -> int:
+    """连一次。照 2026-10-17 雷电24：拉地方列表、进入基地、进攻、5 秒后撤回。"""
+    uid = str(uid or "").strip()
+    if not uid.isdigit():
+        log.error("基地 UID 要是一串数字")
+        return 1
+
+    def _work(rec, sock, spec, ctx, beater):
+        from .proto_encode import encode_message
+
+        def send(op, fields):
+            mark = rec.seq_mark() if rec else 0
+            sender.send_frame(sock, op, encode_message(fields, omit_zero=False),
+                              rec.rc4_c2s)
+            return mark
+
+        def load(kind, base):
+            # 客户端把没填的 h/hn 写成字符串 undefined，enterType 显式写 0。
+            return {2: ("string", base), 3: ("string", kind),
+                    4: ("string", "undefined"), 5: ("string", "undefined"),
+                    6: ("int32", 0)}
+
+        def has_uid(obj):
+            if isinstance(obj, str):
+                return obj == uid
+            if isinstance(obj, dict):
+                return any(has_uid(v) for v in obj.values())
+            if isinstance(obj, list):
+                return any(has_uid(v) for v in obj)
+            return False
+
+        prev = daily.bind_sock(sock)
+        viewed = False
+        try:
+            # 2026-10-17 00:49 雷电24：先 RceGet type=1 拉地方列表，
+            # 再 RceLoad view，等到对方基地数据才 RceAttack。
+            log.info("[基地] 拉地方列表")
+            since = send("041a", {1: ("string", "0"), 2: ("int32", 1)})
+            listed = daily._await_response(
+                sock, rec, "RseGet", since, 3.0,
+                want=lambda d: isinstance(d, dict) and d.get("type") == 1)
+            if not isinstance(listed, dict):
+                log.info("[基地] 地方列表没有回包，不进攻")
+                return 1
+            daily._nap(1.0)
+            rows = [d for seq, d in (getattr(rec, "recent", {}) or {}).get("RseGet", [])
+                    if seq > since]
+            log.info("[基地] 列表 %d 条，%s", len(rows),
+                     "有这个人" if any(has_uid(d) for d in rows) else "没有这个人")
+            log.info("[基地] 进入 %s", uid)
+            since = send("041d", load("view", uid))
+            viewed = True
+            loaded = daily._await_response(
+                sock, rec, "RseLoad", since, 5.0,
+                want=lambda d: isinstance(d, dict) and (
+                    str(d.get("baseid") or "") == uid
+                    or str(d.get("userid") or "") == uid))
+            if not isinstance(loaded, dict):
+                log.info("[基地] 5 秒内没有这个基地的数据，不进攻")
+                return 1
+            log.info("[基地] 已拿到 %s", loaded.get("basename") or uid)
+            log.info("[基地] 进攻 %s", uid)
+            t0 = time.time()
+            since = send("0411", {1: ("int32", 1), 2: ("string", uid),
+                                  17: ("int32", 0), 31: ("int32", 3)})
+            reply = daily._await_response(
+                sock, rec, "RseAttack", since, 4.0,
+                want=lambda d: isinstance(d, dict) and d.get("type") == 1)
+            allowed = isinstance(reply, dict) and reply.get("canAttack") is True
+            if reply is None:
+                log.info("[基地] 4 秒内没有进攻回包")
+            else:
+                log.info("[基地] canAttack=%s errorid=%s",
+                         reply.get("canAttack"), reply.get("errorid"))
+            left = 5.0 - (time.time() - t0)
+            if left > 0:
+                daily._nap(left)
+            log.info("[基地] 撤回")
+            since = send("0411", {1: ("int32", 3)})
+            back = daily._await_response(
+                sock, rec, "RseAttack", since, 3.0,
+                want=lambda d: isinstance(d, dict) and d.get("type") == 3)
+            log.info("[基地] 撤回回包 %s",
+                     "type=3" if isinstance(back, dict) else "没有")
+            return 0 if allowed else 1
+        finally:
+            if viewed:
+                try:
+                    send("041d", load("build", "0"))
+                    log.info("[基地] 已回自己基地")
+                except OSError as exc:
+                    log.warning("[基地] 回家失败: %s", exc)
+            daily.bind_sock(prev)
+
+    return _connect_and(qq, config, _work)
+
+
 def run_attack_once(qq, config: dict, uid, times=1, sweep=False,
                     city_id=0, country=0) -> int:
     """连一次游戏、打指定玩家若干次、断开退出。不迁城。"""
@@ -1902,6 +1999,15 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 on_progress=_show)
             _show(why)
             citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+        elif kind in ("haoyin", "admiral", "admiral10"):
+            if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
+                return
+            ok, why = daily.draw_probe(
+                rec, sock, kind, count=params.get("count") or 1,
+                on_progress=_show, by_card=True)
+            _show(why)
+            citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
         else:
             citydb.finish_daily_job(job["id"], "failed", "没有这项日常")
             task_log(citydb.attack_context_qq(), label, "没有这项日常")
@@ -2842,6 +2948,17 @@ def run_pve_once(qq, config: dict, stages=None) -> int:
             log.error("[征战] %s", exc)
             return 1
         log.info("[征战] %s", why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_draw_once(qq, config: dict, mode: str) -> int:
+    """连一次，按抓包发指定的那一种抽取，看回包后退出。"""
+    def _work(rec, sock, spec, ctx, beater):
+        ok, why = daily.draw_probe(rec, sock, mode)
+        log.info("[抽取] %s", why)
         log.info("任务执行期间共发心跳 %d 次", beater.count)
         return 0 if ok else 1
 

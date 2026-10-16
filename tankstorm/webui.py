@@ -314,9 +314,9 @@ def _handler(config: dict):
                 if not citydb.base_tier(user.get("tier") or ""):
                     _json(self, 403, {"error": "基地战需要高级pro订阅"})
                     return
-                jobs = (
-                    citydb.list_daily_jobs(user["id"], limit=8, kind="blast")
-                    + citydb.list_daily_jobs(user["id"], limit=8, kind="aa"))
+                jobs = []
+                for kind in ("blast", "aa", "fund", "haoyin", "admiral", "admiral10"):
+                    jobs.extend(citydb.list_daily_jobs(user["id"], limit=8, kind=kind))
                 jobs.sort(key=lambda it: it["id"], reverse=True)
                 _json(self, 200, {
                     "qq": citydb.attack_qq_of(user["id"]),
@@ -519,7 +519,8 @@ def _handler(config: dict):
                         raise ValueError("账号已过期")
                     if not citydb.base_tier(user.get("tier") or ""):
                         raise ValueError("基地战需要高级pro订阅")
-                    kind = "aa" if str(data.get("unit") or "") == "aa" else "blast"
+                    unit = str(data.get("unit") or "")
+                    kind = unit if unit in ("aa", "haoyin", "admiral", "admiral10") else "blast"
                     why = citydb.enqueue_daily_job(
                         user["id"], kind, {"count": data.get("count")})
                     if why:

@@ -33,6 +33,7 @@
   python main.py --watch-pages 1201:10-20 1301:0-8
   python main.py --watch-cities                    常驻：按 config 城市监视每 5 分钟刷新指定城
   python web.py                                    订阅页面，不连游戏，默认 0.0.0.0:8765
+  python main.py --qq 972843421 --base-atk <UID>   进这个基地进攻，5 秒后撤回
   python main.py --atk 7826194927704102           离线打人（默认普通攻击 1 次）
   python main.py --atk 7826194927704102 --sweep --atk-times 2
   python main.py --atk-city 2302 --sweep          现场翻页打城：先打再看士气，击退/打不过换人
@@ -41,6 +42,9 @@
   python main.py --pve                 征战世界，留空只打当前关
   python main.py --pve 20              从当前关打到第 20 关
   python main.py --pve 1-10,15         只打名单里的关（当前关必须在里面）
+  python main.py --qq 攻打 --draw haoyin      英雄豪饮一次
+  python main.py --qq 攻打 --draw admiral     高级将领单抽
+  python main.py --qq 攻打 --draw admiral10   高级将领十连
 """
 
 import argparse
@@ -210,7 +214,16 @@ def open_qq(config: dict, name: str, fatal_lock: bool = True):
         qq.apply_config_platform(config)
         return qq
     accounts = (config.get("登录") or {}).get("账号") or {}
+    if not isinstance(accounts, dict):
+        accounts = {}
     spec = accounts.get(name)
+    uin = name[3:] if name.startswith("qq-") else name
+    if not isinstance(spec, dict) and uin.isdigit() and 5 <= len(uin) <= 12:
+        rel = f"accounts/qq-{uin}.json"
+        if os.path.isfile(paths.user_path(rel)):
+            name = f"qq-{uin}"
+            spec = {"cookie": rel}
+            accounts[name] = spec
     if not isinstance(spec, dict):
         names = [k for k, v in accounts.items() if isinstance(v, dict)]
         log.error("登录.账号 里没有「%s」%s", name,
@@ -275,7 +288,8 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     g1 = parser.add_argument_group("登录")
     g1.add_argument("--qq", metavar="名字", default="",
-                    help="攻打号，对应「登录.账号」。扫描不要加这个参数")
+                    help="攻打号。可写「登录.账号」里的名字，或 QQ 号"
+                         "（用 accounts/qq-该号.json）。扫描不要加这个参数")
     g1.add_argument("--login", action="store_true", help="强制重新扫码登录")
     g1.add_argument("--check", action="store_true", help="验证登录态并打印上下文")
     g1.add_argument("--import-device", metavar="文件",
@@ -322,6 +336,9 @@ def main() -> int:
                          "--city-page 和 --city-page-end。"
                          "不带参数则用 config「页范围监视.范围」。"
                          "不删范围外的人。间隔见「间隔秒」")
+    g5.add_argument("--base-atk", metavar="UID", default=None,
+                    help="测试：进入这个玩家基地并发一次进攻，5 秒后撤回再回家。"
+                         "照 2026-10-17 雷电24 的抓包。必须 --qq")
     g5.add_argument("--atk", metavar="BASEID", default=None,
                     help="离线打指定玩家（type:14 普通攻击；加 --sweep 改扫荡。"
                          "不迁城，目标须在邻城）")
@@ -366,6 +383,11 @@ def main() -> int:
                          "写成 1-10 或 3,5,8 时，当前关不在名单里会停，不会跳关")
 
     g4 = parser.add_argument_group("其它")
+    g4.add_argument("--draw", choices=("haoyin", "admiral", "admiral10"),
+                    help="连上后只发这一种，打印回包后退出。"
+                         "haoyin=英雄豪饮，耗 1 个物品 10061；"
+                         "admiral=高级将领单抽，耗 1 个物品 10020；"
+                         "admiral10=高级将领十连，耗 10 个物品 10020")
     g4.add_argument("--capture", action="store_true",
                     help="扫码登录后打开钩子版 Flash 窗口，实时抓游戏明文包。"
                          "登录可选空间或大厅。游戏窗口仍是 flash_host，"
@@ -384,24 +406,25 @@ def main() -> int:
     if not any((args.login, args.check, args.keepalive, args.daily,
                 args.list, args.reset, args.task, args.import_device,
                 args.country_war, args.city_players is not None,
-                args.atk, args.atk_city is not None, args.watch_cities,
+                args.atk, args.base_atk, args.atk_city is not None, args.watch_cities,
                 args.watch_pages is not None,
                 args.web, args.list_cities, args.route is not None,
                 args.move is not None, args.orders,
                 args.capture, args.fund is not None,
-                args.pve is not None)):
+                args.pve is not None, args.draw)):
         parser.print_help()
         return 0
 
     if args.web and not any((args.login, args.check, args.keepalive, args.daily,
                               args.list, args.reset, args.task, args.import_device,
                               args.country_war, args.city_players is not None,
-                              args.atk, args.atk_city is not None, args.watch_cities,
+                              args.atk, args.base_atk, args.atk_city is not None,
+                              args.watch_cities,
                               args.watch_pages is not None, args.list_cities,
                               args.route is not None, args.move is not None,
                               args.orders,
                               args.capture, args.fund is not None,
-                              args.pve is not None)):
+                              args.pve is not None, args.draw)):
         log.error("订阅页面已和游戏分开。另开一个进程：python3 web.py")
         return 1
 
@@ -463,7 +486,7 @@ def main() -> int:
             log.info("今天已经跑过（state.json），退出。删掉 state.json 可强制重跑")
             return 0
 
-    attacking = (args.move is not None or bool(args.atk)
+    attacking = (args.move is not None or bool(args.atk) or bool(args.base_atk)
                  or args.atk_city is not None or args.orders)
     scanning = bool(args.keepalive or args.watch_cities
                     or args.watch_pages is not None)
@@ -606,6 +629,9 @@ def main() -> int:
             qq, config, args.city_players, args.city_country, args.city_page,
             end_page=args.city_page_end)
 
+    if args.base_atk:
+        return socket_keepalive.run_base_atk_once(qq, config, args.base_atk)
+
     # 离线打人：连一次、开目标城面板、type:14/19，不迁城
     if args.atk:
         return socket_keepalive.run_attack_once(
@@ -623,6 +649,9 @@ def main() -> int:
 
     if args.pve is not None:
         return socket_keepalive.run_pve_once(qq, config, args.pve)
+
+    if args.draw:
+        return socket_keepalive.run_draw_once(qq, config, args.draw)
 
     # 每日任务：连一次、跑一轮、退出
     if args.daily:

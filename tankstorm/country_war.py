@@ -2183,10 +2183,11 @@ def _open_city(sock, rec, city, country, retry=True):
     need = _read_path(cd, "cityData.field7")
     here = _read_path(cd, F_CITY)
     power = _read_path(cd, F_POWER)
+    morale = _read_path(cd, F_MORALE)
     return {"owner": int(owner or 0), "userCnt": int(cnt or 0),
             "need": int(need) if isinstance(need, int) and not isinstance(need, bool) else 0,
             "here": int(here) if isinstance(here, int) and not isinstance(here, bool) else 0,
-            "power": power}
+            "power": power, "morale": morale}
 
 
 _MOVE_CD = {"cd_sec": float(_CD_GEARS[0]), "last_act": 0.0,
@@ -2241,7 +2242,8 @@ def _commit_move(sock, rec, city, owner, my=0, config=None, cards=None):
         if here == int(city):
             log.info("[移动] 查看：人在 %s，目标 %s 所属 %s，其他人 %d，人已在城里",
                      here, city, owner, cnt)
-            return {"here": int(city), "power": info.get("power")}, ""
+            return {"here": int(city), "power": info.get("power"),
+                    "morale": info.get("morale")}, ""
         if cnt and int(my or 0) and owner != int(my):
             log.info("[移动] 查看：人在 %s，目标 %s 所属 %s，其他人 %d，先攻打",
                      here, city, owner, cnt)
@@ -2272,7 +2274,13 @@ def _commit_move(sock, rec, city, owner, my=0, config=None, cards=None):
             if here not in (None, int(city)):
                 return None, f"移动后位置是 {here}，不是 {city}"
             _apply_cd(_MOVE_CD, sent, got, _CD_GEARS[0])
-            return {"here": int(here or city), "power": _read_path(got, F_POWER)}, ""
+            moved_power = _read_path(got, F_POWER)
+            if isinstance(moved_power, bool) or not isinstance(moved_power, int):
+                moved_power = info.get("power")
+            morale = _read_path(got, F_MORALE)
+            if isinstance(morale, bool) or not isinstance(morale, int):
+                morale = info.get("morale")
+            return {"here": int(here or city), "power": moved_power, "morale": morale}, ""
         if got.get("ret") == 9:
             if refilled:
                 return None, _low_stamina(power)
@@ -2518,6 +2526,20 @@ def retreat_toward(rec, sock, config, name="马奇诺", hops=3, beat=None,
     return out
 
 
+def _stood(city, info):
+    """人已经在这座城。体力和士气用刚打开的面板，没有就留空。"""
+    info = info if isinstance(info, dict) else {}
+    return {"here": int(city), "power": info.get("power"), "morale": info.get("morale")}
+
+
+def _remember_step(moved) -> None:
+    """走进一座城后，城市、体力和士气一起写到页面。没读到的那一项留着上次的数。"""
+    from . import citydb
+    if not isinstance(moved, dict):
+        return
+    citydb.note_attack_here(moved.get("here"), moved.get("power"), moved.get("morale"))
+
+
 def walk_to(rec, sock, config, target, sweep=False, beat=None,
              avoid=None, replanned=False, uid="", hold_if_blocked=False,
              tally=None, avoid_why=None, march_only=False, max_steps=None,
@@ -2636,10 +2658,10 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 out["移动"] += 1
                 out["步数"] = far_i
                 out["走到"] = moved["here"]
-                citydb.note_attack_here(moved["here"])
+                _remember_step(moved)
                 occupy_from = far_i + 1
-                log.info("[移动] 进入 %s %s，行动力 %s",
-                         moved["here"], name, moved.get("power"))
+                log.info("[移动] 进入 %s %s，行动力 %s，士气 %s",
+                         moved["here"], name, moved.get("power"), moved.get("morale"))
                 if not leave_capital and _is_capital(moved["here"], my):
                     home = citydb.city_name(moved["here"]) or ""
                     out["停止原因"] = (
@@ -2679,7 +2701,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 cnt -= 1
             moved, why = None, ""
             if info.get("here") == int(city) and (owner == my or not cnt):
-                moved = {"here": int(city), "power": info.get("power")}
+                moved = _stood(city, info)
                 log.info("[移动] 人已经在 %s %s", city, name)
             elif (owner != my and citydb.fort_locked(city)
                   and (owned.get(city) or {}).get("home") != 21):
@@ -2710,7 +2732,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                     cnt -= 1
                 citydb.record_occupy(city, owner, cnt)
                 if info.get("here") == int(city):
-                    moved = {"here": int(city), "power": info.get("power")}
+                    moved = _stood(city, info)
                     log.info("[移动] 人已经在 %s %s，不用再发占领", city, name)
                 elif owner == my or not cnt:
                     log.info("[移动] %s %s 人已清空，占领", city, name)
@@ -2749,7 +2771,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                         break
                     info = _open_city(sock, rec, city, owner or my)
                     if info and info.get("here") == int(city):
-                        moved = {"here": int(city), "power": info.get("power")}
+                        moved = _stood(city, info)
                         why = ""
                     elif info and (info["owner"] == my or not info["userCnt"]):
                         moved, why = _commit_move(
@@ -2805,7 +2827,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                         break
                     info = _open_city(sock, rec, city, owner or my)
                     if info and info.get("here") == int(city):
-                        moved = {"here": int(city), "power": info.get("power")}
+                        moved = _stood(city, info)
                         why = ""
                     elif info and not info["userCnt"]:
                         moved, why = _commit_move(
@@ -2819,7 +2841,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             else:
                 moved, why = _commit_move(sock, rec, city, my, my, config, move_cards)
                 if not moved and "ret=7" in (why or ""):
-                    moved = {"here": int(city), "power": info.get("power")}
+                    moved = _stood(city, info)
                     why = ""
                     log.info("[移动] %s %s 已在城里（ret=7），继续", city, name)
                 elif not moved and cnt and "ret=30" in (why or ""):
@@ -2840,7 +2862,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                         break
                     info = _open_city(sock, rec, city, my)
                     if info and info.get("here") == int(city):
-                        moved, why = {"here": int(city), "power": info.get("power")}, ""
+                        moved, why = _stood(city, info), ""
                     elif info and not info["userCnt"]:
                         log.info("[移动] %s %s 人已清空，再走进去", city, name)
                         moved, why = _commit_move(sock, rec, city, my, my, config, move_cards)
@@ -2852,9 +2874,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             out["移动"] += 1
             out["步数"] = int(out.get("步数") or 0) + 1
             out["走到"] = moved["here"]
-            citydb.note_attack_here(moved["here"])
-            log.info("[移动] 进入 %s %s，行动力 %s",
-                     moved["here"], name, moved.get("power"))
+            _remember_step(moved)
+            log.info("[移动] 进入 %s %s，行动力 %s，士气 %s",
+                     moved["here"], name, moved.get("power"), moved.get("morale"))
         if blocked_at:
             cname = citydb.city_name(blocked_at) or blocked_at
             if not block_who:

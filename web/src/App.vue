@@ -785,30 +785,30 @@ const prioShown = computed(() =>
     .map((item) => item.row)
 );
 
-const players = computed(() => {
+const citySubs = computed(() => {
   const order = [];
   const map = {};
   for (const it of items.value) {
-    let group = map[it.uid];
+    let group = map[it.city_id];
     if (!group) {
-      group = { uid: it.uid, name: "", present: false, cities: [] };
-      map[it.uid] = group;
+      group = { city_id: it.city_id, city_name: it.city_name || "", present: false, people: [] };
+      map[it.city_id] = group;
       order.push(group);
     }
-    if (!group.name && it.name) group.name = it.name;
+    if (!group.city_name && it.city_name) group.city_name = it.city_name;
     if (it.present) group.present = true;
-    group.cities.push(it);
+    group.people.push(it);
   }
   return order;
 });
 
-function isSubOpen(uid) {
-  const saved = subOpen.value[uid];
+function isSubOpen(key) {
+  const saved = subOpen.value[key];
   return saved == null ? true : saved;
 }
 
-function onSubToggle(uid, ev) {
-  subOpen.value = { ...subOpen.value, [uid]: ev.target.open };
+function onSubToggle(key, ev) {
+  subOpen.value = { ...subOpen.value, [key]: ev.target.open };
 }
 
 onMounted(async () => {
@@ -959,7 +959,7 @@ onUnmounted(() => {
         :retreat-note="retreatNote"
         :lock-hint="lockHint"
         :items="items"
-        :players="players"
+        :city-subs="citySubs"
         :locking="locking"
         :city-label="cityLabel"
         :add-sub="addSub"

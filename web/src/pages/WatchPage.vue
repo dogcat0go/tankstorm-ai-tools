@@ -18,7 +18,7 @@ defineProps({
   retreatNote: { type: String, default: "" },
   lockHint: { type: String, default: "" },
   items: { type: Array, required: true },
-  players: { type: Array, required: true },
+  citySubs: { type: Array, required: true },
   locking: { type: String, default: "" },
   cityLabel: { type: Function, required: true },
   addSub: { type: Function, required: true },
@@ -91,15 +91,15 @@ defineProps({
     <p v-if="lockHint" class="muted">{{ lockHint }}</p>
     <p v-if="!items.length" class="muted">还没有订阅。</p>
     <div v-else class="subs">
-      <details v-for="p in players" :key="p.uid" class="sub" :open="isSubOpen(p.uid)" @toggle="onSubToggle(p.uid, $event)">
+      <details v-for="c in citySubs" :key="c.city_id" class="sub" :open="isSubOpen(c.city_id)" @toggle="onSubToggle(c.city_id, $event)">
         <summary>
-          <span class="sub-name">{{ p.name || p.uid }}</span>
-          <span v-if="p.name" class="muted">{{ p.uid }}</span>
-          <span v-if="p.present" class="on">在城里</span>
-          <span class="muted">{{ p.cities.length }} 座城</span>
+          <span class="sub-name">{{ cityText(c) }}</span>
+          <span v-if="c.present" class="on">在城里</span>
+          <span class="muted">{{ c.people.length }} 人</span>
         </summary>
-        <div v-for="it in p.cities" :key="it.city_id" class="sub-city">
-          <span class="sub-where">{{ cityText(it) }}</span>
+        <div v-for="it in c.people" :key="it.uid" class="sub-city">
+          <span class="sub-name">{{ it.name || it.uid }}</span>
+          <span v-if="it.name" class="muted">{{ it.uid }}</span>
           <span class="sub-status" :class="it.present ? 'on' : 'off'">{{ statusOf(it) }}<template v-if="it.present && it.page != null"> · 第{{ it.page }}页</template></span>
           <span class="sub-time muted">{{ whenOf(it) }}</span>
           <span class="sub-actions">

@@ -10,6 +10,8 @@ const cities = ref([]);
 const members = ref([]);
 const openMember = ref(0);
 const clearing = ref(0);
+const stormNotes = ref({});
+const stormErr = ref({});
 const fighters = ref([]);
 const scanGap = ref("300");
 const quietStart = ref("");
@@ -254,9 +256,40 @@ async function refreshFighters() {
   fighters.value = data.fighters || [];
 }
 
+function paintMembers(rows) {
+  members.value = (rows || []).map((m) => ({
+    ...m,
+    storm_cap_text: m.storm_cap == null ? "" : String(m.storm_cap),
+  }));
+}
+
 async function loadMembers() {
   const data = await api("/api/admin/members");
-  members.value = data.members || [];
+  paintMembers(data.members);
+}
+
+async function saveStormCap(m) {
+  err.value = "";
+  stormErr.value = { ...stormErr.value, [m.id]: "" };
+  try {
+    const data = await api("/api/admin/members/storm-cap", {
+      user_id: m.id,
+      cap: String(m.storm_cap_text ?? "").trim(),
+    });
+    paintMembers(data.members);
+    const saved = members.value.find((row) => row.id === m.id);
+    stormNotes.value = {
+      ...stormNotes.value,
+      [m.id]: saved && saved.storm_cap != null
+        ? "已保存，上限 " + saved.storm_cap + " 次"
+        : "已保存，不限制",
+    };
+  } catch (e) {
+    const message = e.message || "请求失败";
+    err.value = message;
+    stormErr.value = { ...stormErr.value, [m.id]: message };
+    m.storm_cap_text = m.storm_cap == null ? "" : String(m.storm_cap);
+  }
 }
 
 function cityName(id) {
@@ -288,12 +321,12 @@ function toggleMember(id) {
 
 async function clearMember(m) {
   if (clearing.value) return;
-  if (!window.confirm("清空 " + m.username + " 的账号配置？档位、有效期、管理和攻打 QQ 会留下。")) return;
+  if (!window.confirm("清空 " + m.username + " 的账号配置？档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限会留下。")) return;
   err.value = "";
   clearing.value = m.id;
   try {
     const data = await api("/api/admin/members/clear", { user_id: m.id });
-    members.value = data.members || [];
+    paintMembers(data.members);
   } finally {
     clearing.value = 0;
   }
@@ -369,7 +402,7 @@ onUnmounted(() => {
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
       <h2>成员账号</h2>
-      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理和攻打 QQ 不动。点表头可以排序。</p>
+      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。点表头可以排序。</p>
       <form class="filters" @submit.prevent>
         <label>搜索<input v-model="memberQ" placeholder="账号或 QQ" /></label>
         <label>区服
@@ -436,6 +469,20 @@ onUnmounted(() => {
                   <p>清城后退：{{ retreatText(m.clear_retreat_mode, m.clear_retreat_hops, m.clear_retreat_city, m.clear_retreat_fail) }}</p>
                   <p>优先 UID：{{ prioText(m) }}</p>
                   <p>日常定时：{{ m.daily_at || "未设" }}</p>
+                  <p>
+                    超级强攻：已拒绝 {{ m.storm_used || 0 }} 次
+                    <template v-if="m.storm_cap == null">· 不限制</template>
+                    <template v-else>· 上限 {{ m.storm_cap }} 次<template v-if="(m.storm_used || 0) >= m.storm_cap">，已停</template></template>
+                  </p>
+                  <form class="storm-cap" @submit.prevent="saveStormCap(m)">
+                    <label>拒绝上限
+                      <input v-model="m.storm_cap_text" inputmode="numeric" placeholder="不限制" />
+                    </label>
+                    <button type="submit">保存</button>
+                    <span v-if="stormErr[m.id]" class="err">{{ stormErr[m.id] }}</span>
+                    <span v-else class="muted">{{ stormNotes[m.id] }}</span>
+                  </form>
+                  <p class="muted">留空则一直拒绝。填 0 则一次都不自动拒绝。成功发出拒绝才算一次，达到上限后这个登录账号不再自动拒绝。</p>
                 </td>
               </tr>
             </template>

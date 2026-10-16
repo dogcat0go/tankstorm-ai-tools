@@ -466,7 +466,17 @@ def main() -> int:
         print(f"{'执行顺序':<4} {'任务':<12} {'opcode':<8} {'消息':<22} "
               f"{'上限':<5} {'今日':<5} {'参数':<6} 开关")
         print("-" * 92)
-        for i, t in enumerate(_daily.ordered_tasks(), 1):
+        i = 0
+        for t in _daily.iter_run():
+            if t is None:
+                for key, _name in _daily.CAMPAIGN_EXTRAS:
+                    i += 1
+                    done = st.get("done", {}).get(key, 0)
+                    on = "✅开" if sw.get(key) else "  关"
+                    print(f"{i:>4}   {key:<12} {'045b':<8} {'RcePVEFightOpt':<22} "
+                          f"{'1':<5} {done:<5} {'实测':<6} {on}")
+                continue
+            i += 1
             done = st.get("done", {}).get(t.key, 0)
             on = "✅开" if sw.get(t.key) else "  关"
             cd = f"/{t.cooldown_sec // 60}分冷却" if t.cooldown_sec else ""
@@ -475,7 +485,8 @@ def main() -> int:
                   f"{str(t.max_per_day) + cd:<5} {done:<5} {mark:<6} {on}")
         print("-" * 92)
         print("『实测』= 参数来自真实抓包，可放心开；『待确认』= 默认跳过，需先抓包核对")
-        print("周任务、每日任务领奖排在后面，将领授勋和加强授勋再排在最后\n")
+        print("周任务、每日任务领奖排在后面。第三次、第4次征战接着做，"
+              "将领授勋和加强授勋排在最后\n")
         return 0
 
     # 同日去重只对旧的 HTTP 任务有意义。每日任务自己按 logs/daily-state.json

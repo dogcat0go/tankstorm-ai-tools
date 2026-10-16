@@ -29,8 +29,9 @@
 任务顺序
 --------
 "每日任务领奖"(RceDailyTask) 排在会产生进度的任务之后，先领就漏了。
-将领授勋和加强授勋不推进它，再排在领奖后面。TASKS 表的顺序即执行顺序，
-ORDER_LAST 里的排到末尾。
+第三次、第4次征战排在领奖后面。将领授勋和加强授勋不推进领奖，
+再排在这两次征战之后。TASKS 表的顺序即普通任务的顺序，
+ORDER_LAST 里的排到表尾；其中授勋两项由 iter_run() 挪到征战加次之后。
 
 参数来源
 --------
@@ -46,6 +47,7 @@ import re
 import select
 import threading
 import time
+from contextlib import contextmanager
 from datetime import date
 
 from . import schema as _schema
@@ -117,6 +119,69 @@ def bind_sock(sock):
     return prev
 
 
+def bind_rec(rec):
+    """这一线程做任务时，资源数从哪份已经收到的包里读。返回换之前的那个。"""
+    prev = getattr(_sock_local, "rec", None)
+    _sock_local.rec = rec
+    return prev
+
+
+def bind_stop(event):
+    """这条分路要退出时看的事件。返回换之前的那个。"""
+    prev = getattr(_sock_local, "stop", None)
+    _sock_local.stop = event
+    return prev
+
+
+class _Lane:
+    """几条分路共用一条连接。发包和等回包占着锁，空等时放开，别的路才能发。"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        depth = getattr(_sock_local, "lane_depth", 0)
+        if depth == 0:
+            self._lock.acquire()
+        _sock_local.lane_depth = depth + 1
+
+    def release(self):
+        depth = getattr(_sock_local, "lane_depth", 0)
+        if depth <= 1:
+            _sock_local.lane_depth = 0
+            if depth == 1:
+                self._lock.release()
+            return
+        _sock_local.lane_depth = depth - 1
+
+    def yield_for_wait(self):
+        depth = getattr(_sock_local, "lane_depth", 0)
+        if depth <= 0:
+            return 0
+        _sock_local.lane_depth = 0
+        self._lock.release()
+        return depth
+
+    def restore(self, depth):
+        if depth <= 0:
+            return
+        self._lock.acquire()
+        _sock_local.lane_depth = depth
+
+
+_lane = _Lane()
+
+
+@contextmanager
+def lane_hold():
+    """这一段要发游戏包。等到点的空档会先把锁放开。"""
+    _lane.acquire()
+    try:
+        yield
+    finally:
+        _lane.release()
+
+
 def _drain_incoming() -> None:
     """把已经到的包读掉。超级强攻靠这次读取才会走拒绝。
 
@@ -154,17 +219,32 @@ def raise_if_stopped() -> None:
         raise Stopped()
 
 
+def _stop_set() -> bool:
+    ev = getattr(_sock_local, "stop", None)
+    return ev is not None and ev.is_set()
+
+
 def _nap(seconds: float) -> None:
-    """等到点。心跳在独立线程发，这里把已经到达的包读掉。"""
-    end = time.time() + max(0.0, float(seconds or 0))
-    while True:
-        raise_if_stopped()
-        left = end - time.time()
-        if left <= 0:
-            return
-        _beat()
-        _drain_incoming()
-        time.sleep(min(left, 0.5))
+    """等到点。心跳在独立线程发，这里把已经到达的包读掉。
+
+    这条分路如果占着连接锁，空等时先放开。国战、日常和另一路制造才能接着发。
+    """
+    depth = _lane.yield_for_wait()
+    try:
+        end = time.time() + max(0.0, float(seconds or 0))
+        while True:
+            raise_if_stopped()
+            if _stop_set():
+                raise OSError("连接中断")
+            left = end - time.time()
+            if left <= 0:
+                return
+            _beat()
+            _drain_incoming()
+            note_base_wallet(getattr(_sock_local, "rec", None))
+            time.sleep(min(left, 0.5))
+    finally:
+        _lane.restore(depth)
 
 
 _FAIL_MARKS = ("失败", "拦截", "没收到", "未收到", "没有结算", "超时",
@@ -502,8 +582,10 @@ DANGER_FIELD = re.compile(
 SAFE_FIELDS = {("0463", "count")}
 
 # 周任务、每日任务领的是前面动作累积出来的奖励，所以排在后面。
-# 将领授勋和加强授勋不推进这两项，再排在它们之后。
+# 将领授勋和加强授勋不推进这两项。第三次、第4次征战排在领奖之后，
+# 授勋再排在这两次后面：加强授勋要扣金属和石油。
 ORDER_LAST = {"每日任务", "周任务", "将领授勋", "将领加强授勋"}
+ORDER_AFTER_CAMPAIGN = frozenset({"将领授勋", "将领加强授勋"})
 
 HELD_TASKS = ()
 HELD_STATUS = "暂不执行，反复被拒会打断连接"
@@ -1294,7 +1376,7 @@ TASKS = [
        "RceArenaRankInfo{type:2,nIndex,nCountry} 取可挑战名单 → "
        "RceArenaOpt{type:1,uidself,uidfight,indexself,indexfight,"
        "countryidself} 挑战。打到 nCanFightTimes 归零，不留剩余。"
-       "优先打 NPC（短 uid）；已经是第一名时改打第 2～10 名。"
+       "优先打 NPC（短 uid）；已经是第一名时改打后面的人。名次写成 0 和写成 1 都是第一名。"
        "成败以面板变化为准",
        runner=lambda rec, sock, config: __import__(
            "tankstorm.arena", fromlist=["daily_challenge"]
@@ -1506,11 +1588,11 @@ TASKS = [
            "tankstorm.guild", fromlist=["daily_donate"]
        ).daily_donate(rec, sock, config)),
 
-    # ---- 必须最后执行 ----
+    # ---- 领奖排在会产生进度的任务之后 ----
     _t("周任务", "周任务领奖", "04de", "RceWeekQuestOpt",
        {1: ("int32", 0), 2: ("int32", 0)}, "待确认", "需实测"),
 
-    # 必须最后执行：前面每做一项，活跃度就涨一截，先领就少领。
+    # 排在会产生进度的任务之后：前面每做一项，活跃度就涨一截，先领就少领。
     # 实测活跃度 64 时能领 10/30/50 三档，80/100 没达标领不了。
     _t("每日任务", "每日任务·按活跃度领奖", "043d", "RceDailyTask",
        {5: ("int32", FromResponse("RseDailyTask", _eligible_gift_tier,
@@ -1530,13 +1612,26 @@ ALLOWED_OPCODES = ({t.opcode for t in TASKS}
 
 
 def ordered_tasks():
-    """按执行顺序返回任务：普通任务在前，ORDER_LAST 里的排到最后。"""
+    """页面上的顺序：普通任务在前，领奖和授勋排到最后。"""
     head = [t for t in TASKS if t.key not in ORDER_LAST]
     tail = [t for t in TASKS if t.key in ORDER_LAST]
     # 尾部内部再排：周任务 → 每日任务 → 将领授勋 → 将领加强授勋
     rank = {"周任务": 0, "每日任务": 1, "将领授勋": 2, "将领加强授勋": 3}
     tail.sort(key=lambda t: rank.get(t.key, 9))
     return head + tail
+
+
+def iter_run():
+    """一轮的执行顺序。None 表示这里做第三次、第4次征战。
+
+    领奖之后做这两次征战，将领授勋和加强授勋再排在征战之后。
+    """
+    before, after = [], []
+    for task in ordered_tasks():
+        (after if task.key in ORDER_AFTER_CAMPAIGN else before).append(task)
+    yield from before
+    yield None
+    yield from after
 
 
 # 免费两次走「征战世界」。这两项默认关，打开后跑一轮再做对应的那一次。
@@ -1935,6 +2030,15 @@ def _blast_log(text, label="爆破兵"):
     task_log(citydb.attack_context_qq(), label, text)
 
 
+def _has_slot(building):
+    """这座建筑有生产槽。没有 field3/field4 的加成数据不算。"""
+    raw = building.get("field25")
+    if not isinstance(raw, dict):
+        alt = building.get("field20")
+        raw = alt if isinstance(alt, dict) else None
+    return isinstance(raw, dict) and ("field3" in raw or "field4" in raw)
+
+
 def _blast_flags(rec, config):
     init = (rec.latest.get("RseInit") or (None, None))[1] if rec else None
     yellow = blue = False
@@ -1991,6 +2095,34 @@ def _wallet_credit(data):
     return None
 
 
+def note_base_wallet(rec) -> None:
+    """每 10 秒把基地里的金属、石油和勋章写给网页。
+
+    只读已经收到的用户信息，不另向游戏要一份。
+    """
+    if rec is None:
+        return
+    now = time.monotonic()
+    if now - float(getattr(rec, "_wallet_at", 0.0) or 0.0) < 10.0:
+        return
+    data = (rec.latest.get("RseUserInfo") or (None, None))[1]
+    if not isinstance(data, dict):
+        return
+
+    def num(key):
+        raw = data.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            return None
+        return int(raw)
+
+    metal, oil, credit = num("metal"), num("oil"), num("credit")
+    if metal is None and oil is None and credit is None:
+        return
+    from . import citydb
+    if citydb.note_attack_wallet(metal, oil, credit):
+        rec._wallet_at = now
+
+
 def note_blast_count(rec, new_id=0):
     """把当前爆破兵数量写给网页。刚造完、兵册还没刷新的那一只用 id 补上。"""
     if rec is None:
@@ -2015,7 +2147,7 @@ def note_blast_count(rec, new_id=0):
 
 
 def _blast_recent(rec, bid, army_type=_BLAST_ARMY):
-    """上一包建筑修改里这个厂房的队列。登录包不会在开工后更新。"""
+    """上一包建筑修改里这座建筑的队列。登录包不会在开工后更新。"""
     if rec is None:
         return None
     item = rec.latest.get("RseBuildingModify")
@@ -2035,15 +2167,16 @@ def _blast_recent(rec, bid, army_type=_BLAST_ARMY):
     return "ours", army, making, left, mark
 
 
-def _blast_once(rec, sock, config, assume_idle=False, on_progress=None,
+def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
                 building_type=_BLAST_BUILDING, army_type=_BLAST_ARMY,
-                place="兵营", unit="爆破兵", track=True):
+                place="兵营", unit="爆破兵", label="爆破兵", track=True):
     """造一个单位。快速制造只在勋章花费为 0 时发，credit 固定写 0。
 
     assume_idle：上一只刚造完。登录包里的队列还是旧的，按空闲开工。
+    building_type 空着时，找兵营和英雄中心以外、带生产槽的那一座。
     """
     def say(text):
-        _blast_log(text, unit)
+        _blast_log(text, label)
 
     load = (rec.latest.get("RseLoad") or (None, None))[1] if rec else None
     if not isinstance(load, dict):
@@ -2051,22 +2184,39 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None,
     buildings = _rows(load.get("buildingdata"))
     if not buildings:
         return False, f"读不到建筑，不造{unit}"
-    barracks = None
+    found = []
     for b in buildings:
-        if b.get("field5") != building_type:
+        typ = b.get("field5")
+        if building_type is None:
+            if typ in (_BLAST_BUILDING, _HERO_CENTER) or not _has_slot(b):
+                continue
+        elif typ != building_type:
             continue
         bid = _one(b.get("field4"))
         if not bid or bid <= 0:
             continue
         queue = _blast_queue(b)
         if queue is None:
+            if building_type is None:
+                continue
             return False, f"{place} {bid} 的生产状态读不懂，不造"
-        barracks = (bid, queue)
-        if queue[2] > 0:
+        found.append((bid, queue, typ))
+    if building_type is None and len(found) > 1:
+        busy = [item for item in found
+                if item[1][2] > 0 and item[1][1] in (0, army_type)]
+        if len(busy) == 1:
+            found = busy
+        else:
+            kinds = "、".join(str(item[2]) for item in found)
+            return False, f"读到多座能造兵的建筑（类型 {kinds}），不确定哪座是{place}"
+    barracks = None
+    for item in found:
+        barracks = item
+        if item[1][2] > 0:
             break
     if barracks is None:
         return False, f"读不到{place}，不造{unit}"
-    bid, (army, making, left) = barracks
+    bid, (army, making, left), _typ = barracks
     snap = (getattr(rec, "latest_at", {}) or {}).get("RseLoad") if rec else None
     snap_name = "登录包"
     if assume_idle:
@@ -2075,7 +2225,7 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None,
     else:
         recent = _blast_recent(rec, bid, army_type)
         if recent and recent[0] == "other":
-            return False, f"{place}正在造别的（{recent[2] or recent[1]}），不打断"
+            return False, f"{place}正在造别的兵（{recent[2] or recent[1]}），不打断"
         if recent and recent[0] == "ours":
             load_at = snap
             mod_at = recent[4]
@@ -2085,7 +2235,7 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None,
                 snap_name = "上一包"
                 say(f"{place} {bid} 上一包还在造{unit}，剩余 {left} 秒，不重新开工")
         elif left > 0 and making not in (0, army_type) and army not in (0, army_type):
-            return False, f"{place}正在造别的（{making or army}），不打断"
+            return False, f"{place}正在造别的兵（{making or army}），不打断"
 
     seen_left, seen_at = left, time.monotonic()
     if not assume_idle and left > 0:
@@ -2188,16 +2338,16 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None,
     if not isinstance(err, int) or isinstance(err, bool) or err != 0:
         say(f"快速制造被拒 error={err} {place} {bid} time={left} 勋章 {wallet}->{after}")
         return False, f"快速制造服务器返回 error={err}，{place} {bid}，发出的剩余时间 {left} 秒"
+    made = got.get("army")
+    new_id = made.get("field2") if isinstance(made, dict) else 0
     if track:
-        army = got.get("army")
-        new_id = army.get("field2") if isinstance(army, dict) else 0
         note_blast_count(rec, new_id if isinstance(new_id, int) and not isinstance(new_id, bool) else 0)
     return True, f"成功：{place} {bid} 按剩余 {left} 秒、0 勋章加速完成"
 
 
-def daily_blast(rec, sock, config, count=1, on_progress=None,
+def daily_blast(rec, sock, config, count=1, on_progress=None, *,
                 building_type=_BLAST_BUILDING, army_type=_BLAST_ARMY,
-                place="兵营", unit="爆破兵", track=True):
+                place="兵营", unit="爆破兵", label="爆破兵", track=True):
     """按数量循环造。每一只都要等到 0 勋章才加速。"""
     try:
         count = int(count)
@@ -2221,8 +2371,8 @@ def daily_blast(rec, sock, config, count=1, on_progress=None,
         raise_if_stopped()
         ok, why = _blast_once(
             rec, sock, config, assume_idle=assume_idle, on_progress=progress,
-            building_type=building_type, army_type=army_type,
-            place=place, unit=unit, track=track)
+            building_type=building_type, army_type=army_type, place=place,
+            unit=unit, label=label, track=track)
         if not ok:
             head = f"完成 {done}/{count}。" if done else ""
             return False, head + why
@@ -2232,12 +2382,20 @@ def daily_blast(rec, sock, config, count=1, on_progress=None,
     return True, f"成功：造了 {done} 个{unit}，都是 0 勋章加速"
 
 
-def daily_aa(rec, sock, config, count=1, on_progress=None):
-    """战车工厂造防空车。加速门槛和兵营同一套，600 秒内才是 0 勋章。"""
+def daily_factory(rec, sock, config, count=1, army=0, on_progress=None):
+    """战车工厂按数量循环快速制造。和兵营各算各的，不等兵营做完。"""
+    from . import repair
+    try:
+        army = int(army)
+    except (TypeError, ValueError):
+        return False, "兵种要是数字"
+    if army not in repair.TANKS:
+        return False, "兵种不是战车"
+    unit = repair.NAMES.get(army) or f"兵种{army}"
     return daily_blast(
-        rec, sock, config, count=count, on_progress=on_progress,
-        building_type=_FACTORY_BUILDING, army_type=_AA_ARMY,
-        place="战车工厂", unit="防空车", track=False)
+        rec, sock, config, count, on_progress,
+        building_type=None, army_type=army, place="战车工厂",
+        unit=unit, label="战车工厂", track=False)
 
 
 # 2026-10-17 00:20 抓包。豪饮是英雄招募高级档，用背包里的 10061。
@@ -3351,7 +3509,15 @@ def _run(rec, sock, config, schema, on_fail=None):
 
     # 某一项失败、抛异常，都只记下这一项，接着做下一项。
     # 连接断了才停，后面的任务没有连接可发。
-    for task in ordered_tasks():
+    # 授勋排在第三次、第4次之后，加强授勋才有征战打出来的金属和石油。
+    for task in iter_run():
+        if task is None:
+            _run_campaign_extras(
+                rec, sock, switches, st, results,
+                stages=_campaign_goal(config) or "",
+                interval=_campaign_interval(config),
+                on_fail=on_fail)
+            continue
         try:
             raise_if_stopped()
             if task.key in HELD_TASKS:
@@ -3476,12 +3642,6 @@ def _run(rec, sock, config, schema, on_fail=None):
             if results.get(task.key) not in (None, "未开启"):
                 _publish_current(task.key, results.get(task.key), on_fail)
 
-
-    _run_campaign_extras(
-        rec, sock, switches, st, results,
-        stages=_campaign_goal(config) or "",
-        interval=_campaign_interval(config),
-        on_fail=on_fail)
     got = (rec.latest.get("RseRedwarMonthCard") if rec else None) or (None, None)
     panel = got[1] if isinstance(got, tuple) and isinstance(got[1], dict) else None
     if panel:
@@ -3504,7 +3664,8 @@ def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1
                          on_fail=None):
     """第三次、第4次。开关在登录账号上，默认关。免费两次仍走「征战世界」。
 
-    重开之后必须从第 1 关打到终点，打完才算这一次做成。只重开不算完成。
+    排在每日领奖之后、将领授勋之前。重开之后必须从第 1 关打到终点，
+    打完才算这一次做成。只重开不算完成。
     这一轮还在往终点打时先不做。第三次没打到终点时，不发第4次。
     """
     from . import pve

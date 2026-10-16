@@ -78,13 +78,17 @@ const campaignTasks = computed(() => dailyTasks.value.filter((it) => it.extra));
 const progressTasks = computed(() => dailyTasks.value.filter((it) => !it.extra));
 const dailyJobs = ref([]);
 const baseCount = ref("1");
-const aaCount = ref("1");
+const baseArmy = ref("");
+const baseFactoryCount = ref("1");
 const drinkCount = ref("1");
 const admiralCount = ref("1");
 const admiral10Count = ref("10");
 const baseJobs = ref([]);
 const baseNote = ref("");
 const baseBlast = ref(null);
+const baseMetal = ref(null);
+const baseOil = ref(null);
+const baseCredit = ref(null);
 const pveStages = ref("");
 let pveStagesReady = false;
 const fundBuilding = ref("");
@@ -96,8 +100,6 @@ const fundBuildings = [
   { id: "10135", name: "女神像" },
   { id: "10136", name: "红场" },
   { id: "10137", name: "帝国大厦" },
-  { id: "10144", name: "万磁陀螺" },
-  { id: "10172", name: "英雄徽章雕塑" },
 ];
 const dailyNote = ref("");
 const dailyAt = ref("");
@@ -197,19 +199,37 @@ async function refreshBase() {
   if (!me.value) {
     baseJobs.value = [];
     baseBlast.value = null;
+    baseMetal.value = null;
+    baseOil.value = null;
+    baseCredit.value = null;
     return;
   }
   const data = await api("/api/base");
   dailyQq.value = data.qq || dailyQq.value;
   baseJobs.value = data.jobs || [];
   baseBlast.value = data.blast == null ? null : data.blast;
+  baseMetal.value = data.metal == null ? null : data.metal;
+  baseOil.value = data.oil == null ? null : data.oil;
+  baseCredit.value = data.credit == null ? null : data.credit;
 }
 
-async function runBase(count) {
-  showErr("");
+async function runBase(countOrBody) {
+  showErr("", "base");
   baseNote.value = "";
-  await api("/api/base", { count });
-  baseNote.value = "已交给绑定的攻打号";
+  const body = countOrBody && typeof countOrBody === "object"
+    ? countOrBody
+    : { kind: "blast", count: countOrBody };
+  await api("/api/base", body);
+  baseNote.value = body.kind === "cards" ? "开资源卡已交给绑定的攻打号" : "爆破兵已交给绑定的攻打号";
+  await refreshBase();
+  await refreshAttacks();
+}
+
+async function runFactory(army, count) {
+  showErr("", "base");
+  baseNote.value = "";
+  await api("/api/base", { kind: "factory", army, count });
+  baseNote.value = "战车工厂已交给绑定的攻打号";
   await refreshBase();
   await refreshAttacks();
 }
@@ -807,30 +827,30 @@ const prioShown = computed(() =>
     .map((item) => item.row)
 );
 
-const players = computed(() => {
+const citySubs = computed(() => {
   const order = [];
   const map = {};
   for (const it of items.value) {
-    let group = map[it.uid];
+    let group = map[it.city_id];
     if (!group) {
-      group = { uid: it.uid, name: "", present: false, cities: [] };
-      map[it.uid] = group;
+      group = { city_id: it.city_id, city_name: it.city_name || "", present: false, people: [] };
+      map[it.city_id] = group;
       order.push(group);
     }
-    if (!group.name && it.name) group.name = it.name;
+    if (!group.city_name && it.city_name) group.city_name = it.city_name;
     if (it.present) group.present = true;
-    group.cities.push(it);
+    group.people.push(it);
   }
   return order;
 });
 
-function isSubOpen(uid) {
-  const saved = subOpen.value[uid];
+function isSubOpen(key) {
+  const saved = subOpen.value[key];
   return saved == null ? true : saved;
 }
 
-function onSubToggle(uid, ev) {
-  subOpen.value = { ...subOpen.value, [uid]: ev.target.open };
+function onSubToggle(key, ev) {
+  subOpen.value = { ...subOpen.value, [key]: ev.target.open };
 }
 
 onMounted(async () => {
@@ -978,7 +998,7 @@ onUnmounted(() => {
         :retreat-note="retreatNote"
         :lock-hint="lockHint"
         :items="items"
-        :players="players"
+        :city-subs="citySubs"
         :locking="locking"
         :city-label="cityLabel"
         :add-sub="addSub"
@@ -1044,23 +1064,24 @@ onUnmounted(() => {
       <BasePage
         v-show="toolsOn && me && me.base_war && tab === 'base'"
         v-model:count="baseCount"
-        v-model:aa-count="aaCount"
+        v-model:army="baseArmy"
+        v-model:factory-count="baseFactoryCount"
         v-model:drink-count="drinkCount"
         v-model:admiral-count="admiralCount"
         v-model:admiral10-count="admiral10Count"
-        v-model:fund-building="fundBuilding"
-        v-model:fund-times="fundTimes"
         :daily-qq="dailyQq"
         :jobs="baseJobs"
         :blast="baseBlast"
-        :fund-buildings="fundBuildings"
+        :metal="baseMetal"
+        :oil="baseOil"
+        :credit="baseCredit"
         :note="baseNote"
         :err="err"
         :err-at="errAt"
         :run-blast="runBase"
-        :run-aa="runAa"
+        :run-factory="runFactory"
+        :run-cards="() => runBase({ kind: 'cards' })"
         :run-draw="runDraw"
-        :run-fund="runFund"
         :cancel-job="cancelBase"
         :show-err="showErr"
       />

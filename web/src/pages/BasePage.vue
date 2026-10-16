@@ -1,27 +1,35 @@
 <script setup>
 const count = defineModel("count", { type: String, required: true });
-const aaCount = defineModel("aaCount", { type: String, required: true });
+const army = defineModel("army", { type: String, required: true });
+const factoryCount = defineModel("factoryCount", { type: String, required: true });
 const drinkCount = defineModel("drinkCount", { type: String, required: true });
 const admiralCount = defineModel("admiralCount", { type: String, required: true });
 const admiral10Count = defineModel("admiral10Count", { type: String, required: true });
-const fundBuilding = defineModel("fundBuilding", { type: String, required: true });
-const fundTimes = defineModel("fundTimes", { type: String, required: true });
 
 defineProps({
   dailyQq: { type: String, default: "" },
   jobs: { type: Array, required: true },
   blast: { default: null },
-  fundBuildings: { type: Array, required: true },
+  metal: { default: null },
+  oil: { default: null },
+  credit: { default: null },
   note: { type: String, default: "" },
   err: { type: String, default: "" },
   errAt: { type: String, default: "" },
   runBlast: { type: Function, required: true },
-  runAa: { type: Function, required: true },
+  runFactory: { type: Function, required: true },
+  runCards: { type: Function, required: true },
   runDraw: { type: Function, required: true },
-  runFund: { type: Function, required: true },
   cancelJob: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
+
+function resText(n) {
+  if (n === null || n === undefined || n === "") return "还没读到";
+  const num = Number(n);
+  if (!Number.isFinite(num)) return "还没读到";
+  return Math.trunc(num).toLocaleString("zh-CN");
+}
 </script>
 
 <template>
@@ -29,35 +37,16 @@ defineProps({
     <h2>基地战</h2>
     <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
     <p v-else class="muted">还没绑定攻打 QQ。按页面上方的步骤点登录并扫码。一个登录账号只绑一个攻打号，这里的制造用那个号做。</p>
-    <p class="muted">由这个账号的攻打线程执行，不另开连接。正在打的那一单会先打完，然后做这项。</p>
-    <h2>兵营</h2>
-    <p>当前爆破兵 {{ blast === null || blast === undefined ? "还没读到" : blast }}</p>
-    <form class="lock-row" @submit.prevent="runBlast(count).catch((e) => showErr(e.message))">
-      <span class="switch">爆破兵制造</span>
-      <label>数量<input v-model="count" class="mins" inputmode="numeric" required /></label>
-      <button type="submit" :disabled="!dailyQq">开始制造</button>
+    <p class="muted">由这个账号的攻打线程执行，不另开连接。基地战、国战助手和日常任务同时做。兵营、战车工厂和开资源卡也同时做，不等另一边做完。</p>
+    <h2>基地内资源</h2>
+    <p>金属 {{ resText(metal) }} · 石油 {{ resText(oil) }}</p>
+    <p>勋章 {{ resText(credit) }}</p>
+    <p class="muted">每 10 秒从攻打号已经收到的资源里更新一次。不另向游戏要一份。还没收到就显示还没读到。</p>
+    <form class="lock-row" @submit.prevent="runCards().catch((e) => showErr(e.message))">
+      <span class="switch">开资源卡</span>
+      <button type="submit" :disabled="!dailyQq">开卡</button>
     </form>
-    <p class="muted">按这个数量循环。每次先生产一个，剩余时间算出 0 勋章才快速制造，credit 固定写 0。要花勋章就停在这一只，不发。大厅蓝钻大约要等剩余降到 600 秒，一只一分多钟。消耗金属和石油。数量 1 到 399。兵营里已经在造的那一只算进数量。</p>
-    <h2>战车工厂</h2>
-    <form class="lock-row" @submit.prevent="runAa(aaCount).catch((e) => showErr(e.message))">
-      <span class="switch">防空车制造</span>
-      <label>数量<input v-model="aaCount" class="mins" inputmode="numeric" required /></label>
-      <button type="submit" :disabled="!dailyQq">开始制造</button>
-    </form>
-    <p class="muted">按这个数量循环造防空车。每次先开工，剩余时间算出 0 勋章才快速制造，credit 固定写 0。大厅蓝钻剩余降到 600 秒以内才发。要花勋章就停在这一辆，不发。工厂里已经在造防空车的那一辆算进数量，正在造别的就不打断。消耗金属和石油。数量 1 到 399。</p>
-    <h2>用卡</h2>
-    <form class="lock-row" @submit.prevent="runFund(fundBuilding, fundTimes).catch((e) => showErr(e.message))">
-      <span class="switch">成就拨款</span>
-      <label>建筑
-        <select v-model="fundBuilding" class="fund-building" required>
-          <option value="" disabled>选择建筑</option>
-          <option v-for="b in fundBuildings" :key="b.id" :value="b.id">{{ b.name }}</option>
-        </select>
-      </label>
-      <label>次数<input v-model="fundTimes" class="mins" inputmode="numeric" required /></label>
-      <button type="submit" :disabled="!dailyQq">拨款</button>
-    </form>
-    <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 999。</p>
+    <p class="muted">和成就拨款前开卡一样。各开 4 张 1000 万金属卡和石油卡，一次只开 1 张。背包没有，或者这一张没开成，这种就停，另一种接着开。</p>
     <form class="lock-row" @submit.prevent="runDraw('haoyin', drinkCount).catch((e) => showErr(e.message))">
       <span class="switch">英雄豪饮</span>
       <label>卡数量<input v-model="drinkCount" class="mins" inputmode="numeric" required /></label>
@@ -74,6 +63,22 @@ defineProps({
       <button type="submit" :disabled="!dailyQq">抽取</button>
     </form>
     <p class="muted">数量是要消耗的卡。豪饮用物品 10061，一张抽一次。高级将领用物品 10020，单抽一张一次。十连按卡数除以 10 向下取整，例如 25 张抽 2 次、用 20 张。不够就停，并写出剩余张数。1 到 999，十连至少 10 张。</p>
+    <h2>兵营</h2>
+    <p>当前爆破兵 {{ blast === null || blast === undefined ? "还没读到" : blast }}</p>
+    <form class="lock-row" @submit.prevent="runBlast(count).catch((e) => showErr(e.message))">
+      <span class="switch">爆破兵制造</span>
+      <label>数量<input v-model="count" class="mins" inputmode="numeric" required /></label>
+      <button type="submit" :disabled="!dailyQq">开始制造</button>
+    </form>
+    <p class="muted">按这个数量循环。每次先生产一个，剩余时间算出 0 勋章才快速制造，credit 固定写 0。要花勋章就停在这一只，不发。大厅蓝钻大约要等剩余降到 600 秒，一只一分多钟。消耗金属和石油。数量 1 到 399。兵营里已经在造的那一只算进数量。</p>
+    <h2>战车工厂</h2>
+    <form class="lock-row" @submit.prevent="runFactory(army, factoryCount).catch((e) => showErr(e.message))">
+      <span class="switch">快速制造</span>
+      <label>兵种<input v-model="army" class="mins" inputmode="numeric" required /></label>
+      <label>数量<input v-model="factoryCount" class="mins" inputmode="numeric" required /></label>
+      <button type="submit" :disabled="!dailyQq">开始制造</button>
+    </form>
+    <p class="muted">和兵营同一套快速制造：先生产，剩余时间算出 0 勋章才加速，credit 固定写 0。要花勋章就停在这一辆，不发。兵种填战车的兵种号，例如防空车 12、猛犸 45、T99 90。和爆破兵同时造。数量 1 到 399。</p>
     <p v-if="note" class="muted">{{ note }}</p>
     <p v-if="err && errAt === 'base'" class="err">{{ err }}</p>
     <h2>最近执行</h2>

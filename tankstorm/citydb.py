@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS app_user (
     daily_last      TEXT NOT NULL DEFAULT '',
     off_at          TEXT NOT NULL DEFAULT '',
     region          INTEGER NOT NULL DEFAULT 0,
+    storm_cap       INTEGER,
+    storm_used      INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -392,6 +394,13 @@ def connect(readonly=False, timeout=15):
             if ucols and "region" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN region INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "storm_cap" not in ucols:
+                setup.execute("ALTER TABLE app_user ADD COLUMN storm_cap INTEGER")
+                setup.commit()
+            if ucols and "storm_used" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN storm_used INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             _fix_region_face(setup)
             _forget_page_names(setup)
@@ -1139,7 +1148,8 @@ def list_members() -> list:
             "IFNULL(retreat_mode,'hops'), IFNULL(retreat_hops,3), "
             "IFNULL(retreat_city,0), IFNULL(retreat_fail,0), "
             "IFNULL(lock_cards,3), IFNULL(modo_cards,0), IFNULL(region,0), "
-            "IFNULL(off_at,''), IFNULL(attack_qq,''), IFNULL(daily_at,'') "
+            "IFNULL(off_at,''), IFNULL(attack_qq,''), IFNULL(daily_at,''), "
+            "storm_cap, IFNULL(storm_used,0) "
             "FROM app_user ORDER BY id").fetchall()
     finally:
         conn.close()
@@ -1166,6 +1176,8 @@ def list_members() -> list:
             "off_at": str(row[17] or "").strip(),
             "attack_qq": str(row[18] or "").strip(),
             "daily_at": str(row[19] or "").strip(),
+            "storm_cap": None if row[20] is None else int(row[20]),
+            "storm_used": int(row[21] or 0),
         })
     return items
 
@@ -2390,15 +2402,104 @@ def lock_cards_active() -> bool:
     return bool(getattr(_attack_local, "lock_cards", False))
 
 
+def set_storm_cap(user_id: int, cap) -> str:
+    """这个登录账号最多自动拒绝几次超级强攻。空着表示不限制。
+
+    0 表示一次都不拒绝。成功返回空字符串。
+    """
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return "没有这个账号"
+    if cap is None or (isinstance(cap, str) and not cap.strip()):
+        value = None
+    else:
+        try:
+            value = int(str(cap).strip())
+        except (TypeError, ValueError):
+            return "拒绝次数要是整数"
+        if value < 0 or value > 1000000:
+            return "拒绝次数要在 0 到 1000000 之间"
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET storm_cap=? WHERE id=?", (value, user_id))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "没有这个账号"
+    finally:
+        conn.close()
+    if value is None:
+        log.info("登录账号 %s 的超级强攻拒绝不限次数", username_of(user_id))
+    else:
+        log.info("登录账号 %s 的超级强攻最多拒绝 %s 次", username_of(user_id), value)
+    return ""
+
+
+def storm_subject(user_id: int = 0, qq: str = "") -> int:
+    """这次拒绝记在哪个登录账号上。没绑到账号返回 0。"""
+    user_id = int(user_id or 0)
+    if not user_id:
+        user_id = int(attack_context_user() or 0)
+    qq = str(qq or "").strip() or attack_context_qq()
+    if not user_id and qq:
+        user_id, _ = attack_qq_owner(qq)
+    return int(user_id or 0)
+
+
+def reserve_storm_reject(user_id: int) -> str:
+    """占用一次拒绝额度。空字符串表示可以发拒绝包。
+
+    没配上限也把次数加一，管理员能看见已经拒绝了多少次。
+    没绑到登录账号时不加，仍然可以拒绝。
+    """
+    user_id = int(user_id or 0)
+    if not user_id:
+        return ""
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET storm_used=IFNULL(storm_used,0)+1 "
+            "WHERE id=? AND (storm_cap IS NULL OR IFNULL(storm_used,0)<storm_cap)",
+            (user_id,))
+        conn.commit()
+        if cur.rowcount == 1:
+            return ""
+        row = conn.execute(
+            "SELECT storm_cap, IFNULL(storm_used,0) FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row or row[0] is None:
+        return ""
+    return f"超级强攻已拒绝 {int(row[1])} 次，达到上限 {int(row[0])}，这次不拒绝"
+
+
+def release_storm_reject(user_id: int) -> None:
+    """拒绝包没发出去，把刚占用的一次还回去。"""
+    user_id = int(user_id or 0)
+    if not user_id:
+        return
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return
+    try:
+        conn.execute(
+            "UPDATE app_user SET storm_used=MAX(IFNULL(storm_used,0)-1, 0) WHERE id=?",
+            (user_id,))
+        conn.commit()
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
+
+
 def note_storm_reject(name: str, user_id: int = 0, qq: str = "") -> None:
     """记下一次已经发出去的超级强攻拒绝。没绑到登录账号的不进页面。"""
     name = " ".join(str(name or "").split()).strip() or "未知玩家"
     if len(name) > 32:
         name = name[:32]
-    user_id = int(user_id or attack_context_user() or 0)
-    qq = str(qq or attack_context_qq() or "").strip()
-    if not user_id and qq:
-        user_id, _ = attack_qq_owner(qq)
+    user_id = storm_subject(user_id, qq)
     if not user_id:
         log.info("超级强攻已拒绝（%s），这个号没绑登录账号，页面上看不到", name)
         return
@@ -3083,6 +3184,11 @@ def _kept_int(data: dict, key: str):
 
 
 _attack_local = threading.local()
+_proc_lock = threading.Lock()
+_LANE_RANK = {
+    "war": 0, "daily": 1, "blast": 2, "factory": 3, "cards": 4,
+    "haoyin": 5, "admiral": 6, "admiral10": 7,
+}
 
 
 def _assign_legacy_fails(conn) -> None:
@@ -3096,6 +3202,11 @@ def _assign_legacy_fails(conn) -> None:
         "UPDATE atk_fail SET acct=? WHERE acct='' OR acct='网页' OR "
         "(acct LIKE '网页-%' AND substr(acct, 4) GLOB '[0-9]*')",
         (str(rows[0][0]).strip(),))
+
+
+def set_lane(name: str) -> None:
+    """这条线程算哪一路。状态写库时各写各的，页面只显示优先级最高的一路。"""
+    _attack_local.lane = str(name or "")
 
 
 def set_fighting_order(order_id: int) -> None:
@@ -3370,44 +3481,86 @@ def clear_login_for() -> None:
         conn.close()
 
 
+def _foreground(lanes, phase, task, note):
+    """几路同时在做时，页面阶段按国战、日常、兵营、战车工厂、开资源卡这个顺序取。"""
+    if phase in ("offline", "paused", "login"):
+        return phase, "", ""
+    best = None
+    rank = 99
+    for name, item in lanes.items():
+        if not isinstance(item, dict) or item.get("phase") not in ("running", "daily"):
+            continue
+        got = _LANE_RANK.get(name, 9)
+        if got < rank:
+            rank = got
+            best = item
+    if best:
+        return (best.get("phase") or phase,
+                str(best.get("task") or ""), str(best.get("note") or ""))
+    if phase != "daily":
+        return phase, "", ""
+    return phase, task, note
+
+
 def set_attack_status(phase: str, task: str = "", note: str = "") -> None:
-    """这条攻打线程把自己的阶段写进库，键是攻打 QQ。网页只读。所在城市留着。"""
-    name = _mark_name("proc")
-    prev = _proc_payload(_signal_value(name))
-    data = {"phase": phase}
-    if phase == "daily":
-        label = " ".join(str(task or "").split())[:40]
-        if label:
-            data["task"] = label
-        text = " ".join(str(note or "").split())[:180]
-        if text:
-            data["note"] = text
-    here = _kept_here(prev)
-    if here:
-        data["here"] = here
-    for key in ("morale", "power", "blast"):
-        val = _kept_int(prev, key)
-        if val is not None:
-            data[key] = val
-    user_id = attack_context_user()
-    qq = attack_context_qq()
-    if user_id:
-        data["user"] = user_id
-    if qq:
-        data["acct"] = qq
-    if phase != "offline":
-        # 登录中是扫码或重连窗口，不能把上一轮心跳留下，否则页面会当成已经保活。
-        if phase != "login":
-            link = prev.get("link")
-            gap = prev.get("gap")
-            if isinstance(link, int) and not isinstance(link, bool) and link > 0:
-                data["link"] = link
-            if isinstance(gap, int) and not isinstance(gap, bool) and gap > 0:
-                data["gap"] = gap
-        note = str(prev.get("move_note") or "").strip()
-        if note:
-            data["move_note"] = note
-    _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+    """这条攻打线程把自己的阶段写进库，键是攻打 QQ。网页只读。所在城市留着。
+
+    分路各记各的。页面上的阶段用还在做的那几路里优先级最高的。
+    """
+    lane = str(getattr(_attack_local, "lane", "") or "")
+    with _proc_lock:
+        name = _mark_name("proc")
+        prev = _proc_payload(_signal_value(name))
+        lanes = prev.get("lanes") if isinstance(prev.get("lanes"), dict) else {}
+        lanes = {k: v for k, v in lanes.items() if isinstance(v, dict)}
+        if phase == "offline":
+            lanes = {}
+        elif lane:
+            if phase in ("running", "daily"):
+                lanes[lane] = {
+                    "phase": phase,
+                    "task": " ".join(str(task or "").split())[:40],
+                    "note": " ".join(str(note or "").split())[:180],
+                }
+            else:
+                lanes.pop(lane, None)
+        phase, task, note = _foreground(lanes, phase, task, note)
+        data = {"phase": phase}
+        if phase == "daily":
+            label = " ".join(str(task or "").split())[:40]
+            if label:
+                data["task"] = label
+            text = " ".join(str(note or "").split())[:180]
+            if text:
+                data["note"] = text
+        if lanes:
+            data["lanes"] = lanes
+        here = _kept_here(prev)
+        if here:
+            data["here"] = here
+        for key in ("morale", "power", "blast", "metal", "oil", "credit"):
+            val = _kept_int(prev, key)
+            if val is not None:
+                data[key] = val
+        user_id = attack_context_user()
+        qq = attack_context_qq()
+        if user_id:
+            data["user"] = user_id
+        if qq:
+            data["acct"] = qq
+        if phase != "offline":
+            # 登录中是扫码或重连窗口，不能把上一轮心跳留下，否则页面会当成已经保活。
+            if phase != "login":
+                link = prev.get("link")
+                gap = prev.get("gap")
+                if isinstance(link, int) and not isinstance(link, bool) and link > 0:
+                    data["link"] = link
+                if isinstance(gap, int) and not isinstance(gap, bool) and gap > 0:
+                    data["gap"] = gap
+            move_note = str(prev.get("move_note") or "").strip()
+            if move_note:
+                data["move_note"] = move_note
+        _upsert_signal(name, json.dumps(data, ensure_ascii=False))
 
 
 def attack_here_id() -> int:
@@ -3433,20 +3586,21 @@ def note_attack_here(city_id, power=None, morale=None) -> None:
         return
     if not attack_context_user() and not attack_context_qq():
         return
-    name = _mark_name("proc")
-    try:
-        data = _proc_payload(_signal_value(name))
-        if not data or data.get("phase") == "offline":
+    with _proc_lock:
+        name = _mark_name("proc")
+        try:
+            data = _proc_payload(_signal_value(name))
+            if not data or data.get("phase") == "offline":
+                return
+            if got_city:
+                data["here"] = cid
+            if got_power:
+                data["power"] = int(power)
+            if got_morale:
+                data["morale"] = int(morale)
+            _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+        except sqlite3.Error:
             return
-        if got_city:
-            data["here"] = cid
-        if got_power:
-            data["power"] = int(power)
-        if got_morale:
-            data["morale"] = int(morale)
-        _upsert_signal(name, json.dumps(data, ensure_ascii=False))
-    except sqlite3.Error:
-        return
 
 
 def note_attack_blast(count) -> bool:
@@ -3455,18 +3609,19 @@ def note_attack_blast(count) -> bool:
         return False
     if not attack_context_user() and not attack_context_qq():
         return False
-    name = _mark_name("proc")
-    try:
-        data = _proc_payload(_signal_value(name))
-        if not data or data.get("phase") == "offline":
-            return False
-        if data.get("blast") == count:
+    with _proc_lock:
+        name = _mark_name("proc")
+        try:
+            data = _proc_payload(_signal_value(name))
+            if not data or data.get("phase") == "offline":
+                return False
+            if data.get("blast") == count:
+                return True
+            data["blast"] = count
+            _upsert_signal(name, json.dumps(data, ensure_ascii=False))
             return True
-        data["blast"] = count
-        _upsert_signal(name, json.dumps(data, ensure_ascii=False))
-        return True
-    except sqlite3.Error:
-        return False
+        except sqlite3.Error:
+            return False
 
 
 def attack_blast_count(user_id: int):
@@ -3475,20 +3630,59 @@ def attack_blast_count(user_id: int):
     return _kept_int(parsed, "blast")
 
 
+def note_attack_wallet(metal=None, oil=None, credit=None) -> bool:
+    """记下基地里的金属、石油和勋章。没变就不写库。写失败返回 False。"""
+    vals = {}
+    for key, raw in (("metal", metal), ("oil", oil), ("credit", credit)):
+        if raw is None:
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            continue
+        vals[key] = int(raw)
+    if not vals:
+        return False
+    if not attack_context_user() and not attack_context_qq():
+        return False
+    with _proc_lock:
+        name = _mark_name("proc")
+        try:
+            data = _proc_payload(_signal_value(name))
+            if not data or data.get("phase") == "offline":
+                return False
+            if all(data.get(key) == val for key, val in vals.items()):
+                return True
+            data.update(vals)
+            _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+            return True
+        except sqlite3.Error:
+            return False
+
+
+def attack_wallet(user_id: int) -> dict:
+    """网页上的基地金属、石油和勋章。还没读到的那一项是 None，可以是 0。"""
+    parsed, _seen, _online = _read_user_proc(int(user_id))
+    return {
+        "metal": _kept_int(parsed, "metal"),
+        "oil": _kept_int(parsed, "oil"),
+        "credit": _kept_int(parsed, "credit"),
+    }
+
+
 def note_attack_move_text(text: str, user_id: int = 0) -> None:
     """页面上的「目前在」旁边显示这次移动的结果。进程已停则不改。"""
     user_id = int(user_id or attack_context_user() or 0)
     if not user_id and not attack_context_qq():
         return
     name = _mark_name("proc", user_id) if user_id else _mark_name("proc")
-    try:
-        data = _proc_payload(_signal_value(name))
-        if not data or data.get("phase") == "offline":
+    with _proc_lock:
+        try:
+            data = _proc_payload(_signal_value(name))
+            if not data or data.get("phase") == "offline":
+                return
+            data["move_note"] = " ".join(str(text or "").split())[:160]
+            _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+        except sqlite3.Error:
             return
-        data["move_note"] = " ".join(str(text or "").split())[:160]
-        _upsert_signal(name, json.dumps(data, ensure_ascii=False))
-    except sqlite3.Error:
-        return
 
 
 def request_attack_move(user_id: int, city_id) -> str:
@@ -3552,32 +3746,33 @@ def note_attack_link(interval: float) -> None:
     """
     if not attack_context_user() and not attack_context_qq():
         return
-    name = _mark_name("proc")
-    try:
-        raw = _signal_value(name)
-        data = _proc_payload(raw) if raw else {}
-        if data.get("phase") == "offline":
-            return
-        if not data:
-            uid = attack_context_user()
-            acct = attack_context_qq() or (attack_qq_of(uid) if uid else "")
-            if uid:
-                data["user"] = uid
-            if acct:
-                data["acct"] = acct
-        data["link"] = int(time.time())
+    with _proc_lock:
+        name = _mark_name("proc")
         try:
-            gap = int(float(interval))
-        except (TypeError, ValueError):
-            gap = 0
-        if gap > 0:
-            data["gap"] = gap
-        phase = str(data.get("phase") or "")
-        if phase in ("login", "idle", ""):
-            data["phase"] = "hold"
-        _upsert_signal(name, json.dumps(data, ensure_ascii=False), touch=False)
-    except sqlite3.Error:
-        return
+            raw = _signal_value(name)
+            data = _proc_payload(raw) if raw else {}
+            if data.get("phase") == "offline":
+                return
+            if not data:
+                uid = attack_context_user()
+                acct = attack_context_qq() or (attack_qq_of(uid) if uid else "")
+                if uid:
+                    data["user"] = uid
+                if acct:
+                    data["acct"] = acct
+            data["link"] = int(time.time())
+            try:
+                gap = int(float(interval))
+            except (TypeError, ValueError):
+                gap = 0
+            if gap > 0:
+                data["gap"] = gap
+            phase = str(data.get("phase") or "")
+            if phase in ("login", "idle", ""):
+                data["phase"] = "hold"
+            _upsert_signal(name, json.dumps(data, ensure_ascii=False), touch=False)
+        except sqlite3.Error:
+            return
 
 
 def _hold_link_ok(data: dict) -> bool:
@@ -3596,18 +3791,19 @@ def clear_attack_link() -> None:
     """游戏连接已经断开。留下的心跳时间不能再当成还在保活。"""
     if not attack_context_user() and not attack_context_qq():
         return
-    name = _mark_name("proc")
-    try:
-        raw = _signal_value(name)
-        if not raw:
+    with _proc_lock:
+        name = _mark_name("proc")
+        try:
+            raw = _signal_value(name)
+            if not raw:
+                return
+            data = _proc_payload(raw)
+            if not data or "link" not in data:
+                return
+            data.pop("link", None)
+            _upsert_signal(name, json.dumps(data, ensure_ascii=False), touch=False)
+        except sqlite3.Error:
             return
-        data = _proc_payload(raw)
-        if not data or "link" not in data:
-            return
-        data.pop("link", None)
-        _upsert_signal(name, json.dumps(data, ensure_ascii=False), touch=False)
-    except sqlite3.Error:
-        return
 
 
 def attack_link_alive(user_id: int = 0) -> bool:
@@ -4020,18 +4216,19 @@ def note_attack_logging_in(user_id: int = 0) -> None:
     if attack_in_keepalive(user_id):
         return
     name = _mark_name("proc", user_id)
-    prev = _proc_payload(_signal_value(name))
-    phase = str(prev.get("phase") or "")
-    if phase in ("running", "daily") and _hold_link_ok(prev):
-        return
-    data = dict(prev) if prev else {}
-    data["phase"] = "login"
-    data.pop("link", None)
-    data["user"] = user_id
-    uin = attack_qq_of(user_id)
-    if uin:
-        data["acct"] = uin
-    _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+    with _proc_lock:
+        prev = _proc_payload(_signal_value(name))
+        phase = str(prev.get("phase") or "")
+        if phase in ("running", "daily") and _hold_link_ok(prev):
+            return
+        data = dict(prev) if prev else {}
+        data["phase"] = "login"
+        data.pop("link", None)
+        data["user"] = user_id
+        uin = attack_qq_of(user_id)
+        if uin:
+            data["acct"] = uin
+        _upsert_signal(name, json.dumps(data, ensure_ascii=False))
 
 
 def take_attack_login() -> bool:
@@ -4103,11 +4300,13 @@ DAILY_KIND_LABEL = {
     "pve": "征战世界",
     "fund": "成就拨款",
     "blast": "爆破兵",
-    "aa": "防空车",
+    "factory": "战车工厂",
+    "cards": "开资源卡",
     "haoyin": "英雄豪饮",
     "admiral": "高级将领单抽",
     "admiral10": "高级将领十连",
 }
+_BASE_LANE = ("blast", "factory", "cards", "haoyin", "admiral", "admiral10")
 _DAILY_STATUS = {
     "pending": "排队",
     "running": "正在做",
@@ -4414,7 +4613,8 @@ def enqueue_due_daily_jobs() -> list:
                 continue
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job "
-                "WHERE user_id=? AND status IN ('pending','running')",
+                "WHERE user_id=? AND kind IN ('daily','pve','fund') "
+                "AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
             if int(waiting or 0) >= 3:
                 continue
@@ -4526,7 +4726,7 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
             return "拨款次数要在 1 到 999"
         clean["building_id"] = building
         clean["times"] = times
-    elif kind in ("blast", "aa", "haoyin", "admiral", "admiral10"):
+    elif kind in ("blast", "haoyin", "admiral", "admiral10"):
         try:
             count = int(str(params.get("count") or "").strip())
         except (TypeError, ValueError):
@@ -4539,11 +4739,31 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         elif not (1 <= count <= 399):
             return "数量要在 1 到 399"
         clean["count"] = count
+    elif kind == "factory":
+        from . import repair
+        try:
+            count = int(str(params.get("count") or "").strip())
+            army = int(str(params.get("army") or "").strip())
+        except (TypeError, ValueError):
+            return "兵种和数量要是数字"
+        if army not in repair.TANKS:
+            return "兵种不是战车"
+        if not (1 <= count <= 399):
+            return "数量要在 1 到 399"
+        clean["count"] = count
+        clean["army"] = army
     conn = connect()
     try:
-        waiting = conn.execute(
-            "SELECT COUNT(*) FROM daily_job WHERE user_id=? AND status IN ('pending','running')",
-            (user_id,)).fetchone()[0]
+        if kind in _BASE_LANE:
+            waiting = conn.execute(
+                "SELECT COUNT(*) FROM daily_job WHERE user_id=? AND kind=? "
+                "AND status IN ('pending','running')",
+                (user_id, kind)).fetchone()[0]
+        else:
+            waiting = conn.execute(
+                "SELECT COUNT(*) FROM daily_job WHERE user_id=? "
+                "AND kind IN ('daily','pve','fund') AND status IN ('pending','running')",
+                (user_id,)).fetchone()[0]
         if int(waiting or 0) >= 3:
             return "还有没做完的，先等这几项"
         now = now_ts()
@@ -4557,19 +4777,28 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         conn.close()
 
 
-def claim_daily_job():
-    """领这个攻打 QQ 上最早的一条日常。没有就返回 None。到点关闭的账号不领。"""
+def claim_daily_job(kinds=None):
+    """领这个攻打 QQ 上最早的一条日常。没有就返回 None。到点关闭的账号不领。
+
+    kinds 给定时只领这些项目，基地战、国战和日常才能各领各的。
+    """
     ids = executable_users()
     if not ids:
         return None
     slot = ",".join("?" * len(ids))
+    args = list(ids)
+    kind_sql = ""
+    if kinds:
+        kind_sql = " AND kind IN (" + ",".join("?" * len(kinds)) + ")"
+        args.extend(str(k) for k in kinds)
     conn = connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT id, kind, params, user_id FROM daily_job "
-            "WHERE user_id IN (" + slot + ") AND status='pending' ORDER BY id LIMIT 1",
-            tuple(ids)).fetchone()
+            "WHERE user_id IN (" + slot + ") AND status='pending'"
+            + kind_sql + " ORDER BY id LIMIT 1",
+            tuple(args)).fetchone()
         if not row:
             conn.rollback()
             return None
@@ -4693,9 +4922,16 @@ def resume_daily_jobs() -> None:
 
 
 def list_daily_jobs(user_id: int, limit: int = 2, kind: str = "") -> list:
+    """kind 为空时不带基地战。kind 为 base 时只带爆破兵、战车工厂和开资源卡。"""
     conn = connect(readonly=True)
     try:
-        if kind:
+        if kind == "base":
+            rows = conn.execute(
+                "SELECT id, kind, status, detail, created_at FROM daily_job "
+                "WHERE user_id=? AND kind IN ('blast','factory','cards','haoyin','admiral','admiral10') "
+                "ORDER BY id DESC LIMIT ?",
+                (int(user_id), int(limit))).fetchall()
+        elif kind:
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
                 "WHERE user_id=? AND kind=? ORDER BY id DESC LIMIT ?",
@@ -4703,7 +4939,9 @@ def list_daily_jobs(user_id: int, limit: int = 2, kind: str = "") -> list:
         else:
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
-                "WHERE user_id=? AND kind NOT IN ('blast','aa','fund','haoyin','admiral','admiral10') ORDER BY id DESC LIMIT ?",
+                "WHERE user_id=? AND kind NOT IN "
+                "('blast','factory','cards','haoyin','admiral','admiral10') "
+                "ORDER BY id DESC LIMIT ?",
                 (int(user_id), int(limit))).fetchall()
     finally:
         conn.close()

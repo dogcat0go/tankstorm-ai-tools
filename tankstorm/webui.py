@@ -171,6 +171,9 @@ def _member_views() -> list:
         item = _user_out(user)
         item["attack_qq"] = user.get("attack_qq") or ""
         item["daily_at"] = user.get("daily_at") or ""
+        cap = user.get("storm_cap", None)
+        item["storm_cap"] = None if cap is None else int(cap)
+        item["storm_used"] = int(user.get("storm_used") or 0)
         items.append(item)
     return items
 
@@ -314,14 +317,14 @@ def _handler(config: dict):
                 if not citydb.base_tier(user.get("tier") or ""):
                     _json(self, 403, {"error": "基地战需要高级pro订阅"})
                     return
-                jobs = []
-                for kind in ("blast", "aa", "fund", "haoyin", "admiral", "admiral10"):
-                    jobs.extend(citydb.list_daily_jobs(user["id"], limit=8, kind=kind))
-                jobs.sort(key=lambda it: it["id"], reverse=True)
+                wallet = citydb.attack_wallet(user["id"])
                 _json(self, 200, {
                     "qq": citydb.attack_qq_of(user["id"]),
                     "blast": citydb.attack_blast_count(user["id"]),
-                    "jobs": jobs[:8],
+                    "metal": wallet["metal"],
+                    "oil": wallet["oil"],
+                    "credit": wallet["credit"],
+                    "jobs": citydb.list_daily_jobs(user["id"], limit=8, kind="base"),
                 })
                 return
             if path == "/api/daily":
@@ -519,10 +522,16 @@ def _handler(config: dict):
                         raise ValueError("账号已过期")
                     if not citydb.base_tier(user.get("tier") or ""):
                         raise ValueError("基地战需要高级pro订阅")
-                    unit = str(data.get("unit") or "")
-                    kind = unit if unit in ("aa", "haoyin", "admiral", "admiral10") else "blast"
-                    why = citydb.enqueue_daily_job(
-                        user["id"], kind, {"count": data.get("count")})
+                    kind = str(data.get("kind") or data.get("unit") or "blast").strip()
+                    if kind not in ("blast", "factory", "cards", "haoyin", "admiral", "admiral10"):
+                        raise ValueError("没有这项")
+                    if kind == "cards":
+                        params = {}
+                    elif kind == "factory":
+                        params = {"count": data.get("count"), "army": data.get("army")}
+                    else:
+                        params = {"count": data.get("count")}
+                    why = citydb.enqueue_daily_job(user["id"], kind, params)
                     if why:
                         raise ValueError(why)
                     from .socket_keepalive import kick_attack_login
@@ -698,6 +707,18 @@ def _handler(config: dict):
                     except (TypeError, ValueError):
                         raise ValueError("账号编号不对") from None
                     why = citydb.reset_member_settings(user_id)
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "members": _member_views()})
+                elif path == "/api/admin/members/storm-cap":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能改超级强攻拒绝上限"})
+                        return
+                    try:
+                        user_id = int(str(data.get("user_id", "")).strip())
+                    except (TypeError, ValueError):
+                        raise ValueError("账号编号不对") from None
+                    why = citydb.set_storm_cap(user_id, data.get("cap"))
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "members": _member_views()})

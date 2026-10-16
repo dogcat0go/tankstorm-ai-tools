@@ -1,5 +1,7 @@
 <script setup>
 const count = defineModel("count", { type: String, required: true });
+const army = defineModel("army", { type: String, required: true });
+const factoryCount = defineModel("factoryCount", { type: String, required: true });
 
 defineProps({
   dailyQq: { type: String, default: "" },
@@ -12,6 +14,7 @@ defineProps({
   err: { type: String, default: "" },
   errAt: { type: String, default: "" },
   runBlast: { type: Function, required: true },
+  runFactory: { type: Function, required: true },
   cancelJob: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
@@ -29,7 +32,7 @@ function resText(n) {
     <h2>基地战</h2>
     <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
     <p v-else class="muted">还没绑定攻打 QQ。按页面上方的步骤点登录并扫码。一个登录账号只绑一个攻打号，这里的制造用那个号做。</p>
-    <p class="muted">由这个账号的攻打线程执行，不另开连接。正在打的那一单会先打完，然后做这项。</p>
+    <p class="muted">由这个账号的攻打线程执行，不另开连接。基地战、国战助手和日常任务同时做。兵营和战车工厂也同时造，不等另一边做完。</p>
     <h2>基地内资源</h2>
     <p>金属 {{ resText(metal) }} · 石油 {{ resText(oil) }}</p>
     <p>勋章 {{ resText(credit) }}</p>
@@ -42,8 +45,14 @@ function resText(n) {
       <button type="submit" :disabled="!dailyQq">开始制造</button>
     </form>
     <p class="muted">按这个数量循环。每次先生产一个，剩余时间算出 0 勋章才快速制造，credit 固定写 0。要花勋章就停在这一只，不发。大厅蓝钻大约要等剩余降到 600 秒，一只一分多钟。消耗金属和石油。数量 1 到 399。兵营里已经在造的那一只算进数量。</p>
-    <h2>战场工厂</h2>
-    <p class="muted">还没有制造项。</p>
+    <h2>战车工厂</h2>
+    <form class="lock-row" @submit.prevent="runFactory(army, factoryCount).catch((e) => showErr(e.message))">
+      <span class="switch">快速制造</span>
+      <label>兵种<input v-model="army" class="mins" inputmode="numeric" required /></label>
+      <label>数量<input v-model="factoryCount" class="mins" inputmode="numeric" required /></label>
+      <button type="submit" :disabled="!dailyQq">开始制造</button>
+    </form>
+    <p class="muted">和兵营同一套快速制造：先生产，剩余时间算出 0 勋章才加速，credit 固定写 0。要花勋章就停在这一辆，不发。兵种填战车的兵种号，例如猛犸 45、T99 90。和爆破兵同时造。数量 1 到 399。</p>
     <p v-if="note" class="muted">{{ note }}</p>
     <p v-if="err && errAt === 'base'" class="err">{{ err }}</p>
     <h2>最近执行</h2>

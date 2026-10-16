@@ -324,7 +324,7 @@ def _handler(config: dict):
                     "metal": wallet["metal"],
                     "oil": wallet["oil"],
                     "credit": wallet["credit"],
-                    "jobs": citydb.list_daily_jobs(user["id"], limit=8, kind="blast"),
+                    "jobs": citydb.list_daily_jobs(user["id"], limit=8, kind="base"),
                 })
                 return
             if path == "/api/daily":
@@ -522,8 +522,13 @@ def _handler(config: dict):
                         raise ValueError("账号已过期")
                     if not citydb.base_tier(user.get("tier") or ""):
                         raise ValueError("基地战需要高级pro订阅")
-                    why = citydb.enqueue_daily_job(
-                        user["id"], "blast", {"count": data.get("count")})
+                    kind = str(data.get("kind") or "blast").strip()
+                    if kind not in ("blast", "factory"):
+                        raise ValueError("没有这项制造")
+                    params = {"count": data.get("count")}
+                    if kind == "factory":
+                        params["army"] = data.get("army")
+                    why = citydb.enqueue_daily_job(user["id"], kind, params)
                     if why:
                         raise ValueError(why)
                     from .socket_keepalive import kick_attack_login

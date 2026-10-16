@@ -78,6 +78,8 @@ const campaignTasks = computed(() => dailyTasks.value.filter((it) => it.extra));
 const progressTasks = computed(() => dailyTasks.value.filter((it) => !it.extra));
 const dailyJobs = ref([]);
 const baseCount = ref("1");
+const baseArmy = ref("");
+const baseFactoryCount = ref("1");
 const baseJobs = ref([]);
 const baseNote = ref("");
 const baseBlast = ref(null);
@@ -211,8 +213,17 @@ async function refreshBase() {
 async function runBase(count) {
   showErr("");
   baseNote.value = "";
-  await api("/api/base", { count });
-  baseNote.value = "已交给绑定的攻打号";
+  await api("/api/base", { kind: "blast", count });
+  baseNote.value = "爆破兵已交给绑定的攻打号";
+  await refreshBase();
+  await refreshAttacks();
+}
+
+async function runFactory(army, count) {
+  showErr("", "base");
+  baseNote.value = "";
+  await api("/api/base", { kind: "factory", army, count });
+  baseNote.value = "战车工厂已交给绑定的攻打号";
   await refreshBase();
   await refreshAttacks();
 }
@@ -1023,6 +1034,8 @@ onUnmounted(() => {
       <BasePage
         v-show="toolsOn && me && me.base_war && tab === 'base'"
         v-model:count="baseCount"
+        v-model:army="baseArmy"
+        v-model:factory-count="baseFactoryCount"
         :daily-qq="dailyQq"
         :jobs="baseJobs"
         :blast="baseBlast"
@@ -1033,6 +1046,7 @@ onUnmounted(() => {
         :err="err"
         :err-at="errAt"
         :run-blast="runBase"
+        :run-factory="runFactory"
         :cancel-job="cancelBase"
         :show-err="showErr"
       />

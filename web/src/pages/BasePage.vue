@@ -59,7 +59,7 @@ function resText(n) {
     <details class="campaign-box">
       <summary>使用物品</summary>
       <div class="item-part">
-        <h3>开卡</h3>
+        <h3>使用背包物品</h3>
         <form class="lock-row" @submit.prevent="runCards().catch((e) => showErr(e.message))">
           <span class="switch">开资源卡</span>
           <button type="submit" :disabled="!dailyQq">开卡</button>

@@ -482,7 +482,7 @@ onUnmounted(() => {
                     <span v-if="stormErr[m.id]" class="err">{{ stormErr[m.id] }}</span>
                     <span v-else class="muted">{{ stormNotes[m.id] }}</span>
                   </form>
-                  <p class="muted">按北京时间每天 0 点重新计算。留空则一直拒绝。填 0 则一次都不自动拒绝。成功发出拒绝才算一次，达到上限后这个登录账号今天不再自动拒绝。</p>
+                  <p class="muted">按北京时间每天 0 点重新计算。留空则一直拒绝。填 0 则这个登录账号绑定的攻打 QQ 不再自动拒绝。成功发出拒绝才算一次，达到上限后这个登录账号今天不再自动拒绝。</p>
                 </td>
               </tr>
             </template>

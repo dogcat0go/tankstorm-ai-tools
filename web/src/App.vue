@@ -89,6 +89,7 @@ const staffCount = ref("1");
 const labPickCount = ref("1");
 const autoCount = ref("1");
 const lab50Count = ref("1");
+const auto50Count = ref("1");
 const baseCards = ref({ general: null, staff: null, lab: null, auto: null, drink: null });
 const ask = ref("");
 let askDone = null;
@@ -98,6 +99,7 @@ const baseBlast = ref(null);
 const baseMetal = ref(null);
 const baseOil = ref(null);
 const baseCredit = ref(null);
+const basePop = ref(null);
 const pveStages = ref("");
 let pveStagesReady = false;
 const fundBuilding = ref("");
@@ -231,6 +233,7 @@ async function refreshBase() {
     baseMetal.value = null;
     baseOil.value = null;
     baseCredit.value = null;
+    basePop.value = null;
     baseCards.value = { general: null, staff: null, lab: null, auto: null, drink: null };
     return;
   }
@@ -241,6 +244,7 @@ async function refreshBase() {
   baseMetal.value = data.metal == null ? null : data.metal;
   baseOil.value = data.oil == null ? null : data.oil;
   baseCredit.value = data.credit == null ? null : data.credit;
+  basePop.value = data.pop == null ? null : data.pop;
   baseCards.value = data.cards || { general: null, staff: null, lab: null, auto: null, drink: null };
 }
 
@@ -310,6 +314,18 @@ async function runPick(kind, count) {
   if (!ok) return;
   await api("/api/base", { kind, count: n });
   baseNote.value = "已交给绑定的攻打号";
+  await refreshBase();
+  await refreshAttacks();
+}
+
+async function runAuto50(count) {
+  showErr("", "base");
+  baseNote.value = "";
+  const n = cardNum(count);
+  const ok = await confirmUse(`使用自动化探索卡 ${n * 50} 张，做 ${n} 次 50 连。`);
+  if (!ok) return;
+  await api("/api/base", { kind: "auto50", count: n });
+  baseNote.value = "自动化探索已交给绑定的攻打号";
   await refreshBase();
   await refreshAttacks();
 }
@@ -1149,12 +1165,14 @@ onUnmounted(() => {
         v-model:lab-pick-count="labPickCount"
         v-model:auto-count="autoCount"
         v-model:lab50-count="lab50Count"
+        v-model:auto50-count="auto50Count"
         :daily-qq="dailyQq"
         :jobs="baseJobs"
         :blast="baseBlast"
         :metal="baseMetal"
         :oil="baseOil"
         :credit="baseCredit"
+        :pop="basePop"
         :cards="baseCards"
         :note="baseNote"
         :err="err"
@@ -1165,6 +1183,7 @@ onUnmounted(() => {
         :run-draw="runDraw"
         :run-pick="runPick"
         :run-lab50="runLab50"
+        :run-auto50="runAuto50"
         :cancel-job="cancelBase"
         :show-err="showErr"
       />

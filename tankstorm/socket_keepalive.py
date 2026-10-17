@@ -2068,6 +2068,15 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 daily.note_bag_cards(rec)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind == "auto50":
+                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                    citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
+                    return
+                ok, why = daily.auto50_probe(
+                    rec, sock, times=params.get("count") or 1, on_progress=_show)
+                daily.note_bag_cards(rec)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "lab50":
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
                     citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
@@ -2260,7 +2269,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
         _spawn("factory", lambda: _lane_jobs(("factory",))),
         _spawn("cards", lambda: _lane_jobs((
             "cards", "haoyin", "admiral", "admiral10",
-            "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50"))),
+            "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50"))),
     ]
     try:
         while not stop.is_set():
@@ -2268,6 +2277,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 if dead.is_set() or _shutdown_stop():
                     return 0
                 daily.note_blast_count(rec)
+                daily.note_population(rec)
                 daily.note_base_wallet(rec)
                 daily.note_bag_cards(rec)
                 if citydb.attack_paused():

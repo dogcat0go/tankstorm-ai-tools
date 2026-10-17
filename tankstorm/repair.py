@@ -49,6 +49,28 @@ NAMES = {
     45: "猛犸坦克", 49: "黄金猛犸坦克",
     90: "T99主战坦克", 91: "黄金T99",
 }
+# 兵种表「人口(storage)」。2026-10-17 10:36 兵册相加是 7120，
+# 去掉 5 辆光棱坦克（type 17，各 250）后是 5870。造 1 个爆破兵（20）后界面变成 5890。
+# 光棱不计入基地人口。
+POP = {
+    2: 10, 3: 20, 4: 25, 5: 30, 6: 80, 7: 20, 8: 120, 9: 120, 10: 30, 11: 40,
+    12: 60, 13: 65, 14: 80, 15: 100, 16: 120, 18: 130, 19: 175, 20: 125, 21: 250,
+    22: 20, 23: 35, 24: 60, 25: 100, 26: 75, 27: 220, 28: 80, 29: 260, 30: 500,
+    31: 60, 32: 250, 33: 150, 34: 250, 35: 250, 36: 250, 37: 250, 38: 125, 39: 250,
+    40: 250, 41: 250, 42: 250, 43: 210, 44: 500, 45: 250, 46: 80, 47: 100, 48: 120,
+    49: 250, 50: 120, 51: 250, 52: 200, 53: 100, 54: 250, 55: 250, 56: 250, 57: 200,
+    58: 250, 59: 250, 60: 210, 61: 250, 62: 250, 63: 220, 64: 500, 65: 250, 66: 250,
+    67: 250, 68: 250, 69: 250, 70: 220, 71: 500, 72: 250, 73: 250, 74: 250, 75: 250,
+    76: 250, 77: 250, 78: 250, 79: 250, 80: 250, 81: 200, 82: 250, 83: 250, 84: 210,
+    85: 250, 86: 250, 87: 80, 88: 100, 89: 120, 90: 250, 91: 250, 92: 250, 93: 250,
+    94: 250, 95: 250, 96: 250, 97: 250, 98: 250, 99: 250, 100: 250, 101: 250, 102: 250,
+    103: 250, 104: 250, 105: 250, 106: 250, 107: 250, 108: 250, 109: 250, 110: 250,
+    111: 250, 112: 250, 113: 250, 114: 250, 115: 250, 116: 250, 117: 250, 118: 250,
+    119: 250, 120: 250, 121: 250, 122: 250, 123: 250, 124: 250, 125: 250, 126: 250,
+    127: 250, 128: 250, 129: 250, 130: 250, 131: 250, 132: 250, 133: 250, 134: 250,
+    135: 250, 136: 250, 137: 250, 138: 250, 139: 250, 140: 250, 141: 250, 142: 250,
+    143: 250, 144: 250, 145: 250,
+}
 
 REPAIR_RANGE = 50
 HEAL_PER_SEC = 660
@@ -113,6 +135,53 @@ def _loaded(rec):
             done = buf
             buf = []
     return done or buf
+
+
+def _pop_one(row):
+    """(单位 id, 兵种)。刚造出来的 check 是 0，兵种号就是包里的 type。"""
+    def num(key):
+        v = row.get(key)
+        if isinstance(v, bool) or not isinstance(v, int):
+            return 0
+        return v
+
+    hp = _s32(num("field7"))
+    raw = _s32(num("field3"))
+    if hp <= 0:
+        return None
+    typ = real_type(raw, num("field4"), num("field5"), num("field7"),
+                    num("field8"), num("field10"))
+    if typ not in POP and num("field10") == 0 and raw in POP:
+        typ = raw
+    if typ not in POP:
+        return None
+    uid = _s32(num("field2"))
+    if uid <= 0:
+        return None
+    return uid, typ
+
+
+def population(rec):
+    """基地人口。还没收到兵册时返回 None。刚造完、兵册没刷新的那一只从建筑回包补上。"""
+    if rec is None:
+        return None
+    hist = list(getattr(rec, "recent", {}).get("RseLoadArmy") or [])
+    if not hist and not (getattr(rec, "latest", {}) or {}).get("RseLoadArmy"):
+        return None
+    owned = {}
+    for row in _loaded(rec):
+        got = _pop_one(row)
+        if got:
+            owned[got[0]] = got[1]
+    item = (getattr(rec, "latest", {}) or {}).get("RseBuildingModify")
+    data = item[1] if isinstance(item, tuple) and len(item) > 1 else None
+    army = data.get("army") if isinstance(data, dict) else None
+    rows = army if isinstance(army, list) else ([army] if isinstance(army, dict) else [])
+    for row in rows:
+        got = _pop_one(row)
+        if got and got[0] not in owned:
+            owned[got[0]] = got[1]
+    return sum(POP[typ] for typ in owned.values())
 
 
 def blast_ids(rec):

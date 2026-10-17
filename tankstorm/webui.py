@@ -324,8 +324,9 @@ def _handler(config: dict):
                     "metal": wallet["metal"],
                     "oil": wallet["oil"],
                     "credit": wallet["credit"],
+                    "pop": citydb.attack_pop(user["id"]),
                     "cards": citydb.attack_cards(user["id"]),
-                    "jobs": citydb.list_daily_jobs(user["id"], limit=8, kind="base"),
+                    "jobs": citydb.list_daily_jobs(user["id"], limit=6, kind="base"),
                 })
                 return
             if path == "/api/daily":
@@ -526,7 +527,7 @@ def _handler(config: dict):
                     kind = str(data.get("kind") or data.get("unit") or "blast").strip()
                     if kind not in (
                             "blast", "factory", "cards", "haoyin", "admiral", "admiral10",
-                            "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50"):
+                            "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50"):
                         raise ValueError("没有这项")
                     if kind == "cards":
                         params = {}

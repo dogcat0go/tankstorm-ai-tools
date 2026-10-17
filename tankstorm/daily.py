@@ -2123,6 +2123,19 @@ def note_base_wallet(rec) -> None:
         rec._wallet_at = now
 
 
+def note_population(rec):
+    """把基地人口写给网页。兵册没到就不写。"""
+    if rec is None:
+        return
+    from . import repair
+    total = repair.population(rec)
+    if total is None or getattr(rec, "_pop_published", None) == total:
+        return
+    from . import citydb
+    if citydb.note_attack_pop(total):
+        rec._pop_published = total
+
+
 def note_blast_count(rec, new_id=0):
     """把当前爆破兵数量写给网页。刚造完、兵册还没刷新的那一只用 id 补上。"""
     if rec is None:
@@ -2342,6 +2355,7 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
     new_id = made.get("field2") if isinstance(made, dict) else 0
     if track:
         note_blast_count(rec, new_id if isinstance(new_id, int) and not isinstance(new_id, bool) else 0)
+    note_population(rec)
     return True, f"成功：{place} {bid} 按剩余 {left} 秒、0 勋章加速完成"
 
 
@@ -2694,6 +2708,76 @@ def lab50_probe(rec, sock, times=1, on_progress=None):
     medal = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
     return True, (f"成功：实验室探索 50 连做了 {done} 次，用了 {done * _LAB_BATCH} 张，"
                   f"实验室探索卡剩余={left if left is not None else '未知'}，"
+                  f"勋章={medal if medal is not None else '未知'}")
+
+
+_AUTO_CARD = 10116
+_AUTO_BATCH = 50
+
+
+def auto50_probe(rec, sock, times=1, on_progress=None):
+    """军备自动化探索 50 连。一次用 50 张自动化探索卡，不写勋章。"""
+    try:
+        times = int(times)
+    except (TypeError, ValueError):
+        return False, "次数要是数字"
+    if not 1 <= times <= 999:
+        return False, "次数要在 1 到 999"
+    for kind in (21, 0, 21):
+        mark = rec.seq_mark()
+        sender.send_frame(sock, "04e1", encode_message(
+            {1: ("int32", kind)}, omit_zero=False), rec.rc4_c2s)
+        _await_response(
+            sock, rec, "RseJunBeiOpt", mark, 3,
+            want=lambda d, kind=kind: isinstance(d, dict) and d.get("type") == kind)
+    done = 0
+    while done < times:
+        raise_if_stopped()
+        item = _draw_slot(rec, _AUTO_CARD)
+        have = 0 if not item else item[1]
+        if not item or have < _AUTO_BATCH:
+            head = f"完成 {done}/{times}。" if done else ""
+            return False, f"{head}自动化探索卡只有 {have} 张，50 连要 {_AUTO_BATCH} 张，不发"
+        before = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
+        sent = f"04e1 type=22 nExlType=6 item={_AUTO_CARD}"
+        mark = rec.seq_mark()
+        sender.send_frame(sock, "04e1", encode_message({
+            1: ("int32", 22), 5: ("int32", 6), 7: ("int32", _AUTO_CARD),
+        }, omit_zero=False), rec.rc4_c2s)
+        got = _await_response(
+            sock, rec, "RseJunBeiOpt", mark, 8,
+            want=lambda d: isinstance(d, dict) and d.get("type") == 22)
+        if not isinstance(got, dict):
+            head = f"完成 {done}/{times}。" if done else ""
+            return False, f"{head}自动化探索已发出 {sent}，没有回包"
+        if got.get("ret") not in (0, None):
+            head = f"完成 {done}/{times}。" if done else ""
+            return False, f"{head}自动化探索已发出 {sent}，ret={got.get('ret')}，未成功"
+        deadline = time.time() + 0.8
+        while time.time() < deadline:
+            _beat()
+            try:
+                sock.settimeout(0.3)
+                if not sock.recv(8192):
+                    break
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+        after = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
+        if before is not None and after is not None and after < before:
+            return False, f"勋章从 {before} 变成 {after}，已停。已完成 {done} 次"
+        done += 1
+        note_bag_cards(rec)
+        left = _bag_left(rec, _AUTO_CARD)
+        if on_progress:
+            on_progress(f"{done}/{times}，自动化探索卡剩余={left if left is not None else '未知'}")
+        _nap(0.3)
+    note_bag_cards(rec)
+    left = _bag_left(rec, _AUTO_CARD)
+    medal = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
+    return True, (f"成功：自动化探索 50 连做了 {done} 次，用了 {done * _AUTO_BATCH} 张，"
+                  f"自动化探索卡剩余={left if left is not None else '未知'}，"
                   f"勋章={medal if medal is not None else '未知'}")
 
 

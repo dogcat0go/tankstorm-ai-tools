@@ -3539,7 +3539,7 @@ def set_attack_status(phase: str, task: str = "", note: str = "") -> None:
         here = _kept_here(prev)
         if here:
             data["here"] = here
-        for key in ("morale", "power", "blast", "metal", "oil", "credit"):
+        for key in ("morale", "power", "blast", "pop", "metal", "oil", "credit"):
             val = _kept_int(prev, key)
             if val is not None:
                 data[key] = val
@@ -3632,6 +3632,33 @@ def note_attack_blast(count) -> bool:
             return True
         except sqlite3.Error:
             return False
+
+
+def note_attack_pop(count) -> bool:
+    """记下基地人口。没变就不写库。"""
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return False
+    if not attack_context_user() and not attack_context_qq():
+        return False
+    with _proc_lock:
+        name = _mark_name("proc")
+        try:
+            data = _proc_payload(_signal_value(name))
+            if not data or data.get("phase") == "offline":
+                return False
+            if data.get("pop") == count:
+                return True
+            data["pop"] = count
+            _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+            return True
+        except sqlite3.Error:
+            return False
+
+
+def attack_pop(user_id: int):
+    """网页上的基地人口。还没算出来是 None，可以是 0。"""
+    parsed, _seen, _online = _read_user_proc(int(user_id))
+    return _kept_int(parsed, "pop")
 
 
 def attack_blast_count(user_id: int):
@@ -4360,10 +4387,11 @@ DAILY_KIND_LABEL = {
     "pick_lab": "换实验卡",
     "pick_auto": "换自动化探索卡",
     "lab50": "实验室探索50连",
+    "auto50": "自动化探索50连",
 }
 _BASE_LANE = (
     "blast", "factory", "cards", "haoyin", "admiral", "admiral10",
-    "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50",
+    "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
 )
 _BASE_JOB_KINDS = _BASE_LANE
 _DAILY_STATUS = {
@@ -4798,12 +4826,12 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         elif not (1 <= count <= 399):
             return "数量要在 1 到 399"
         clean["count"] = count
-    elif kind in ("pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50"):
+    elif kind in ("pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50"):
         try:
             count = int(str(params.get("count") or "").strip())
         except (TypeError, ValueError):
             return "数量要是数字"
-        if kind == "lab50":
+        if kind in ("lab50", "auto50"):
             if not (1 <= count <= 999):
                 return "次数要在 1 到 999"
         elif not (1 <= count <= 99999):

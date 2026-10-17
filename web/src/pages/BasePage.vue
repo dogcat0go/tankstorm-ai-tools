@@ -2,6 +2,7 @@
 const count = defineModel("count", { type: String, required: true });
 const army = defineModel("army", { type: String, required: true });
 const factoryCount = defineModel("factoryCount", { type: String, required: true });
+const aaCount = defineModel("aaCount", { type: String, required: true });
 const drinkCount = defineModel("drinkCount", { type: String, required: true });
 const admiralCount = defineModel("admiralCount", { type: String, required: true });
 const admiral10Count = defineModel("admiral10Count", { type: String, required: true });
@@ -62,7 +63,7 @@ function resText(n) {
       <label>卡数量<input v-model="admiral10Count" class="mins" inputmode="numeric" required /></label>
       <button type="submit" :disabled="!dailyQq">抽取</button>
     </form>
-    <p class="muted">数量是要消耗的卡。豪饮用物品 10061，一张抽一次。高级将领用物品 10020，单抽一张一次。十连按卡数除以 10 向下取整，例如 25 张抽 2 次、用 20 张。不够就停，并写出剩余张数。1 到 999，十连至少 10 张。</p>
+    <p class="muted">数量是要消耗的卡。豪饮用物品 10061，一张抽一次。高级将领用物品 10020，单抽一张一次。十连按卡数除以 10 向下取整，例如 25 张抽 2 次、用 20 张。不够就停，并写出剩余张数。1 到 99999，十连至少 10 张。</p>
     <h2>兵营</h2>
     <p>当前爆破兵 {{ blast === null || blast === undefined ? "还没读到" : blast }}</p>
     <form class="lock-row" @submit.prevent="runBlast(count).catch((e) => showErr(e.message))">
@@ -72,13 +73,18 @@ function resText(n) {
     </form>
     <p class="muted">按这个数量循环。每次先生产一个，剩余时间算出 0 勋章才快速制造，credit 固定写 0。要花勋章就停在这一只，不发。大厅蓝钻大约要等剩余降到 600 秒，一只一分多钟。消耗金属和石油。数量 1 到 399。兵营里已经在造的那一只算进数量。</p>
     <h2>战车工厂</h2>
+    <form class="lock-row" @submit.prevent="runFactory('12', aaCount).catch((e) => showErr(e.message))">
+      <span class="switch">防空车制造</span>
+      <label>数量<input v-model="aaCount" class="mins" inputmode="numeric" required /></label>
+      <button type="submit" :disabled="!dailyQq">开始制造</button>
+    </form>
     <form class="lock-row" @submit.prevent="runFactory(army, factoryCount).catch((e) => showErr(e.message))">
-      <span class="switch">快速制造</span>
+      <span class="switch">其他战车</span>
       <label>兵种<input v-model="army" class="mins" inputmode="numeric" required /></label>
       <label>数量<input v-model="factoryCount" class="mins" inputmode="numeric" required /></label>
       <button type="submit" :disabled="!dailyQq">开始制造</button>
     </form>
-    <p class="muted">和兵营同一套快速制造：先生产，剩余时间算出 0 勋章才加速，credit 固定写 0。要花勋章就停在这一辆，不发。兵种填战车的兵种号，例如防空车 12、猛犸 45、T99 90。和爆破兵同时造。数量 1 到 399。</p>
+    <p class="muted">防空车是兵种 12，只在建筑类型 30 的战车工厂造。和兵营同一套：先生产，剩余时间算出 0 勋章才加速，credit 固定写 0。要花勋章就停在这一辆，不发。其他战车填兵种号，例如猛犸 45、T99 90。数量 1 到 399。</p>
     <p v-if="note" class="muted">{{ note }}</p>
     <p v-if="err && errAt === 'base'" class="err">{{ err }}</p>
     <h2>最近执行</h2>

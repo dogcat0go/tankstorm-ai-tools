@@ -2394,7 +2394,7 @@ def daily_factory(rec, sock, config, count=1, army=0, on_progress=None):
     unit = repair.NAMES.get(army) or f"兵种{army}"
     return daily_blast(
         rec, sock, config, count, on_progress,
-        building_type=None, army_type=army, place="战车工厂",
+        building_type=_FACTORY_BUILDING, army_type=army, place="战车工厂",
         unit=unit, label="战车工厂", track=False)
 
 
@@ -2452,8 +2452,8 @@ def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):
         count = int(count)
     except (TypeError, ValueError):
         return False, "数量要是数字"
-    if not 1 <= count <= 999:
-        return False, "卡数量要在 1 到 999"
+    if not 1 <= count <= 99999:
+        return False, "卡数量要在 1 到 99999"
     per = 10 if mode == "admiral10" else 1
     times = count // per if by_card else count
     if times < 1:

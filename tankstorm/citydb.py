@@ -4732,8 +4732,8 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         except (TypeError, ValueError):
             return "数量要是数字"
         if kind in ("haoyin", "admiral", "admiral10"):
-            if not (1 <= count <= 999):
-                return "卡数量要在 1 到 999"
+            if not (1 <= count <= 99999):
+                return "卡数量要在 1 到 99999"
             if kind == "admiral10" and count < 10:
                 return "十连至少要 10 张卡"
         elif not (1 <= count <= 399):

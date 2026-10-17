@@ -2434,6 +2434,42 @@ def _draw_slot(rec, item_id):
     return found
 
 
+_WATCH_CARDS = (
+    (10020, "general"), (10107, "staff"), (10006, "lab"),
+    (10116, "auto"), (10061, "drink"),
+)
+
+
+def note_bag_cards(rec) -> None:
+    """把背包里这几种卡的张数写给网页。没收到背包就不写。"""
+    one = (getattr(rec, "latest", {}) or {}).get("RseBagItemLst") if rec else None
+    data = one[1] if isinstance(one, tuple) and len(one) > 1 else None
+    if not isinstance(data, dict):
+        return
+    rows = data.get("bagItem")
+    if isinstance(rows, dict):
+        nested = rows.get("field1") or rows.get("field2")
+        rows = nested if isinstance(nested, list) else [rows]
+    if not isinstance(rows, list):
+        return
+    want = {item_id: key for item_id, key in _WATCH_CARDS}
+    found = {key: 0 for _item_id, key in _WATCH_CARDS}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        tid = row.get("field2")
+        if not isinstance(tid, int) or isinstance(tid, bool):
+            tid = row.get("itemID")
+        count = row.get("field4")
+        if not isinstance(count, int) or isinstance(count, bool):
+            count = row.get("count") or 0
+        if tid not in want or not isinstance(count, int) or isinstance(count, bool):
+            continue
+        found[want[tid]] = count
+    from . import citydb
+    citydb.note_attack_cards(found)
+
+
 def _draw_send(rec, sock, opcode, fields, reply, kind):
     mark = rec.seq_mark()
     sender.send_frame(sock, opcode, encode_message(fields, omit_zero=False),
@@ -2505,17 +2541,160 @@ def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):
                 break
         left = _draw_slot(rec, item_id)
         remain = left[1] if left else "未知"
+        note_bag_cards(rec)
         if on_progress:
             on_progress(f"{done}/{times}，{card}剩余={remain}")
         _nap(0.3)
     left = _draw_slot(rec, item_id)
     remain = left[1] if left else "未知"
+    note_bag_cards(rec)
     used = done * per
     if by_card and mode == "admiral10":
         tail = f"指定 {count} 张，向下取整抽 {done} 次、用 {used} 张"
     else:
         tail = f"抽了 {done} 次、用 {used} 张"
     return True, f"成功：{title}{tail}，{card}剩余={remain}"
+
+
+# 2026-10-17 09:55 抓包。自选包是 RceBagItemUse：selectID 是要换成的物品，
+# id 是包的背包槽，itemID 是包本身，optType=0。回包 ret=0，credit=0、medal=0。
+# 招募包 110011：10020 高级将领卡、10107 高级参谋招募卡。
+# 探索包 110015：10006 实验室探索卡、10116 军备自动化探索卡。
+# 实验室 50 连是 RceWPCExplore：sceneID=10003、expType=1、exploreCnt=50、
+# credit=0、useItemID=实验室卡的槽位、useItemCnt=50。10006 从 823 减到 773。
+_PACKS = {
+    "general": (110011, 10020, "招募卡自选包", "高级将领卡"),
+    "staff": (110011, 10107, "招募卡自选包", "高级参谋招募卡"),
+    "lab": (110015, 10006, "探索卡自选包", "实验室探索卡"),
+    "auto": (110015, 10116, "探索卡自选包", "军备自动化探索卡"),
+}
+_LAB_SCENE = 10003
+_LAB_CARD = 10006
+_LAB_BATCH = 50
+
+
+def _bag_left(rec, item_id):
+    found = _draw_slot(rec, item_id)
+    return None if not found else found[1]
+
+
+def pick_pack(rec, sock, kind, count=1, on_progress=None):
+    """用一张自选包换成指定物品。count 是要换出的张数，也是消耗的包数。"""
+    spec = _PACKS.get(kind)
+    if spec is None:
+        return False, "自选包种类不对"
+    pack_id, select_id, pack_name, card_name = spec
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        return False, "数量要是数字"
+    if not 1 <= count <= 99999:
+        return False, "数量要在 1 到 99999"
+    item = _draw_slot(rec, pack_id)
+    have = 0 if not item else item[1]
+    if not item or have < count:
+        return False, f"{pack_name}只有 {have} 张，这次要 {count} 张，不发"
+    sent = (f"0440 {pack_name} 槽={item[0]} 选{card_name}={select_id} "
+            f"数量={count}")
+    mark = rec.seq_mark()
+    sender.send_frame(sock, "0440", encode_message({
+        1: ("int32", select_id), 3: ("int32", count), 4: ("int32", item[0]),
+        5: ("int32", pack_id), 7: ("int32", 0),
+    }, omit_zero=False), rec.rc4_c2s)
+    got = _await_response(
+        sock, rec, "RseBagItemUse", mark, 6,
+        want=lambda d, slot=item[0], pack_id=pack_id: (
+            isinstance(d, dict) and d.get("itemID") == pack_id and d.get("id") == slot))
+    if not isinstance(got, dict):
+        return False, f"{pack_name} 已发出 {sent}，没有回包"
+    if got.get("ret") not in (0, None):
+        return False, f"{pack_name} 已发出 {sent}，ret={got.get('ret')}，未成功"
+    deadline = time.time() + 0.8
+    while time.time() < deadline:
+        _beat()
+        try:
+            sock.settimeout(0.3)
+            if not sock.recv(8192):
+                break
+        except TimeoutError:
+            continue
+        except OSError:
+            break
+    note_bag_cards(rec)
+    pack_left = _bag_left(rec, pack_id)
+    card_left = _bag_left(rec, select_id)
+    text = (f"成功：{pack_name}换了 {count} 张{card_name}，"
+            f"{pack_name}剩余={pack_left if pack_left is not None else '未知'}，"
+            f"{card_name}剩余={card_left if card_left is not None else '未知'}")
+    if on_progress:
+        on_progress(text)
+    return True, text
+
+
+def lab50_probe(rec, sock, times=1, on_progress=None):
+    """实验室探索 50 连。一次请求用 50 张实验室探索卡，credit 固定 0。"""
+    try:
+        times = int(times)
+    except (TypeError, ValueError):
+        return False, "次数要是数字"
+    if not 1 <= times <= 999:
+        return False, "次数要在 1 到 999"
+    mark = rec.seq_mark()
+    sender.send_frame(sock, "0437", encode_message(
+        {1: ("int32", 1)}, omit_zero=False), rec.rc4_c2s)
+    _await_response(sock, rec, "RseWPCBaseOpen", mark, 3)
+    done = 0
+    while done < times:
+        raise_if_stopped()
+        item = _draw_slot(rec, _LAB_CARD)
+        have = 0 if not item else item[1]
+        if not item or have < _LAB_BATCH:
+            head = f"完成 {done}/{times}。" if done else ""
+            return False, f"{head}实验室探索卡只有 {have} 张，50 连要 {_LAB_BATCH} 张，不发"
+        before = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
+        sent = (f"043a scene={_LAB_SCENE} expType=1 exploreCnt={_LAB_BATCH} "
+                f"credit=0 槽={item[0]} useItemCnt={_LAB_BATCH}")
+        mark = rec.seq_mark()
+        sender.send_frame(sock, "043a", encode_message({
+            1: ("int32", _LAB_SCENE), 2: ("int32", 1), 3: ("int32", _LAB_BATCH),
+            4: ("int32", 0), 5: ("int32", item[0]), 6: ("int32", _LAB_BATCH),
+            7: ("int32", 0),
+        }, omit_zero=False), rec.rc4_c2s)
+        got = _await_response(
+            sock, rec, "RseWPCExplore", mark, 8,
+            want=lambda d: isinstance(d, dict) and d.get("sceneID") == _LAB_SCENE)
+        if not isinstance(got, dict):
+            head = f"完成 {done}/{times}。" if done else ""
+            return False, f"{head}实验室探索已发出 {sent}，没有回包"
+        if got.get("ret") not in (0, None):
+            head = f"完成 {done}/{times}。" if done else ""
+            return False, f"{head}实验室探索已发出 {sent}，ret={got.get('ret')}，未成功"
+        deadline = time.time() + 0.8
+        while time.time() < deadline:
+            _beat()
+            try:
+                sock.settimeout(0.3)
+                if not sock.recv(8192):
+                    break
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+        after = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
+        if before is not None and after is not None and after < before:
+            return False, f"勋章从 {before} 变成 {after}，已停。已完成 {done} 次"
+        done += 1
+        note_bag_cards(rec)
+        left = _bag_left(rec, _LAB_CARD)
+        if on_progress:
+            on_progress(f"{done}/{times}，实验室探索卡剩余={left if left is not None else '未知'}")
+        _nap(0.3)
+    note_bag_cards(rec)
+    left = _bag_left(rec, _LAB_CARD)
+    medal = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
+    return True, (f"成功：实验室探索 50 连做了 {done} 次，用了 {done * _LAB_BATCH} 张，"
+                  f"实验室探索卡剩余={left if left is not None else '未知'}，"
+                  f"勋章={medal if medal is not None else '未知'}")
 
 
 def _draw_done(name, sent, got, extra):

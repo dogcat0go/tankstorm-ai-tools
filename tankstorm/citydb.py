@@ -3188,6 +3188,7 @@ _proc_lock = threading.Lock()
 _LANE_RANK = {
     "war": 0, "daily": 1, "blast": 2, "factory": 3, "cards": 4,
     "haoyin": 5, "admiral": 6, "admiral10": 7,
+    "pick_general": 8, "pick_staff": 8, "pick_lab": 8, "pick_auto": 8, "lab50": 8,
 }
 
 
@@ -3542,6 +3543,15 @@ def set_attack_status(phase: str, task: str = "", note: str = "") -> None:
             val = _kept_int(prev, key)
             if val is not None:
                 data[key] = val
+        cards = prev.get("cards")
+        if isinstance(cards, dict):
+            kept = {}
+            for key, raw in cards.items():
+                if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+                    continue
+                kept[str(key)] = int(raw)
+            if kept:
+                data["cards"] = kept
         user_id = attack_context_user()
         qq = attack_context_qq()
         if user_id:
@@ -3656,6 +3666,46 @@ def note_attack_wallet(metal=None, oil=None, credit=None) -> bool:
             return True
         except sqlite3.Error:
             return False
+
+
+def note_attack_cards(counts) -> bool:
+    """记下攻打号背包里这几种卡的张数。没变就不写库。"""
+    if not isinstance(counts, dict) or not counts:
+        return False
+    vals = {}
+    for key, raw in counts.items():
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            continue
+        vals[str(key)] = int(raw)
+    if not vals:
+        return False
+    if not attack_context_user() and not attack_context_qq():
+        return False
+    with _proc_lock:
+        name = _mark_name("proc")
+        try:
+            data = _proc_payload(_signal_value(name))
+            if not data or data.get("phase") == "offline":
+                return False
+            prev = data.get("cards") if isinstance(data.get("cards"), dict) else {}
+            if all(prev.get(key) == val for key, val in vals.items()):
+                return True
+            merged = {str(k): int(v) for k, v in prev.items()
+                      if isinstance(v, int) and not isinstance(v, bool) and v >= 0}
+            merged.update(vals)
+            data["cards"] = merged
+            _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+            return True
+        except sqlite3.Error:
+            return False
+
+
+def attack_cards(user_id: int) -> dict:
+    """网页上的卡数量。还没读到背包的那一项是 None，可以是 0。"""
+    parsed, _seen, _online = _read_user_proc(int(user_id))
+    raw = parsed.get("cards") if isinstance(parsed.get("cards"), dict) else {}
+    return {key: _kept_int(raw, key)
+            for key in ("general", "staff", "lab", "auto", "drink")}
 
 
 def attack_wallet(user_id: int) -> dict:
@@ -4305,8 +4355,17 @@ DAILY_KIND_LABEL = {
     "haoyin": "英雄豪饮",
     "admiral": "高级将领单抽",
     "admiral10": "高级将领十连",
+    "pick_general": "换高级将领卡",
+    "pick_staff": "换参谋卡",
+    "pick_lab": "换实验卡",
+    "pick_auto": "换自动化探索卡",
+    "lab50": "实验室探索50连",
 }
-_BASE_LANE = ("blast", "factory", "cards", "haoyin", "admiral", "admiral10")
+_BASE_LANE = (
+    "blast", "factory", "cards", "haoyin", "admiral", "admiral10",
+    "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50",
+)
+_BASE_JOB_KINDS = _BASE_LANE
 _DAILY_STATUS = {
     "pending": "排队",
     "running": "正在做",
@@ -4739,6 +4798,17 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         elif not (1 <= count <= 399):
             return "数量要在 1 到 399"
         clean["count"] = count
+    elif kind in ("pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50"):
+        try:
+            count = int(str(params.get("count") or "").strip())
+        except (TypeError, ValueError):
+            return "数量要是数字"
+        if kind == "lab50":
+            if not (1 <= count <= 999):
+                return "次数要在 1 到 999"
+        elif not (1 <= count <= 99999):
+            return "数量要在 1 到 99999"
+        clean["count"] = count
     elif kind == "factory":
         from . import repair
         try:
@@ -4926,23 +4996,24 @@ def list_daily_jobs(user_id: int, limit: int = 2, kind: str = "") -> list:
     conn = connect(readonly=True)
     try:
         if kind == "base":
+            slot = ",".join("?" * len(_BASE_JOB_KINDS))
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
-                "WHERE user_id=? AND kind IN ('blast','factory','cards','haoyin','admiral','admiral10') "
+                "WHERE user_id=? AND kind IN (" + slot + ") "
                 "ORDER BY id DESC LIMIT ?",
-                (int(user_id), int(limit))).fetchall()
+                (int(user_id), *_BASE_JOB_KINDS, int(limit))).fetchall()
         elif kind:
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
                 "WHERE user_id=? AND kind=? ORDER BY id DESC LIMIT ?",
                 (int(user_id), kind, int(limit))).fetchall()
         else:
+            slot = ",".join("?" * len(_BASE_JOB_KINDS))
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
-                "WHERE user_id=? AND kind NOT IN "
-                "('blast','factory','cards','haoyin','admiral','admiral10') "
+                "WHERE user_id=? AND kind NOT IN (" + slot + ") "
                 "ORDER BY id DESC LIMIT ?",
-                (int(user_id), int(limit))).fetchall()
+                (int(user_id), *_BASE_JOB_KINDS, int(limit))).fetchall()
     finally:
         conn.close()
     from . import daily

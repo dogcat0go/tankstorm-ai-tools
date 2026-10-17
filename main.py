@@ -45,6 +45,11 @@
   python main.py --qq 攻打 --draw haoyin      英雄豪饮一次
   python main.py --qq 攻打 --draw admiral     高级将领单抽
   python main.py --qq 攻打 --draw admiral10   高级将领十连
+  python main.py --pick general --count 99    招募自选包换 99 张高级将领卡
+  python main.py --pick staff --count 1       招募自选包换 1 张高级参谋招募卡
+  python main.py --pick lab --count 99        探索自选包换 99 张实验室探索卡
+  python main.py --pick auto --count 99       探索自选包换 99 张军备自动化探索卡
+  python main.py --lab50                      实验室探索 50 连，默认 1 次
 """
 
 import argparse
@@ -388,6 +393,17 @@ def main() -> int:
                          "haoyin=英雄豪饮，耗 1 个物品 10061；"
                          "admiral=高级将领单抽，耗 1 个物品 10020；"
                          "admiral10=高级将领十连，耗 10 个物品 10020")
+    g4.add_argument("--pick", choices=("general", "staff", "lab", "auto"),
+                    help="用自选包换成指定卡后退出。"
+                         "general=招募包换高级将领卡，staff=招募包换高级参谋招募卡，"
+                         "lab=探索包换实验室探索卡，auto=探索包换军备自动化探索卡。"
+                         "张数用 --count")
+    g4.add_argument("--count", type=int, default=1, metavar="张数",
+                    help="自选包要换出的张数，也是消耗的包数。默认 1")
+    g4.add_argument("--lab50", nargs="?", const=1, type=int, default=None,
+                    metavar="次数",
+                    help="实验室探索 50 连后退出。一次用 50 张实验室探索卡，"
+                         "credit 写 0。次数默认 1")
     g4.add_argument("--capture", action="store_true",
                     help="扫码登录后打开钩子版 Flash 窗口，实时抓游戏明文包。"
                          "登录可选空间或大厅。游戏窗口仍是 flash_host，"
@@ -411,7 +427,7 @@ def main() -> int:
                 args.web, args.list_cities, args.route is not None,
                 args.move is not None, args.orders,
                 args.capture, args.fund is not None,
-                args.pve is not None, args.draw)):
+                args.pve is not None, args.draw, args.pick, args.lab50 is not None)):
         parser.print_help()
         return 0
 
@@ -424,7 +440,7 @@ def main() -> int:
                               args.route is not None, args.move is not None,
                               args.orders,
                               args.capture, args.fund is not None,
-                              args.pve is not None, args.draw)):
+                              args.pve is not None, args.draw, args.pick, args.lab50 is not None)):
         log.error("订阅页面已和游戏分开。另开一个进程：python3 web.py")
         return 1
 
@@ -660,6 +676,16 @@ def main() -> int:
 
     if args.pve is not None:
         return socket_keepalive.run_pve_once(qq, config, args.pve)
+
+    if args.pick and args.lab50 is not None:
+        log.error("--pick 和 --lab50 分开跑")
+        return 1
+
+    if args.pick:
+        return socket_keepalive.run_pick_once(qq, config, args.pick, args.count)
+
+    if args.lab50 is not None:
+        return socket_keepalive.run_lab50_once(qq, config, args.lab50)
 
     if args.draw:
         return socket_keepalive.run_draw_once(qq, config, args.draw)

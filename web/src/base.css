@@ -96,6 +96,7 @@ p button.ghost, p a.ghost { margin-left: 8px; }
 .modal-card h2 { margin: 0 0 8px; font-size: 18px; color: #0b6b2f; }
 .modal-card.bad h2 { color: #9b1c1c; }
 .modal-card p { margin: 0 0 16px; }
+.modal-actions { display: flex; gap: 8px; }
 .muted { color: #777; font-size: 13px; }
 table { width: 100%; border-collapse: collapse; background: #fff; margin-top: 12px; }
 table.scan td input { width: 7em; box-sizing: border-box; }

@@ -6,6 +6,11 @@ const aaCount = defineModel("aaCount", { type: String, required: true });
 const drinkCount = defineModel("drinkCount", { type: String, required: true });
 const admiralCount = defineModel("admiralCount", { type: String, required: true });
 const admiral10Count = defineModel("admiral10Count", { type: String, required: true });
+const generalCount = defineModel("generalCount", { type: String, required: true });
+const staffCount = defineModel("staffCount", { type: String, required: true });
+const labPickCount = defineModel("labPickCount", { type: String, required: true });
+const autoCount = defineModel("autoCount", { type: String, required: true });
+const lab50Count = defineModel("lab50Count", { type: String, required: true });
 
 defineProps({
   dailyQq: { type: String, default: "" },
@@ -14,6 +19,7 @@ defineProps({
   metal: { default: null },
   oil: { default: null },
   credit: { default: null },
+  cards: { type: Object, default: () => ({}) },
   note: { type: String, default: "" },
   err: { type: String, default: "" },
   errAt: { type: String, default: "" },
@@ -21,6 +27,8 @@ defineProps({
   runFactory: { type: Function, required: true },
   runCards: { type: Function, required: true },
   runDraw: { type: Function, required: true },
+  runPick: { type: Function, required: true },
+  runLab50: { type: Function, required: true },
   cancelJob: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
@@ -42,7 +50,8 @@ function resText(n) {
     <h2>基地内资源</h2>
     <p>金属 {{ resText(metal) }} · 石油 {{ resText(oil) }}</p>
     <p>勋章 {{ resText(credit) }}</p>
-    <p class="muted">每 10 秒从攻打号已经收到的资源里更新一次。不另向游戏要一份。还没收到就显示还没读到。</p>
+    <p>高级将领卡 {{ resText(cards.general) }} · 参谋卡 {{ resText(cards.staff) }} · 实验卡 {{ resText(cards.lab) }} · 自动化探索卡 {{ resText(cards.auto) }} · 豪饮卡 {{ resText(cards.drink) }}</p>
+    <p class="muted">进入这一页就读攻打号背包里的这几种卡。开卡、换自选包或抽卡之后，剩余张数会跟着背包更新。还没收到就显示还没读到。</p>
     <form class="lock-row" @submit.prevent="runCards().catch((e) => showErr(e.message))">
       <span class="switch">开资源卡</span>
       <button type="submit" :disabled="!dailyQq">开卡</button>
@@ -63,7 +72,33 @@ function resText(n) {
       <label>卡数量<input v-model="admiral10Count" class="mins" inputmode="numeric" required /></label>
       <button type="submit" :disabled="!dailyQq">抽取</button>
     </form>
-    <p class="muted">数量是要消耗的卡。豪饮用物品 10061，一张抽一次。高级将领用物品 10020，单抽一张一次。十连按卡数除以 10 向下取整，例如 25 张抽 2 次、用 20 张。不够就停，并写出剩余张数。1 到 99999，十连至少 10 张。</p>
+    <p class="muted">数量是要消耗的卡。豪饮用物品 10061，一张抽一次。高级将领用物品 10020，单抽一张一次。十连按卡数除以 10 向下取整，例如 25 张抽 2 次、用 20 张。不够就停，并写出剩余张数。1 到 99999，十连至少 10 张。点下去会先确认卡和张数。</p>
+    <form class="lock-row" @submit.prevent="runPick('pick_general', generalCount).catch((e) => showErr(e.message))">
+      <span class="switch">换高级将领卡</span>
+      <label>数量<input v-model="generalCount" class="mins" inputmode="numeric" required /></label>
+      <button type="submit" :disabled="!dailyQq">兑换</button>
+    </form>
+    <form class="lock-row" @submit.prevent="runPick('pick_staff', staffCount).catch((e) => showErr(e.message))">
+      <span class="switch">换参谋卡</span>
+      <label>数量<input v-model="staffCount" class="mins" inputmode="numeric" required /></label>
+      <button type="submit" :disabled="!dailyQq">兑换</button>
+    </form>
+    <form class="lock-row" @submit.prevent="runPick('pick_lab', labPickCount).catch((e) => showErr(e.message))">
+      <span class="switch">换实验卡</span>
+      <label>数量<input v-model="labPickCount" class="mins" inputmode="numeric" required /></label>
+      <button type="submit" :disabled="!dailyQq">兑换</button>
+    </form>
+    <form class="lock-row" @submit.prevent="runPick('pick_auto', autoCount).catch((e) => showErr(e.message))">
+      <span class="switch">换自动化探索卡</span>
+      <label>数量<input v-model="autoCount" class="mins" inputmode="numeric" required /></label>
+      <button type="submit" :disabled="!dailyQq">兑换</button>
+    </form>
+    <form class="lock-row" @submit.prevent="runLab50(lab50Count).catch((e) => showErr(e.message))">
+      <span class="switch">实验室探索50连</span>
+      <label>次数<input v-model="lab50Count" class="mins" inputmode="numeric" required /></label>
+      <button type="submit" :disabled="!dailyQq">探索</button>
+    </form>
+    <p class="muted">招募自选包换成高级将领卡或参谋卡，探索自选包换成实验卡或自动化探索卡。数量是要换出的张数，也是消耗的包数。实验室 50 连一次用 50 张实验卡，次数默认 1。槽位按物品号现查。点下去会先确认。</p>
     <h2>兵营</h2>
     <p>当前爆破兵 {{ blast === null || blast === undefined ? "还没读到" : blast }}</p>
     <form class="lock-row" @submit.prevent="runBlast(count).catch((e) => showErr(e.message))">

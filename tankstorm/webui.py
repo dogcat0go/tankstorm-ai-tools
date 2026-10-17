@@ -324,6 +324,7 @@ def _handler(config: dict):
                     "metal": wallet["metal"],
                     "oil": wallet["oil"],
                     "credit": wallet["credit"],
+                    "cards": citydb.attack_cards(user["id"]),
                     "jobs": citydb.list_daily_jobs(user["id"], limit=8, kind="base"),
                 })
                 return
@@ -523,7 +524,9 @@ def _handler(config: dict):
                     if not citydb.base_tier(user.get("tier") or ""):
                         raise ValueError("基地战需要高级pro订阅")
                     kind = str(data.get("kind") or data.get("unit") or "blast").strip()
-                    if kind not in ("blast", "factory", "cards", "haoyin", "admiral", "admiral10"):
+                    if kind not in (
+                            "blast", "factory", "cards", "haoyin", "admiral", "admiral10",
+                            "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50"):
                         raise ValueError("没有这项")
                     if kind == "cards":
                         params = {}

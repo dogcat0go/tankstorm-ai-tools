@@ -2055,6 +2055,26 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 ok, why = daily.draw_probe(
                     rec, sock, kind, count=params.get("count") or 1,
                     on_progress=_show, by_card=True)
+                daily.note_bag_cards(rec)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind in ("pick_general", "pick_staff", "pick_lab", "pick_auto"):
+                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                    citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
+                    return
+                ok, why = daily.pick_pack(
+                    rec, sock, kind.split("_", 1)[1], count=params.get("count") or 1,
+                    on_progress=_show)
+                daily.note_bag_cards(rec)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind == "lab50":
+                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                    citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
+                    return
+                ok, why = daily.lab50_probe(
+                    rec, sock, times=params.get("count") or 1, on_progress=_show)
+                daily.note_bag_cards(rec)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             else:
@@ -2238,7 +2258,9 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
         _spawn("daily", lambda: _lane_jobs(("daily", "pve", "fund"))),
         _spawn("blast", lambda: _lane_jobs(("blast",))),
         _spawn("factory", lambda: _lane_jobs(("factory",))),
-        _spawn("cards", lambda: _lane_jobs(("cards", "haoyin", "admiral", "admiral10"))),
+        _spawn("cards", lambda: _lane_jobs((
+            "cards", "haoyin", "admiral", "admiral10",
+            "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50"))),
     ]
     try:
         while not stop.is_set():
@@ -2247,6 +2269,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                     return 0
                 daily.note_blast_count(rec)
                 daily.note_base_wallet(rec)
+                daily.note_bag_cards(rec)
                 if citydb.attack_paused():
                     asked = citydb.take_attack_login()
                     if asked:
@@ -3093,6 +3116,28 @@ def run_pve_once(qq, config: dict, stages=None) -> int:
             log.error("[征战] %s", exc)
             return 1
         log.info("[征战] %s", why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_pick_once(qq, config: dict, kind: str, count: int) -> int:
+    """连一次，用自选包换成指定卡，看回包后退出。"""
+    def _work(rec, sock, spec, ctx, beater):
+        ok, why = daily.pick_pack(rec, sock, kind, count)
+        log.info("[自选包] %s", why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_lab50_once(qq, config: dict, times: int) -> int:
+    """连一次，做实验室探索 50 连，看回包后退出。"""
+    def _work(rec, sock, spec, ctx, beater):
+        ok, why = daily.lab50_probe(rec, sock, times)
+        log.info("[实验室探索] %s", why)
         log.info("任务执行期间共发心跳 %d 次", beater.count)
         return 0 if ok else 1
 

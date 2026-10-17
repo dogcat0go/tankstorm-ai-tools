@@ -84,6 +84,14 @@ const aaCount = ref("1");
 const drinkCount = ref("1");
 const admiralCount = ref("1");
 const admiral10Count = ref("10");
+const generalCount = ref("1");
+const staffCount = ref("1");
+const labPickCount = ref("1");
+const autoCount = ref("1");
+const lab50Count = ref("1");
+const baseCards = ref({ general: null, staff: null, lab: null, auto: null, drink: null });
+const ask = ref("");
+let askDone = null;
 const baseJobs = ref([]);
 const baseNote = ref("");
 const baseBlast = ref(null);
@@ -113,6 +121,26 @@ const clock = ref(Date.now());
 let timer = 0;
 let atkTimer = 0;
 let clockTimer = 0;
+
+function confirmUse(text) {
+  return new Promise((resolve) => {
+    askDone = resolve;
+    ask.value = text;
+  });
+}
+
+function answerAsk(ok) {
+  const done = askDone;
+  ask.value = "";
+  askDone = null;
+  if (done) done(!!ok);
+}
+
+function cardNum(count) {
+  const n = Number(String(count ?? "").trim());
+  if (!Number.isInteger(n)) throw new Error("数量要是数字");
+  return n;
+}
 
 function showErr(message, where) {
   const text = message || "";
@@ -203,6 +231,7 @@ async function refreshBase() {
     baseMetal.value = null;
     baseOil.value = null;
     baseCredit.value = null;
+    baseCards.value = { general: null, staff: null, lab: null, auto: null, drink: null };
     return;
   }
   const data = await api("/api/base");
@@ -212,6 +241,7 @@ async function refreshBase() {
   baseMetal.value = data.metal == null ? null : data.metal;
   baseOil.value = data.oil == null ? null : data.oil;
   baseCredit.value = data.credit == null ? null : data.credit;
+  baseCards.value = data.cards || { general: null, staff: null, lab: null, auto: null, drink: null };
 }
 
 async function runBase(countOrBody) {
@@ -220,6 +250,10 @@ async function runBase(countOrBody) {
   const body = countOrBody && typeof countOrBody === "object"
     ? countOrBody
     : { kind: "blast", count: countOrBody };
+  if (body.kind === "cards") {
+    const ok = await confirmUse("开 4 张 1000 万金属卡，以及 4 张 1000 万石油卡。");
+    if (!ok) return;
+  }
   await api("/api/base", body);
   baseNote.value = body.kind === "cards" ? "开资源卡已交给绑定的攻打号" : "爆破兵已交给绑定的攻打号";
   await refreshBase();
@@ -245,10 +279,49 @@ async function runAa(count) {
 }
 
 async function runDraw(mode, count) {
-  showErr("");
+  showErr("", "base");
   baseNote.value = "";
+  const n = cardNum(count);
+  const used = mode === "admiral10" ? Math.floor(n / 10) * 10 : n;
+  const times = mode === "admiral10" ? Math.floor(n / 10) : n;
+  if (mode === "admiral10" && times < 1) throw new Error("十连至少要 10 张卡");
+  const name = mode === "haoyin" ? "豪饮卡" : "高级将领卡";
+  const extra = mode === "admiral10" ? `，十连 ${times} 次` : "";
+  const ok = await confirmUse(`使用${name} ${used} 张${extra}。`);
+  if (!ok) return;
   await api("/api/base", { count, unit: mode });
   baseNote.value = "已交给绑定的攻打号";
+  await refreshBase();
+  await refreshAttacks();
+}
+
+async function runPick(kind, count) {
+  showErr("", "base");
+  baseNote.value = "";
+  const n = cardNum(count);
+  const text = {
+    pick_general: `使用招募卡自选包 ${n} 张，换成高级将领卡 ${n} 张。`,
+    pick_staff: `使用招募卡自选包 ${n} 张，换成参谋卡 ${n} 张。`,
+    pick_lab: `使用探索卡自选包 ${n} 张，换成实验卡 ${n} 张。`,
+    pick_auto: `使用探索卡自选包 ${n} 张，换成自动化探索卡 ${n} 张。`,
+  }[kind];
+  if (!text) throw new Error("没有这项");
+  const ok = await confirmUse(text);
+  if (!ok) return;
+  await api("/api/base", { kind, count: n });
+  baseNote.value = "已交给绑定的攻打号";
+  await refreshBase();
+  await refreshAttacks();
+}
+
+async function runLab50(count) {
+  showErr("", "base");
+  baseNote.value = "";
+  const n = cardNum(count);
+  const ok = await confirmUse(`使用实验卡 ${n * 50} 张，做 ${n} 次 50 连。`);
+  if (!ok) return;
+  await api("/api/base", { kind: "lab50", count: n });
+  baseNote.value = "实验室探索已交给绑定的攻打号";
   await refreshBase();
   await refreshAttacks();
 }
@@ -1071,12 +1144,18 @@ onUnmounted(() => {
         v-model:drink-count="drinkCount"
         v-model:admiral-count="admiralCount"
         v-model:admiral10-count="admiral10Count"
+        v-model:general-count="generalCount"
+        v-model:staff-count="staffCount"
+        v-model:lab-pick-count="labPickCount"
+        v-model:auto-count="autoCount"
+        v-model:lab50-count="lab50Count"
         :daily-qq="dailyQq"
         :jobs="baseJobs"
         :blast="baseBlast"
         :metal="baseMetal"
         :oil="baseOil"
         :credit="baseCredit"
+        :cards="baseCards"
         :note="baseNote"
         :err="err"
         :err-at="errAt"
@@ -1084,11 +1163,23 @@ onUnmounted(() => {
         :run-factory="runFactory"
         :run-cards="() => runBase({ kind: 'cards' })"
         :run-draw="runDraw"
+        :run-pick="runPick"
+        :run-lab50="runLab50"
         :cancel-job="cancelBase"
         :show-err="showErr"
       />
     </template>
 
+    <div v-if="ask" class="modal">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="ask-title">
+        <h2 id="ask-title">确认使用</h2>
+        <p>{{ ask }}</p>
+        <div class="modal-actions">
+          <button type="button" @click="answerAsk(true)">确认</button>
+          <button type="button" class="ghost" @click="answerAsk(false)">取消</button>
+        </div>
+      </div>
+    </div>
     <div v-if="notice" class="modal" @click.self="notice = null">
       <div class="modal-card" :class="{ bad: !notice.ok }" role="dialog" aria-modal="true" aria-labelledby="notice-title">
         <h2 id="notice-title">{{ notice.title }}</h2>

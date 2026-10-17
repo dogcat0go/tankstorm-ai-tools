@@ -20,7 +20,7 @@
 """
 
 from . import sender
-from .daily import _await_response, _nap, _pick_recent, raise_if_stopped
+from .daily import _await_response, _nap, _pick_recent, note_bag_cards, raise_if_stopped
 from .log import get_logger
 from .proto_encode import encode_message
 
@@ -185,6 +185,7 @@ def open_base_cards(rec, sock, on_progress=None):
             bits.append(f"{name}开了 {opened} 张，下一张没开成（{why}）")
         else:
             bits.append(f"{name}开了 {opened} 张")
+    note_bag_cards(rec)
     metal, oil = _wallet(_pick_recent(rec, RSE_USER, 0))
     text = "，".join(bits)
     if isinstance(metal, int) or isinstance(oil, int):

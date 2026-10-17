@@ -112,8 +112,8 @@ def refresh_login_sessions() -> None:
 def _arm_super_storm(rec, sock, config, qq=None) -> None:
     """这条连接收到超级强攻就拒绝。拒绝发出去之后，记到对应登录账号的页面上。
 
-    管理员给这个登录账号填了拒绝上限，并且成功拒绝已经达到这个数时，这次不发拒绝包。
-    没填上限就一直拒绝。
+    管理员给这个登录账号填了拒绝上限，并且今天成功拒绝已经达到这个数时，这次不发拒绝包。
+    次数按北京时间每天 0 点重新计算。没填上限就一直拒绝。
     """
     if not rec or not getattr(rec, "auto_reject", False):
         return
@@ -128,19 +128,20 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
         if not who:
             who = str(snapshot.get("atkUid") or "").strip()
         user_id = citydb.storm_subject(bound_user, uin)
-        why = citydb.reserve_storm_reject(user_id)
+        day = citydb.beijing_day()
+        why = citydb.reserve_storm_reject(user_id, day)
         if why:
             log.info("%s（进攻方 %s）", why, who or "未知玩家")
             return
         rc4 = rec.rc4_c2s
         if rc4 is None:
-            citydb.release_storm_reject(user_id)
+            citydb.release_storm_reject(user_id, day)
             log.warning("自动拒绝超级强攻失败：RC4 C→S 实例不可用"
                         "（实时解密未启用或密钥自检失败）")
             return
         ok = sender.send_reject_super_storm(sock, rc4, snapshot)
         if not ok:
-            citydb.release_storm_reject(user_id)
+            citydb.release_storm_reject(user_id, day)
             return
         try:
             citydb.note_storm_reject(who, user_id=user_id, qq=uin)

@@ -281,7 +281,7 @@ async function saveStormCap(m) {
     stormNotes.value = {
       ...stormNotes.value,
       [m.id]: saved && saved.storm_cap != null
-        ? "已保存，上限 " + saved.storm_cap + " 次"
+        ? "已保存，每天上限 " + saved.storm_cap + " 次"
         : "已保存，不限制",
     };
   } catch (e) {
@@ -470,19 +470,19 @@ onUnmounted(() => {
                   <p>优先 UID：{{ prioText(m) }}</p>
                   <p>日常定时：{{ m.daily_at || "未设" }}</p>
                   <p>
-                    超级强攻：已拒绝 {{ m.storm_used || 0 }} 次
+                    超级强攻：今日已拒绝 {{ m.storm_used || 0 }} 次
                     <template v-if="m.storm_cap == null">· 不限制</template>
                     <template v-else>· 上限 {{ m.storm_cap }} 次<template v-if="(m.storm_used || 0) >= m.storm_cap">，已停</template></template>
                   </p>
                   <form class="storm-cap" @submit.prevent="saveStormCap(m)">
-                    <label>拒绝上限
+                    <label>每日上限
                       <input v-model="m.storm_cap_text" inputmode="numeric" placeholder="不限制" />
                     </label>
                     <button type="submit">保存</button>
                     <span v-if="stormErr[m.id]" class="err">{{ stormErr[m.id] }}</span>
                     <span v-else class="muted">{{ stormNotes[m.id] }}</span>
                   </form>
-                  <p class="muted">留空则一直拒绝。填 0 则一次都不自动拒绝。成功发出拒绝才算一次，达到上限后这个登录账号不再自动拒绝。</p>
+                  <p class="muted">按北京时间每天 0 点重新计算。留空则一直拒绝。填 0 则一次都不自动拒绝。成功发出拒绝才算一次，达到上限后这个登录账号今天不再自动拒绝。</p>
                 </td>
               </tr>
             </template>

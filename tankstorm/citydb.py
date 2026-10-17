@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     region          INTEGER NOT NULL DEFAULT 0,
     storm_cap       INTEGER,
     storm_used      INTEGER NOT NULL DEFAULT 0,
+    storm_day       TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -401,6 +402,23 @@ def connect(readonly=False, timeout=15):
             if ucols and "storm_used" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN storm_used INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "storm_day" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN storm_day TEXT NOT NULL DEFAULT ''")
+                day = beijing_day()
+                start = beijing_now().replace(
+                    hour=0, minute=0, second=0, microsecond=0)
+                start_utc = start.astimezone(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ")
+                setup.execute("UPDATE app_user SET storm_used=0, storm_day=''")
+                setup.execute(
+                    "UPDATE app_user SET storm_used=("
+                    " SELECT COUNT(*) FROM storm_reject"
+                    " WHERE storm_reject.user_id=app_user.id AND at>=?"
+                    "), storm_day=? "
+                    "WHERE id IN (SELECT user_id FROM storm_reject WHERE at>=?)",
+                    (start_utc, day, start_utc))
                 setup.commit()
             _fix_region_face(setup)
             _forget_page_names(setup)
@@ -1149,7 +1167,7 @@ def list_members() -> list:
             "IFNULL(retreat_city,0), IFNULL(retreat_fail,0), "
             "IFNULL(lock_cards,3), IFNULL(modo_cards,0), IFNULL(region,0), "
             "IFNULL(off_at,''), IFNULL(attack_qq,''), IFNULL(daily_at,''), "
-            "storm_cap, IFNULL(storm_used,0) "
+            "storm_cap, IFNULL(storm_used,0), IFNULL(storm_day,'') "
             "FROM app_user ORDER BY id").fetchall()
     finally:
         conn.close()
@@ -1177,7 +1195,7 @@ def list_members() -> list:
             "attack_qq": str(row[18] or "").strip(),
             "daily_at": str(row[19] or "").strip(),
             "storm_cap": None if row[20] is None else int(row[20]),
-            "storm_used": int(row[21] or 0),
+            "storm_used": int(row[21] or 0) if str(row[22] or "") == beijing_day() else 0,
         })
     return items
 
@@ -2403,8 +2421,9 @@ def lock_cards_active() -> bool:
 
 
 def set_storm_cap(user_id: int, cap) -> str:
-    """这个登录账号最多自动拒绝几次超级强攻。空着表示不限制。
+    """这个登录账号每天最多自动拒绝几次超级强攻。空着表示不限制。
 
+    次数按北京时间自然日计算，过了 0 点从 0 再计。
     0 表示一次都不拒绝。成功返回空字符串。
     """
     user_id = int(user_id or 0)
@@ -2446,47 +2465,57 @@ def storm_subject(user_id: int = 0, qq: str = "") -> int:
     return int(user_id or 0)
 
 
-def reserve_storm_reject(user_id: int) -> str:
-    """占用一次拒绝额度。空字符串表示可以发拒绝包。
+def reserve_storm_reject(user_id: int, day: str = "") -> str:
+    """占用今天的一次拒绝额度。空字符串表示可以发拒绝包。
 
-    没配上限也把次数加一，管理员能看见已经拒绝了多少次。
+    次数按北京时间自然日计算。storm_day 不是今天时，这次从 1 重新计。
+    没配上限也把今天的次数加一，管理员能看见今天已经拒绝了多少次。
     没绑到登录账号时不加，仍然可以拒绝。
     """
     user_id = int(user_id or 0)
     if not user_id:
         return ""
+    day = str(day or beijing_day())
     conn = connect()
     try:
         cur = conn.execute(
-            "UPDATE app_user SET storm_used=IFNULL(storm_used,0)+1 "
-            "WHERE id=? AND (storm_cap IS NULL OR IFNULL(storm_used,0)<storm_cap)",
-            (user_id,))
+            "UPDATE app_user SET "
+            "storm_used=CASE WHEN IFNULL(storm_day,'')!=? THEN 1 "
+            "ELSE IFNULL(storm_used,0)+1 END, storm_day=? "
+            "WHERE id=? AND (storm_cap IS NULL OR "
+            "CASE WHEN IFNULL(storm_day,'')!=? THEN 0 "
+            "ELSE IFNULL(storm_used,0) END < storm_cap)",
+            (day, day, user_id, day))
         conn.commit()
         if cur.rowcount == 1:
             return ""
         row = conn.execute(
-            "SELECT storm_cap, IFNULL(storm_used,0) FROM app_user WHERE id=?",
+            "SELECT storm_cap, IFNULL(storm_used,0), IFNULL(storm_day,'') "
+            "FROM app_user WHERE id=?",
             (user_id,)).fetchone()
     finally:
         conn.close()
     if not row or row[0] is None:
         return ""
-    return f"超级强攻已拒绝 {int(row[1])} 次，达到上限 {int(row[0])}，这次不拒绝"
+    used = int(row[1] or 0) if str(row[2] or "") == day else 0
+    return f"超级强攻今日已拒绝 {used} 次，达到上限 {int(row[0])}，这次不拒绝"
 
 
-def release_storm_reject(user_id: int) -> None:
-    """拒绝包没发出去，把刚占用的一次还回去。"""
+def release_storm_reject(user_id: int, day: str = "") -> None:
+    """拒绝包没发出去，把刚占用的这一天的一次还回去。"""
     user_id = int(user_id or 0)
     if not user_id:
         return
+    day = str(day or beijing_day())
     try:
         conn = connect()
     except sqlite3.Error:
         return
     try:
         conn.execute(
-            "UPDATE app_user SET storm_used=MAX(IFNULL(storm_used,0)-1, 0) WHERE id=?",
-            (user_id,))
+            "UPDATE app_user SET storm_used=MAX(IFNULL(storm_used,0)-1, 0) "
+            "WHERE id=? AND IFNULL(storm_day,'')=?",
+            (user_id, day))
         conn.commit()
     except sqlite3.Error:
         return

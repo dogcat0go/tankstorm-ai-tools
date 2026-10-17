@@ -153,6 +153,8 @@ th { font-size: 13px; color: #555; }
 .campaign-box > summary::before { content: "▸"; color: #777; margin-right: 6px; }
 .campaign-box[open] > summary::before { content: "▾"; }
 .campaign-box[open] > summary { margin-bottom: 2px; }
+.item-part + .item-part { margin-top: 12px; padding-top: 12px; border-top: 1px solid #e4e4e4; }
+.item-part h3 { margin: 0 0 8px; font-size: 14px; font-weight: 700; color: #444; }
 .campaign-line {
   display: grid;
   grid-template-columns: 7.2em minmax(0, 1fr);

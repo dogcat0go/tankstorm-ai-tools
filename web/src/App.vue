@@ -90,7 +90,10 @@ const labPickCount = ref("1");
 const autoCount = ref("1");
 const lab50Count = ref("1");
 const auto50Count = ref("1");
-const baseCards = ref({ general: null, staff: null, lab: null, auto: null, drink: null });
+const emptyCards = () => ({
+  general: null, staff: null, lab: null, auto: null, drink: null, recruit: null, explore: null,
+});
+const baseCards = ref(emptyCards());
 const ask = ref("");
 let askDone = null;
 const baseJobs = ref([]);
@@ -234,7 +237,7 @@ async function refreshBase() {
     baseOil.value = null;
     baseCredit.value = null;
     basePop.value = null;
-    baseCards.value = { general: null, staff: null, lab: null, auto: null, drink: null };
+    baseCards.value = emptyCards();
     return;
   }
   const data = await api("/api/base");
@@ -245,7 +248,7 @@ async function refreshBase() {
   baseOil.value = data.oil == null ? null : data.oil;
   baseCredit.value = data.credit == null ? null : data.credit;
   basePop.value = data.pop == null ? null : data.pop;
-  baseCards.value = data.cards || { general: null, staff: null, lab: null, auto: null, drink: null };
+  baseCards.value = data.cards || emptyCards();
 }
 
 async function runBase(countOrBody) {

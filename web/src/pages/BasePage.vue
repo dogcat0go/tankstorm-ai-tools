@@ -54,6 +54,7 @@ function resText(n) {
     <p>金属 {{ resText(metal) }} · 石油 {{ resText(oil) }}</p>
     <p>勋章 {{ resText(credit) }} · 人口 {{ resText(pop) }}</p>
     <p>高级将领卡 {{ resText(cards.general) }} · 参谋卡 {{ resText(cards.staff) }} · 实验卡 {{ resText(cards.lab) }} · 自动化探索卡 {{ resText(cards.auto) }} · 豪饮卡 {{ resText(cards.drink) }}</p>
+    <p>招募卡自选 {{ resText(cards.recruit) }} · 探索卡自选 {{ resText(cards.explore) }}</p>
     <p class="muted">进入这一页就读攻打号背包里的这几种卡。开卡、换自选包或抽卡之后，剩余张数会跟着背包更新。还没收到就显示还没读到。</p>
     <details class="campaign-box">
       <summary>使用物品</summary>

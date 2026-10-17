@@ -2451,6 +2451,7 @@ def _draw_slot(rec, item_id):
 _WATCH_CARDS = (
     (10020, "general"), (10107, "staff"), (10006, "lab"),
     (10116, "auto"), (10061, "drink"),
+    (110011, "recruit"), (110015, "explore"),
 )
 
 

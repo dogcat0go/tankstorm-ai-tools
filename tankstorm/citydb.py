@@ -3732,7 +3732,7 @@ def attack_cards(user_id: int) -> dict:
     parsed, _seen, _online = _read_user_proc(int(user_id))
     raw = parsed.get("cards") if isinstance(parsed.get("cards"), dict) else {}
     return {key: _kept_int(raw, key)
-            for key in ("general", "staff", "lab", "auto", "drink")}
+            for key in ("general", "staff", "lab", "auto", "drink", "recruit", "explore")}
 
 
 def attack_wallet(user_id: int) -> dict:

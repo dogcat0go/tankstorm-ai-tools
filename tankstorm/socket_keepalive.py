@@ -113,6 +113,7 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
     """这条连接收到超级强攻就拒绝。拒绝发出去之后，记到对应登录账号的页面上。
 
     管理员给这个登录账号填了拒绝上限，并且今天成功拒绝已经达到这个数时，这次不发拒绝包。
+    同一个攻打 QQ 上有账号把上限填成 0 时，这条连接不再自动拒绝。
     次数按北京时间每天 0 点重新计算。没填上限就一直拒绝。
     """
     if not rec or not getattr(rec, "auto_reject", False):
@@ -121,15 +122,28 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
     from . import citydb
     bound_user = citydb.attack_context_user()
 
+    def _uin_now() -> str:
+        live = ""
+        attack_uin = getattr(qq, "_attack_uin", None)
+        if callable(attack_uin):
+            try:
+                live = str(attack_uin() or "").strip()
+            except Exception:
+                live = ""
+        if not live.isdigit():
+            live = str(getattr(qq, "uin", "") or uin or "").strip()
+        return live
+
     def _reject_later(data):
         """收到强攻时人还在 recv 里，连接锁没放开。就地发送会和这把锁死等。"""
         snapshot = dict(data or {})
         who = str(snapshot.get("atkName") or "").strip()
         if not who:
             who = str(snapshot.get("atkUid") or "").strip()
-        user_id = citydb.storm_subject(bound_user, uin)
+        uin_now = _uin_now()
+        user_id = citydb.storm_subject(bound_user, uin_now)
         day = citydb.beijing_day()
-        why = citydb.reserve_storm_reject(user_id, day)
+        why = citydb.reserve_storm_reject(user_id, day, uin_now)
         if why:
             log.info("%s（进攻方 %s）", why, who or "未知玩家")
             return
@@ -144,7 +158,7 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
             citydb.release_storm_reject(user_id, day)
             return
         try:
-            citydb.note_storm_reject(who, user_id=user_id, qq=uin)
+            citydb.note_storm_reject(who, user_id=user_id, qq=uin_now)
         except Exception:
             log.info("超级强攻拒绝没记上页面", exc_info=True)
         notify.send(config, "🛡️ 坦克风暴：已自动拒绝超级强攻",

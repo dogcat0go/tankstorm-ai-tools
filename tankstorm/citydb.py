@@ -2456,28 +2456,51 @@ def set_storm_cap(user_id: int, cap) -> str:
 
 def storm_subject(user_id: int = 0, qq: str = "") -> int:
     """这次拒绝记在哪个登录账号上。没绑到账号返回 0。"""
+    ids = storm_accounts(user_id, qq)
+    user_id = int(user_id or 0)
+    if user_id and user_id in ids:
+        return user_id
+    return int(ids[0] if ids else 0)
+
+
+def storm_accounts(user_id: int = 0, qq: str = "") -> list:
+    """这条连接要遵守哪些登录账号的拒绝上限。同一个攻打 QQ 上的都算。"""
+    qq = str(qq or "").strip() or attack_context_qq()
+    ids = users_bound_to_qq(qq) if qq else []
     user_id = int(user_id or 0)
     if not user_id:
         user_id = int(attack_context_user() or 0)
-    qq = str(qq or "").strip() or attack_context_qq()
-    if not user_id and qq:
-        user_id, _ = attack_qq_owner(qq)
-    return int(user_id or 0)
+    if user_id and user_id not in ids:
+        ids.insert(0, user_id)
+    return ids
 
 
-def reserve_storm_reject(user_id: int, day: str = "") -> str:
+def reserve_storm_reject(user_id: int, day: str = "", qq: str = "") -> str:
     """占用今天的一次拒绝额度。空字符串表示可以发拒绝包。
 
     次数按北京时间自然日计算。storm_day 不是今天时，这次从 1 重新计。
-    没配上限也把今天的次数加一，管理员能看见今天已经拒绝了多少次。
+    同一个攻打 QQ 上只要有一个登录账号把上限填成 0，这条连接就不拒绝。
     没绑到登录账号时不加，仍然可以拒绝。
     """
-    user_id = int(user_id or 0)
-    if not user_id:
-        return ""
     day = str(day or beijing_day())
+    qq = str(qq or "").strip()
+    ids = storm_accounts(user_id, qq)
+    if not ids:
+        log.info("超级强攻拒绝没对上登录账号，次数上限不生效")
+        return ""
+    primary = storm_subject(user_id, qq)
     conn = connect()
     try:
+        marks = ",".join("?" * len(ids))
+        rows = conn.execute(
+            "SELECT id, IFNULL(username,''), storm_cap FROM app_user "
+            f"WHERE id IN ({marks})",
+            ids).fetchall()
+        for _uid, name, cap in rows:
+            if cap is None or int(cap) > 0:
+                continue
+            who = str(name or _uid)
+            return f"登录账号 {who} 的超级强攻拒绝上限是 0，这次不拒绝"
         cur = conn.execute(
             "UPDATE app_user SET "
             "storm_used=CASE WHEN IFNULL(storm_day,'')!=? THEN 1 "
@@ -2485,14 +2508,14 @@ def reserve_storm_reject(user_id: int, day: str = "") -> str:
             "WHERE id=? AND (storm_cap IS NULL OR "
             "CASE WHEN IFNULL(storm_day,'')!=? THEN 0 "
             "ELSE IFNULL(storm_used,0) END < storm_cap)",
-            (day, day, user_id, day))
+            (day, day, primary, day))
         conn.commit()
         if cur.rowcount == 1:
             return ""
         row = conn.execute(
             "SELECT storm_cap, IFNULL(storm_used,0), IFNULL(storm_day,'') "
             "FROM app_user WHERE id=?",
-            (user_id,)).fetchone()
+            (primary,)).fetchone()
     finally:
         conn.close()
     if not row or row[0] is None:

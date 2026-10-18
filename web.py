@@ -14,6 +14,7 @@
   python3 web.py --set-tier 用户名 高级
   python3 web.py --set-admin 用户名 开
   python3 web.py --clear-attack 用户名
+  python3 web.py --status 用户名
 
 扫城仍用 main.py，例如 python3 main.py --watch-pages 1201:10-20。
 注册默认关闭。有效期按北京时间的日期，这一天仍然有效。
@@ -90,9 +91,41 @@ def main() -> int:
                         help="把攻打 QQ 绑到这个登录账号。一个账号一个 QQ，同一个 QQ 可以绑多个账号，不启动网页")
     parser.add_argument("--clear-attack", metavar="用户名",
                         help="解开这个登录账号的攻打 QQ，未完成的攻打记为失败。别的账号还用这个 QQ 时不删票据，不启动网页")
+    parser.add_argument("--status", metavar="用户名",
+                        help="查看这个登录账号的攻打 QQ 登录和暂停，不启动网页")
     args = parser.parse_args()
     if (args.add_user or args.set_expires or args.set_tier or args.set_admin
-            or args.bind_attack or args.clear_attack):
+            or args.bind_attack or args.clear_attack or args.status):
+        if args.status:
+            username = args.status.strip()
+            user_id = citydb.user_id_by_name(username)
+            if not user_id:
+                log.error("没有这个账号：%s", username)
+                return 1
+            qq = citydb.attack_qq_of(user_id)
+            blocked = citydb.attack_qq_blocked(user_id)
+            paused = blocked or citydb.attack_paused(user_id)
+            logged = bool(qq) and citydb.attack_cookie_logged_in(user_id)
+            parsed, _seen, online = citydb._read_user_proc(user_id)
+            phase = str((parsed or {}).get("phase") or "") if online else "offline"
+            if not qq:
+                login = "未绑定攻打 QQ"
+            elif phase == "login":
+                login = "登录中"
+            elif logged:
+                login = "登录有效"
+            else:
+                login = "登录已失效"
+            if blocked:
+                pause = "已暂停，扫码 QQ 和绑定不一致"
+            elif paused:
+                pause = "已暂停"
+            else:
+                pause = "未暂停"
+            running = "进程在跑" if online else "进程没在跑"
+            log.info("%s：攻打 QQ %s，%s，%s，%s",
+                     username, qq or "无", login, pause, running)
+            return 0
         if args.clear_attack:
             username = args.clear_attack.strip()
             user_id = citydb.user_id_by_name(username)

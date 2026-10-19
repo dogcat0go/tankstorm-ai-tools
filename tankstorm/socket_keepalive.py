@@ -2228,154 +2228,43 @@ def _shutdown_stop() -> bool:
 
 
 def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
-    """同一条游戏连接上，国战、日常、兵营、战车工厂和开资源卡各做各的。
+    """同一条游戏连接上用一个定时循环处理国战、日常、兵营、工厂和开卡。
 
-    发包仍然排队。哪一路在等剩余时间，就把连接让出来。
+    每轮先领国战订单，没有再领最早的一条其他任务。一项在冷却时这条循环就在等，
+    下一项要等这次冷却结束。心跳仍在独立线程发。
     """
     from . import citydb
 
-    user = citydb.attack_context_user()
-    qq = citydb.attack_context_qq()
     stop = threading.Event()
-    dead = threading.Event()
-    idle_exit = threading.Event()
+    prev_stop = daily.bind_stop(stop)
+    citydb.set_lane("war")
+    stated = False
+    path_at = 0.0
+    hold_closed = False
+    side_kinds = (
+        "daily", "pve", "fund", "blast", "factory", "cards",
+        "haoyin", "admiral", "admiral10",
+        "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
+    )
 
-    def _spawn(name, fn):
-        def run():
-            citydb.set_attack_context(user, qq)
-            citydb.set_lane(name)
-            prev = daily.bind_stop(stop)
-            try:
-                fn()
-            except OSError:
-                log.info("%s 这条连接断了", name)
-                dead.set()
-            except Exception:
-                log.info("%s 并行任务出错", name, exc_info=True)
-                dead.set()
-            finally:
-                daily.bind_stop(prev)
-        thread = threading.Thread(target=run, name=f"lane-{name}", daemon=True)
-        thread.start()
-        return thread
+    def _lane_for(kind):
+        if kind in ("daily", "pve", "fund"):
+            return "daily"
+        if kind == "blast":
+            return "blast"
+        if kind == "factory":
+            return "factory"
+        return "cards"
 
     def _jobs_open():
         return (citydb.daily_job_open() or citydb.attack_order_open()
                 or citydb.attack_move_pending() > 0)
 
-    def _war():
-        stated = False
-        path_at = 0.0
-        hold_closed = False
-        while not stop.is_set() and not dead.is_set():
-            try:
-                if citydb.attack_paused():
-                    time.sleep(0.5)
-                    continue
-                if _run_requested_move(rec, sock, config, beater):
-                    idle_exit.clear()
-                    continue
-                for uid in citydb.attack_context_users():
-                    citydb.skip_unfinished_auto(uid)
-                citydb.release_due_waits()
-                job = citydb.claim_attack_order()
-                if job:
-                    stated = False
-                    hold_closed = False
-                    idle_exit.clear()
-                    citydb.clear_attack_hold()
-                    log.info("领到订单 %s，城市 %s UID %s",
-                             job["id"], job["city_id"], job["uid"])
-                    with _order_account(int(job.get("user_id") or 0)):
-                        _fight_claimed(rec, sock, config, beater, job)
-                    continue
-                if citydb.attack_order_open():
-                    hold_closed = False
-                    idle_exit.clear()
-                    citydb.set_attack_status("queue")
-                    time.sleep(1)
-                    continue
-                if not citydb.attack_hold_on() and _jobs_open():
-                    time.sleep(0.5)
-                    continue
-                if citydb.attack_hold_on():
-                    hold_closed = False
-                if hold_closed:
-                    idle_exit.set()
-                    time.sleep(1)
-                    continue
-                if not _begin_attack_hold(fresh=not stated):
-                    hold_closed = True
-                    idle_exit.set()
-                    time.sleep(1)
-                    continue
-                idle_exit.clear()
-                if not citydb.attack_link_alive():
-                    log.info("挂机保活游戏心跳没了，准备重连")
-                    dead.set()
-                    return
-                if not stated:
-                    path_at = 0.0
-                stated = True
-                # 空挂只心跳、等订单。所在城市在打国战订单和移动时记，扫描号自己翻城。
-                path_at = _watch_blocked_path(rec, sock, config, beater, path_at)
-                if not _wait_socket(sock, spec, ctx):
-                    log.info("挂机时游戏连接断了，准备重连")
-                    dead.set()
-                    return
-            except sqlite3.Error as exc:
-                log.info("读库失败，游戏先不断开：%s", exc)
-                time.sleep(1)
-
-    def _lane_jobs(kinds):
-        while not stop.is_set() and not dead.is_set():
-            try:
-                if citydb.attack_paused():
-                    if not citydb.daily_pending_kinds().intersection(kinds):
-                        return
-                    time.sleep(0.5)
-                    continue
-                job = citydb.claim_daily_job(kinds)
-                if not job:
-                    citydb.set_attack_status("hold")
-                    return
-                idle_exit.clear()
-                with _order_account(int(job.get("user_id") or 0)):
-                    _run_one_daily(rec, sock, config, beater, job)
-            except sqlite3.Error as exc:
-                log.info("读库失败，游戏先不断开：%s", exc)
-                time.sleep(1)
-
-    # 国战这条连接一直要有，负责领订单和挂机。其余路有排队的任务才拉起，做完就退出。
-    side_lanes = (
-        ("daily", ("daily", "pve", "fund"), "日常"),
-        ("blast", ("blast",), "兵营"),
-        ("factory", ("factory",), "工厂"),
-        ("cards", (
-            "cards", "haoyin", "admiral", "admiral10",
-            "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
-        ), "开卡"),
-    )
-    lane_threads = {}
-
-    def _ensure_lanes():
-        pending = citydb.daily_pending_kinds()
-        for name, kinds, label in side_lanes:
-            if not pending.intersection(kinds):
-                continue
-            running = lane_threads.get(name)
-            if running is not None and running.is_alive():
-                continue
-            log.info("%s有任务，拉起这一路", label)
-            lane_threads[name] = _spawn(name, lambda kinds=kinds: _lane_jobs(kinds))
-
-    threads = [_spawn("war", _war)]
     try:
         while not stop.is_set():
             try:
-                if dead.is_set() or _shutdown_stop():
+                if _shutdown_stop():
                     return 0
-                _ensure_lanes()
                 daily.note_blast_count(rec)
                 daily.note_population(rec)
                 daily.note_base_wallet(rec)
@@ -2395,17 +2284,73 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 asked = citydb.take_attack_login()
                 if asked:
                     _arm_push_keepalive()
-                if (idle_exit.is_set() and not citydb.attack_hold_on()
+                if (hold_closed and not citydb.attack_hold_on()
                         and not _jobs_open() and not citydb.attack_paused()):
                     return 0
-                time.sleep(0.5)
+                if _run_requested_move(rec, sock, config, beater):
+                    stated = False
+                    continue
+                for uid in citydb.attack_context_users():
+                    citydb.skip_unfinished_auto(uid)
+                citydb.release_due_waits()
+                citydb.set_lane("war")
+                job = citydb.claim_attack_order()
+                if job:
+                    stated = False
+                    hold_closed = False
+                    citydb.clear_attack_hold()
+                    log.info("领到订单 %s，城市 %s UID %s",
+                             job["id"], job["city_id"], job["uid"])
+                    with _order_account(int(job.get("user_id") or 0)):
+                        _fight_claimed(rec, sock, config, beater, job)
+                    continue
+                if citydb.attack_order_open():
+                    hold_closed = False
+                    citydb.set_attack_status("queue")
+                    time.sleep(1)
+                    continue
+                side = citydb.claim_daily_job(side_kinds)
+                if side:
+                    stated = False
+                    hold_closed = False
+                    citydb.set_lane(_lane_for(side.get("kind")))
+                    with _order_account(int(side.get("user_id") or 0)):
+                        _run_one_daily(rec, sock, config, beater, side)
+                    citydb.set_attack_status("hold")
+                    citydb.set_lane("war")
+                    continue
+                if not citydb.attack_hold_on() and _jobs_open():
+                    time.sleep(0.5)
+                    continue
+                if citydb.attack_hold_on():
+                    hold_closed = False
+                if hold_closed:
+                    time.sleep(1)
+                    continue
+                if not _begin_attack_hold(fresh=not stated):
+                    hold_closed = True
+                    time.sleep(1)
+                    continue
+                if not citydb.attack_link_alive():
+                    log.info("挂机保活游戏心跳没了，准备重连")
+                    return 0
+                if not stated:
+                    path_at = 0.0
+                stated = True
+                # 空挂只心跳、等订单。所在城市在打国战订单和移动时记，扫描号自己翻城。
+                path_at = _watch_blocked_path(rec, sock, config, beater, path_at)
+                if not _wait_socket(sock, spec, ctx):
+                    log.info("挂机时游戏连接断了，准备重连")
+                    return 0
             except sqlite3.Error as exc:
                 log.info("读库失败，游戏先不断开：%s", exc)
                 time.sleep(1)
+            except OSError:
+                log.info("攻打连接断了，准备重连")
+                return 0
     finally:
         stop.set()
-        for thread in list(threads) + list(lane_threads.values()):
-            thread.join(timeout=5)
+        daily.bind_stop(prev_stop)
 
 
 def _connect_attack_orders(qq, config) -> int:

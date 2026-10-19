@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import "./base.css";
 
 const me = ref(null);
@@ -30,6 +30,10 @@ const fighterRegion = ref("");
 const fighterOnline = ref("");
 const fighterSort = ref("id");
 const fighterDir = ref("asc");
+const sheet = ref("members");
+const memberPage = ref(1);
+const fighterPage = ref(1);
+const PAGE = 20;
 let fighterTimer = 0;
 const TIER_RANK = { 初级: 1, 中级: 2, 高级: 3 };
 
@@ -182,6 +186,29 @@ const shownFighters = computed(() => {
   const dir = fighterDir.value;
   rows.sort((a, b) => cmpVal(fighterKey(a, col), fighterKey(b, col), dir) || a.user_id - b.user_id);
   return rows;
+});
+
+function pageOf(rows, page) {
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE));
+  const cur = Math.min(Math.max(1, page), pages);
+  const start = (cur - 1) * PAGE;
+  return {
+    page: cur,
+    pages,
+    rows: rows.slice(start, start + PAGE),
+    from: rows.length ? start + 1 : 0,
+    to: Math.min(start + PAGE, rows.length),
+  };
+}
+
+const memberView = computed(() => pageOf(shownMembers.value, memberPage.value));
+const fighterView = computed(() => pageOf(shownFighters.value, fighterPage.value));
+
+watch([memberQ, memberRegion, memberOnline, memberTier, memberSort, memberDir], () => {
+  memberPage.value = 1;
+});
+watch([fighterQ, fighterRegion, fighterOnline, fighterSort, fighterDir], () => {
+  fighterPage.value = 1;
 });
 
 const memberFilterOn = computed(() =>
@@ -362,6 +389,9 @@ async function logout() {
   scanRanges.value = [];
   clearMemberFilters();
   clearFighterFilters();
+  sheet.value = "members";
+  memberPage.value = 1;
+  fighterPage.value = 1;
 }
 
 onMounted(async () => {
@@ -401,8 +431,12 @@ onUnmounted(() => {
         <a class="ghost" href="/">回到订阅</a>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
-      <h2>成员账号</h2>
-      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。点表头可以排序。</p>
+      <div class="sheet-switch" role="tablist" aria-label="账号表">
+        <button type="button" role="tab" :aria-selected="sheet === 'members'" :class="{ ghost: sheet !== 'members' }" @click="sheet = 'members'">成员账号</button>
+        <button type="button" role="tab" :aria-selected="sheet === 'fighters'" :class="{ ghost: sheet !== 'fighters' }" @click="sheet = 'fighters'">攻打 QQ</button>
+      </div>
+      <template v-if="sheet === 'members'">
+      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。每页 20 个，点表头可以排序。</p>
       <form class="filters" @submit.prevent>
         <label>搜索<input v-model="memberQ" placeholder="账号或 QQ" /></label>
         <label>区服
@@ -429,8 +463,15 @@ onUnmounted(() => {
         </label>
         <button v-if="memberFilterOn" type="button" class="ghost" @click="clearMemberFilters">清除筛选</button>
       </form>
-      <p class="muted" v-if="members.length">显示 {{ shownMembers.length }} / {{ members.length }} 个</p>
-      <div class="wide" v-if="shownMembers.length">
+      <p class="muted pager" v-if="members.length">
+        显示 {{ memberView.from }}–{{ memberView.to }} / {{ shownMembers.length }} 个<template v-if="shownMembers.length !== members.length">，共 {{ members.length }} 个</template>
+        <template v-if="memberView.pages > 1">
+          <button type="button" class="ghost" :disabled="memberView.page <= 1" @click="memberPage = memberView.page - 1">上一页</button>
+          第 {{ memberView.page }} / {{ memberView.pages }} 页
+          <button type="button" class="ghost" :disabled="memberView.page >= memberView.pages" @click="memberPage = memberView.page + 1">下一页</button>
+        </template>
+      </p>
+      <div class="wide" v-if="memberView.rows.length">
         <table class="members">
           <thead>
             <tr>
@@ -444,7 +485,7 @@ onUnmounted(() => {
             </tr>
           </thead>
           <tbody>
-            <template v-for="m in shownMembers" :key="m.id">
+            <template v-for="m in memberView.rows" :key="m.id">
               <tr>
                 <td>{{ m.username }}<span v-if="m.admin" class="muted"> · 管理</span></td>
                 <td>{{ m.tier || "初级" }}</td>
@@ -491,8 +532,9 @@ onUnmounted(() => {
       </div>
       <p v-if="!members.length" class="muted">还没有登录账号。</p>
       <p v-else-if="!shownMembers.length" class="muted">没有符合筛选的账号。</p>
-      <h2>攻打 QQ</h2>
-      <p class="muted">每 5 秒刷新。每个攻打 QQ 一条线程，票据在对应的 cookie 文件里。点表头可以排序。</p>
+      </template>
+      <template v-else>
+      <p class="muted">每 5 秒刷新。每个攻打 QQ 一条线程，票据在对应的 cookie 文件里。每页 20 个，点表头可以排序。</p>
       <form class="filters" @submit.prevent>
         <label>搜索<input v-model="fighterQ" placeholder="账号或 QQ" /></label>
         <label>区服
@@ -511,8 +553,15 @@ onUnmounted(() => {
         </label>
         <button v-if="fighterFilterOn" type="button" class="ghost" @click="clearFighterFilters">清除筛选</button>
       </form>
-      <p class="muted" v-if="fighters.length">显示 {{ shownFighters.length }} / {{ fighters.length }} 个</p>
-      <div class="wide" v-if="shownFighters.length">
+      <p class="muted pager" v-if="fighters.length">
+        显示 {{ fighterView.from }}–{{ fighterView.to }} / {{ shownFighters.length }} 个<template v-if="shownFighters.length !== fighters.length">，共 {{ fighters.length }} 个</template>
+        <template v-if="fighterView.pages > 1">
+          <button type="button" class="ghost" :disabled="fighterView.page <= 1" @click="fighterPage = fighterView.page - 1">上一页</button>
+          第 {{ fighterView.page }} / {{ fighterView.pages }} 页
+          <button type="button" class="ghost" :disabled="fighterView.page >= fighterView.pages" @click="fighterPage = fighterView.page + 1">下一页</button>
+        </template>
+      </p>
+      <div class="wide" v-if="fighterView.rows.length">
         <table>
           <thead>
             <tr>
@@ -525,7 +574,7 @@ onUnmounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="f in shownFighters" :key="f.user_id">
+            <tr v-for="f in fighterView.rows" :key="f.user_id">
               <td>{{ f.username }}</td>
               <td>{{ f.qq }}</td>
               <td>{{ regionText(f) }}</td>
@@ -538,6 +587,7 @@ onUnmounted(() => {
       </div>
       <p v-if="!fighters.length" class="muted">还没有绑定攻打 QQ。</p>
       <p v-else-if="!shownFighters.length" class="muted">没有符合筛选的攻打 QQ。</p>
+      </template>
       <h2>扫描安排</h2>
       <form class="stack scan-form" @submit.prevent="saveScan().catch((e) => (err = e.message))">
         <label>间隔秒<input v-model="scanGap" inputmode="numeric" required /></label>

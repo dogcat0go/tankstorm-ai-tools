@@ -563,13 +563,16 @@ def ensure_catalog(force: bool = False) -> int:
         conn.close()
 
 
-def city_name(city_id: int) -> str:
-    conn = connect()
+def city_name(city_id: int, conn=None) -> str:
+    own = conn is None
+    if own:
+        conn = connect()
     try:
         row = conn.execute("SELECT name FROM city WHERE id=?", (int(city_id),)).fetchone()
         return row[0] if row else ""
     finally:
-        conn.close()
+        if own:
+            conn.close()
 
 
 def city_id_named(name: str) -> int:
@@ -1679,18 +1682,21 @@ def _shutdown_text(raw) -> str:
     return text
 
 
-def shutdown_at(user_id: int) -> str:
+def shutdown_at(user_id: int, conn=None) -> str:
     """这个登录账号的定时关闭。空字符串表示没配，到点也不会关。"""
     user_id = int(user_id or 0)
     if not user_id:
         return ""
-    conn = connect(readonly=True)
+    own = conn is None
+    if own:
+        conn = connect(readonly=True)
     try:
         row = conn.execute(
             "SELECT IFNULL(off_at,'') FROM app_user WHERE id=?",
             (user_id,)).fetchone()
     finally:
-        conn.close()
+        if own:
+            conn.close()
     return str(row[0] or "").strip() if row else ""
 
 
@@ -1713,11 +1719,11 @@ def set_shutdown_at(user_id: int, raw) -> str:
     return ""
 
 
-def shutdown_due(user_id=None) -> bool:
+def shutdown_due(user_id=None, conn=None) -> bool:
     """这个账号配了定时关闭，而且北京时间已经到了。没配就是假。"""
     if user_id is None:
         user_id = attack_context_user()
-    at = shutdown_at(user_id)
+    at = shutdown_at(user_id, conn=conn)
     if not at:
         return False
     return at <= beijing_now().strftime("%Y-%m-%d %H:%M")
@@ -1813,17 +1819,17 @@ def clear_attack_hold() -> None:
     _delete_signal(_mark_name("hold", user_id))
 
 
-def attack_hold_left(user_id=None):
+def attack_hold_left(user_id=None, conn=None):
     """这个登录账号的攻打 QQ 挂机还剩多少秒。没有这次挂机返回 None。"""
     if user_id is None:
         uid = attack_context_user()
     else:
         uid = int(user_id or 0)
-    if not uid or shutdown_due(uid):
+    if not uid or shutdown_due(uid, conn=conn):
         return None
-    raw = _signal_value(_mark_name("hold", uid))
+    raw = _signal_value(_mark_name("hold", uid), conn=conn)
     if not raw:
-        owner, raw = _hold_owner_and_text(_signal_value("hold"))
+        owner, raw = _hold_owner_and_text(_signal_value("hold", conn=conn))
         if not raw:
             return None
         if owner and owner != uid:
@@ -1858,22 +1864,25 @@ def attack_hold_minutes() -> int:
     return best
 
 
-def attack_hold_always(user_id=None) -> bool:
+def attack_hold_always(user_id=None, conn=None) -> bool:
     """这个账号开了全天候挂机。初级和过期账号不算。
     没指定账号时，同一个攻打 QQ 上有一个开了就算。"""
     if user_id is None:
         return any(attack_hold_always(uid) for uid in attack_context_users())
     user_id = int(user_id or 0)
-    if not user_id or shutdown_due(user_id):
+    if not user_id or shutdown_due(user_id, conn=conn):
         return False
-    conn = connect(readonly=True)
+    own = conn is None
+    if own:
+        conn = connect(readonly=True)
     try:
         row = conn.execute(
             "SELECT IFNULL(hold_all,0), IFNULL(tier,'初级'), IFNULL(expires_at,'') "
             "FROM app_user WHERE id=?",
             (user_id,)).fetchone()
     finally:
-        conn.close()
+        if own:
+            conn.close()
     if not row or not int(row[0] or 0):
         return False
     return bool(attack_tier(row[1]) and not account_expired(row[2]))
@@ -2013,30 +2022,36 @@ def mapped_attack_user_ids() -> list:
 QQ_MISMATCH = "扫码的 QQ 和绑定的不一致，已暂停"
 
 
-def attack_qq_of(user_id: int) -> str:
-    conn = connect(readonly=True)
+def attack_qq_of(user_id: int, conn=None) -> str:
+    own = conn is None
+    if own:
+        conn = connect(readonly=True)
     try:
         row = conn.execute(
             "SELECT IFNULL(attack_qq,'') FROM app_user WHERE id=?",
             (int(user_id),)).fetchone()
         return str(row[0] or "").strip() if row else ""
     finally:
-        conn.close()
+        if own:
+            conn.close()
 
 
-def attack_qq_blocked(user_id: int) -> bool:
+def attack_qq_blocked(user_id: int, conn=None) -> bool:
     """这个登录账号已经绑了攻打 QQ，但上次核对没对上。还没绑过的不算。"""
     user_id = int(user_id or 0)
     if not user_id:
         return False
-    conn = connect(readonly=True)
+    own = conn is None
+    if own:
+        conn = connect(readonly=True)
     try:
         row = conn.execute(
             "SELECT IFNULL(attack_qq,''), IFNULL(attack_qq_block,0) FROM app_user WHERE id=?",
             (user_id,)).fetchone()
         return bool(row and str(row[0] or "").strip() and int(row[1] or 0))
     finally:
-        conn.close()
+        if own:
+            conn.close()
 
 
 def _move_user_mark(conn, user_id: int, uin: str, kind: str) -> None:
@@ -3142,19 +3157,19 @@ def note_login_qr(path: str, user_id: int = 0) -> None:
         at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
 
 
-def login_qr_path(user_id: int = 0) -> str:
-    return _signal_value(_mark_name("qrpath", user_id)).strip()
+def login_qr_path(user_id: int = 0, conn=None) -> str:
+    return _signal_value(_mark_name("qrpath", user_id), conn=conn).strip()
 
 
-def login_qr_at(user_id: int = 0) -> str:
+def login_qr_at(user_id: int = 0, conn=None) -> str:
     """这张网页二维码是什么时候写下的。页面用它判断该不该换图。"""
     user_id = int(user_id or 0)
     if not user_id:
         return ""
-    if page_login_path(user_id):
-        return _signal_at(_page_login_key(user_id))
-    if login_qr_path(user_id):
-        return _signal_at(_mark_name("qrpath", user_id))
+    if page_login_path(user_id, conn=conn):
+        return _signal_at(_page_login_key(user_id), conn=conn)
+    if login_qr_path(user_id, conn=conn):
+        return _signal_at(_mark_name("qrpath", user_id), conn=conn)
     return ""
 
 
@@ -3176,16 +3191,19 @@ def set_page_login(user_id: int, path: str) -> None:
         conn.close()
 
 
-def page_login_path(user_id: int) -> str:
+def page_login_path(user_id: int, conn=None) -> str:
     if not user_id:
         return ""
-    conn = connect(readonly=True)
+    own = conn is None
+    if own:
+        conn = connect(readonly=True)
     try:
         row = conn.execute(
             "SELECT value FROM atk_signal WHERE name=?",
             (_page_login_key(user_id),)).fetchone()
     finally:
-        conn.close()
+        if own:
+            conn.close()
     return str(row[0] or "").strip() if row else ""
 
 
@@ -3193,9 +3211,9 @@ def clear_page_login(user_id: int) -> None:
     set_page_login(user_id, "")
 
 
-def _with_page_qr(status: dict, user_id: int) -> dict:
+def _with_page_qr(status: dict, user_id: int, conn=None) -> dict:
     """网页二维码只属于还没绑定的这个登录账号，不跟攻打进程走。"""
-    if not page_login_path(int(user_id)):
+    if not page_login_path(int(user_id), conn=conn):
         return status
     status = dict(status)
     status["qr"] = True
@@ -3337,23 +3355,29 @@ def _mark_name(kind: str, user_id: int = 0) -> str:
     return kind
 
 
-def _signal_value(name: str) -> str:
-    conn = connect(readonly=True)
+def _signal_value(name: str, conn=None) -> str:
+    own = conn is None
+    if own:
+        conn = connect(readonly=True)
     try:
         row = conn.execute(
             "SELECT value FROM atk_signal WHERE name=?", (name,)).fetchone()
     finally:
-        conn.close()
+        if own:
+            conn.close()
     return str(row[0] or "") if row else ""
 
 
-def _signal_at(name: str) -> str:
-    conn = connect(readonly=True)
+def _signal_at(name: str, conn=None) -> str:
+    own = conn is None
+    if own:
+        conn = connect(readonly=True)
     try:
         row = conn.execute(
             "SELECT at FROM atk_signal WHERE name=?", (name,)).fetchone()
     finally:
-        conn.close()
+        if own:
+            conn.close()
     return str(row[0] or "") if row else ""
 
 
@@ -4058,12 +4082,12 @@ def _queued_attack_text(row) -> str:
 def attack_status(user_id: int) -> dict:
     """给页面看这个登录账号自己的攻打 QQ。超过 25 秒没心跳就当没在跑。"""
     user_id = int(user_id)
-    uin = attack_qq_of(user_id)
-    parsed, seen, online = _read_user_proc(user_id)
-    phase = parsed.get("phase") or "offline"
-    here_id = _kept_here(parsed)
     conn = connect(readonly=True)
     try:
+        uin = attack_qq_of(user_id, conn=conn)
+        parsed, seen, online = _read_user_proc(user_id)
+        phase = parsed.get("phase") or "offline"
+        here_id = _kept_here(parsed)
         own = conn.execute(
             "SELECT city_id, IFNULL(uid,''), IFNULL(name,''), IFNULL(kind,'') FROM atk_order "
             "WHERE user_id=? AND status='running' ORDER BY id DESC LIMIT 1",
@@ -4083,114 +4107,114 @@ def attack_status(user_id: int) -> dict:
             "ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'blocked' THEN 1 "
             "WHEN 'wait' THEN 2 ELSE 3 END, id DESC LIMIT 1",
             (user_id,)).fetchone()
-    finally:
-        conn.close()
-    blocked = attack_qq_blocked(user_id)
-    paused = blocked or attack_paused(user_id)
-    hold_left = attack_hold_left(user_id)
-    always = attack_hold_always(user_id)
+        blocked = attack_qq_blocked(user_id, conn=conn)
+        paused = blocked or attack_paused(user_id, conn=conn)
+        hold_left = attack_hold_left(user_id, conn=conn)
+        always = attack_hold_always(user_id, conn=conn)
 
-    def hold_note(text):
-        if always:
-            return f"{text}，全天候"
-        if hold_left is not None and hold_left > 0:
-            return f"{text}，还剩 {(hold_left + 59) // 60} 分钟"
-        return text
+        def hold_note(text):
+            if always:
+                return f"{text}，全天候"
+            if hold_left is not None and hold_left > 0:
+                return f"{text}，还剩 {(hold_left + 59) // 60} 分钟"
+            return text
 
-    page_on = _signal_value(_mark_name("pageqr", user_id)) == "1"
-    show_qr = bool(
-        page_login_path(user_id)
-        or (online and phase == "login"
-            and (page_on or login_qr_path(user_id))))
+        page_on = _signal_value(_mark_name("pageqr", user_id), conn=conn) == "1"
+        show_qr = bool(
+            page_login_path(user_id, conn=conn)
+            or (online and phase == "login"
+                and (page_on or login_qr_path(user_id, conn=conn))))
 
-    keeping = (
-        phase in ("hold", "paused", "running", "daily", "queue")
-        and _hold_link_ok(parsed))
+        keeping = (
+            phase in ("hold", "paused", "running", "daily", "queue")
+            and _hold_link_ok(parsed))
 
-    def pack(row: dict) -> dict:
-        row = dict(row)
-        row["qq"] = uin
-        row.setdefault("need_login", False)
-        row.setdefault("keepalive", False)
-        row = _with_page_qr(row, user_id)
-        row["qr_at"] = login_qr_at(user_id) if row.get("qr") else ""
-        return row
+        def pack(row: dict) -> dict:
+            row = dict(row)
+            row["qq"] = uin
+            row.setdefault("need_login", False)
+            row.setdefault("keepalive", False)
+            row = _with_page_qr(row, user_id, conn=conn)
+            row["qr_at"] = login_qr_at(user_id, conn=conn) if row.get("qr") else ""
+            return row
 
-    mismatch = pack({"online": False, "phase": "offline", "detail": QQ_MISMATCH,
-                     "seen_at": beijing_ts(seen), "qr": False, "here": "",
-                     "paused": True, "hold_left": None})
-    if shutdown_due(user_id):
-        return pack({"online": False, "phase": "offline", "detail": "已定时关闭",
-                     "seen_at": "", "qr": False, "here": "",
-                     "paused": False, "hold_left": None, "shutdown": True,
-                     "keepalive": False, "need_login": False})
-    if not online:
-        # 进程已经停了。暂停只对还在跑的进程有意义。QQ 对不上的暂停留着。
-        if not blocked and attack_paused(user_id):
-            set_attack_paused(False, user_id)
-        if blocked:
-            return mismatch
-        if login_expired(user_id):
-            return pack({"online": False, "phase": "offline",
-                         "detail": "登录超过 10 分钟，已停止",
+        mismatch = pack({"online": False, "phase": "offline", "detail": QQ_MISMATCH,
+                         "seen_at": beijing_ts(seen), "qr": False, "here": "",
+                         "paused": True, "hold_left": None})
+        if shutdown_due(user_id, conn=conn):
+            return pack({"online": False, "phase": "offline", "detail": "已定时关闭",
+                         "seen_at": "", "qr": False, "here": "",
+                         "paused": False, "hold_left": None, "shutdown": True,
+                         "keepalive": False, "need_login": False})
+        if not online:
+            # 进程已经停了。暂停只对还在跑的进程有意义。QQ 对不上的暂停留着。
+            if not blocked and attack_paused(user_id, conn=conn):
+                set_attack_paused(False, user_id)
+            if blocked:
+                return mismatch
+            if login_expired(user_id):
+                return pack({"online": False, "phase": "offline",
+                             "detail": "登录超过 10 分钟，已停止",
+                             "seen_at": beijing_ts(seen), "qr": False, "here": "",
+                             "paused": False, "hold_left": None})
+            return pack({"online": False, "phase": "offline", "detail": "没在跑",
                          "seen_at": beijing_ts(seen), "qr": False, "here": "",
                          "paused": False, "hold_left": None})
-        return pack({"online": False, "phase": "offline", "detail": "没在跑",
-                     "seen_at": beijing_ts(seen), "qr": False, "here": "",
-                     "paused": False, "hold_left": None})
-    if paused and phase != "login":
-        if blocked:
-            detail = QQ_MISMATCH
-        elif _hold_link_ok(parsed):
-            detail = "已暂停"
-        else:
-            detail = "已暂停，不在保活，先连上再继续"
-    elif phase == "login":
-        detail = hold_note("登录中")
-    elif phase == "daily":
-        label = str(parsed.get("task") or "").strip()
-        detail = f"正在做{label}" if label else "正在做日常任务"
-        note = " ".join(str(parsed.get("note") or "").split())
-        if note:
-            detail = f"{detail}，{note}"
-    elif phase == "hold":
-        if _hold_link_ok(parsed):
-            detail = hold_note("保活中")
-            if waiting:
-                detail = f"{detail}，正在看路径"
-        else:
+        if paused and phase != "login":
+            if blocked:
+                detail = QQ_MISMATCH
+            elif _hold_link_ok(parsed):
+                detail = "已暂停"
+            else:
+                detail = "已暂停，不在保活，先连上再继续"
+        elif phase == "login":
             detail = hold_note("登录中")
-    elif phase == "running" and own:
-        detail = _fighting_detail(own[0], own[1], own[2], own[3])
-    elif phase == "running":
-        detail = "正在执行订单"
-    else:
-        if not _hold_link_ok(parsed):
-            detail = hold_note("登录中") if ((hold_left or 0) > 0 or always) else "不在保活，先连上再接订单"
+        elif phase == "daily":
+            label = str(parsed.get("task") or "").strip()
+            detail = f"正在做{label}" if label else "正在做日常任务"
+            note = " ".join(str(parsed.get("note") or "").split())
+            if note:
+                detail = f"{detail}，{note}"
+        elif phase == "hold":
+            if _hold_link_ok(parsed):
+                detail = hold_note("保活中")
+                if waiting:
+                    detail = f"{detail}，正在看路径"
+            else:
+                detail = hold_note("登录中")
+        elif phase == "running" and own:
+            detail = _fighting_detail(own[0], own[1], own[2], own[3])
+        elif phase == "running":
+            detail = "正在执行订单"
         else:
-            detail = _queued_attack_text(queued)
-            if not detail:
-                detail = "空闲，等订单"
-                if latest and latest[0] == "failed" and latest[1]:
-                    detail = f"空闲。上一单没打成：{latest[1]}"
-        if uin and not attack_cookie_logged_in(user_id):
-            detail = "登录已失效，请重新扫码"
-    here = ""
-    if here_id:
-        name = city_name(here_id)
-        here = f"{here_id} {name}".strip() if name else str(here_id)
-    show_hold = (not paused and phase == "hold" and not always
-                 and hold_left is not None and hold_left > 0)
-    return pack({"online": True, "phase": phase, "detail": detail,
-                 "seen_at": beijing_ts(seen), "qr": show_qr, "here": here,
-                 "morale": _kept_int(parsed, "morale"),
-                 "power": _kept_int(parsed, "power"),
-                 "paused": paused, "keepalive": keeping,
-                 "hold_left": int(hold_left) if show_hold else None,
-                 "move_note": str(parsed.get("move_note") or ""),
-                 "need_login": bool(
-                     uin and phase not in ("login", "running", "hold", "daily")
-                     and not paused and not attack_cookie_logged_in(user_id))})
+            if not _hold_link_ok(parsed):
+                detail = hold_note("登录中") if ((hold_left or 0) > 0 or always) else "不在保活，先连上再接订单"
+            else:
+                detail = _queued_attack_text(queued)
+                if not detail:
+                    detail = "空闲，等订单"
+                    if latest and latest[0] == "failed" and latest[1]:
+                        detail = f"空闲。上一单没打成：{latest[1]}"
+            if uin and not attack_cookie_logged_in(user_id):
+                detail = "登录已失效，请重新扫码"
+        here = ""
+        if here_id:
+            name = city_name(here_id, conn=conn)
+            here = f"{here_id} {name}".strip() if name else str(here_id)
+        show_hold = (not paused and phase == "hold" and not always
+                     and hold_left is not None and hold_left > 0)
+        return pack({"online": True, "phase": phase, "detail": detail,
+                     "seen_at": beijing_ts(seen), "qr": show_qr, "here": here,
+                     "morale": _kept_int(parsed, "morale"),
+                     "power": _kept_int(parsed, "power"),
+                     "paused": paused, "keepalive": keeping,
+                     "hold_left": int(hold_left) if show_hold else None,
+                     "move_note": str(parsed.get("move_note") or ""),
+                     "need_login": bool(
+                         uin and phase not in ("login", "running", "hold", "daily")
+                         and not paused and not attack_cookie_logged_in(user_id))})
+    finally:
+        conn.close()
 
 
 def list_attack_fighters() -> list:
@@ -4386,15 +4410,15 @@ def take_attack_login() -> bool:
     return True
 
 
-def attack_paused(user_id: int = 0) -> bool:
+def attack_paused(user_id: int = 0, conn=None) -> bool:
     """这个登录账号自己的攻打 QQ 是不是被暂停了。"""
     user_id = int(user_id or attack_context_user() or 0)
     if not user_id:
         return False
-    value = _signal_value(_mark_name("pause", user_id))
+    value = _signal_value(_mark_name("pause", user_id), conn=conn)
     if value in ("1", "true"):
         return True
-    legacy = _signal_value("pause")
+    legacy = _signal_value("pause", conn=conn)
     return bool(user_id) and legacy == str(user_id)
 
 
@@ -4564,25 +4588,25 @@ def users_needing_attack() -> list:
     服务器停前正在打的那一单还标着执行中，起来要重新登录接着打。
     定时关闭已经到点的账号不拉起。
     """
-    ids = set(users_with_daily_jobs())
-    ids.update(users_with_running_orders())
-    ids.update(users_marked_resume())
-    for user_id in mapped_attack_user_ids():
-        left = attack_hold_left(user_id)
-        if left is not None and left > 0:
-            ids.add(user_id)
     conn = connect(readonly=True)
     try:
+        ids = set(users_with_daily_jobs())
+        ids.update(users_with_running_orders())
+        ids.update(users_marked_resume())
+        for user_id in mapped_attack_user_ids():
+            left = attack_hold_left(user_id, conn=conn)
+            if left is not None and left > 0:
+                ids.add(user_id)
         rows = conn.execute(
             "SELECT id, IFNULL(tier,'初级'), IFNULL(expires_at,'') "
             "FROM app_user WHERE IFNULL(hold_all,0)!=0"
         ).fetchall()
+        for user_id, tier, expires in rows:
+            if attack_tier(tier) and not account_expired(expires):
+                ids.add(int(user_id))
+        return sorted(uid for uid in ids if not shutdown_due(uid, conn=conn))
     finally:
         conn.close()
-    for user_id, tier, expires in rows:
-        if attack_tier(tier) and not account_expired(expires):
-            ids.add(int(user_id))
-    return sorted(uid for uid in ids if not shutdown_due(uid))
 
 
 def daily_job_open() -> bool:

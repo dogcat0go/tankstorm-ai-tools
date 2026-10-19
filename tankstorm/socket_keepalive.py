@@ -45,6 +45,7 @@ LOGIN_TOUCH_SEC = 15 * 60
 # 页面停在登录中时，这条线程最多再等这么久。到点关掉，等人再点登录。
 LOGIN_WAIT_SEC = 10 * 60
 _login_limits = {}
+_login_gen = {}
 _login_limits_guard = threading.Lock()
 _login_sessions = []
 _login_sessions_guard = threading.Lock()
@@ -61,8 +62,8 @@ def _limit_key() -> str:
     return f"user:{uid}" if uid else ""
 
 
-def _current_limit() -> float:
-    key = _limit_key()
+def _current_limit(key: str = "") -> float:
+    key = str(key or "").strip() or _limit_key()
     if not key:
         return 0.0
     with _login_limits_guard:
@@ -86,6 +87,7 @@ def _reset_login_limit(key: str) -> None:
         return
     with _login_limits_guard:
         _login_limits[key] = time.monotonic() + LOGIN_WAIT_SEC
+        _login_gen[key] = _login_gen.get(key, 0) + 1
 
 
 def _clear_login_limit() -> None:
@@ -96,34 +98,65 @@ def _clear_login_limit() -> None:
         _login_limits.pop(key, None)
 
 
-def _login_limit_hit() -> bool:
-    at = _current_limit()
+def _drop_expired_limit() -> None:
+    """上次线程没清掉的过期计时不能把这次登录立刻判死。"""
+    key = _limit_key()
+    if not key:
+        return
+    with _login_limits_guard:
+        at = float(_login_limits.get(key) or 0)
+        if at and time.monotonic() >= at:
+            _login_limits.pop(key, None)
+
+
+def _login_limit_hit(key: str = "") -> bool:
+    at = _current_limit(key)
     return at > 0 and time.monotonic() >= at
 
 
-def _login_until_wall() -> float:
+def _login_until_wall(key: str = "") -> float:
     """给扫码用的墙钟截止。没设上限时返回 0。"""
-    at = _current_limit()
+    at = _current_limit(key)
     if at <= 0:
         return 0.0
     return time.time() + max(0.0, at - time.monotonic())
 
 
-def _give_up_login(uin: str = "") -> None:
+def _abandon_login(key: str, user_id: int = 0) -> bool:
+    """这一轮登录到点才记过期。中途又点了登录就不写，返回 False。"""
     from . import citydb
 
+    key = str(key or "").strip()
+    with _login_limits_guard:
+        at = float(_login_limits.get(key) or 0) if key else 0.0
+        if not key or not at or time.monotonic() < at:
+            return False
+        gen = _login_gen.get(key, 0)
+        _login_limits.pop(key, None)
+    try:
+        citydb.mark_login_expired(user_id)
+    except Exception:
+        log.info("登录超时标记没写上", exc_info=True)
+        return False
+    with _login_limits_guard:
+        if key and _login_gen.get(key, 0) != gen:
+            try:
+                citydb.clear_login_expired(user_id)
+            except Exception:
+                log.info("登录超时标记没撤掉", exc_info=True)
+            return False
+    return True
+
+
+def _give_up_login(uin: str = "") -> bool:
+    key = str(uin or "").strip() or _limit_key()
+    if not _abandon_login(key):
+        return False
     if uin:
         log.info("登录超过 10 分钟还没完成，关掉攻打 QQ %s 的线程", uin)
     else:
         log.info("登录超过 10 分钟还没完成，关掉这次登录")
-    key = str(uin or "").strip() or _limit_key()
-    with _login_limits_guard:
-        if key:
-            _login_limits.pop(key, None)
-    try:
-        citydb.mark_login_expired()
-    except Exception:
-        log.info("登录超时标记没写上", exc_info=True)
+    return True
 
 
 def install_login_refresh() -> None:
@@ -2792,14 +2825,18 @@ def start_unbound_page_qr(config: dict, user_id: int, platform: str = "") -> str
     def _run():
         nonlocal cookie
         bound = ""
-        until = time.time() + LOGIN_WAIT_SEC
+        limit_key = f"user:{user_id}"
+        at = _current_limit(limit_key)
+        if not at or time.monotonic() >= at:
+            _reset_login_limit(limit_key)
         try:
             while not citydb.attack_qq_of(user_id):
-                if time.time() >= until:
-                    log.info("登录账号 %s 超过 10 分钟还没扫上，关掉这次登录", who)
-                    citydb.mark_login_expired(user_id)
-                    break
-                left = max(1, int(until - time.time()))
+                if _login_limit_hit(limit_key):
+                    if _abandon_login(limit_key, user_id):
+                        log.info("登录账号 %s 超过 10 分钟还没扫上，关掉这次登录", who)
+                        break
+                until = _login_until_wall(limit_key)
+                left = 180 if not until else max(1, int(until - time.time()))
                 if qq.qr_login(on_qr=on_page_qr, timeout_sec=min(180, left), until=until):
                     uin = str(getattr(qq, "uin", "") or "").strip()
                     if uin.isdigit() and citydb.confirm_attack_qq(user_id, uin):
@@ -2811,11 +2848,13 @@ def start_unbound_page_qr(config: dict, user_id: int, platform: str = "") -> str
                         citydb.clear_login_expired(user_id)
                         citydb.note_attack_logging_in(user_id)
                     break
-                if time.time() >= until:
+                if _login_limit_hit(limit_key) and _abandon_login(limit_key, user_id):
                     log.info("登录账号 %s 超过 10 分钟还没扫上，关掉这次登录", who)
-                    citydb.mark_login_expired(user_id)
                     break
-                time.sleep(min(15, until - time.time()))
+                until = _login_until_wall(limit_key)
+                pause = 15.0 if not until else min(15.0, max(0.0, until - time.time()))
+                if pause > 0:
+                    time.sleep(pause)
         finally:
             citydb.clear_page_login(user_id)
             if cookie:
@@ -2880,6 +2919,8 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
 
     from . import citydb
     citydb.set_attack_context(user_id, uin)
+    limit_key = str(uin or "").strip() or f"user:{user_id}"
+    seen_gen = None
     _adopt_old_cookie(user_id, uin)
     qq = cli.open_qq(config, name, fatal_lock=False)
     if qq is None:
@@ -2900,6 +2941,9 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
 
     stop = None
     try:
+        _drop_expired_limit()
+        with _login_limits_guard:
+            seen_gen = _login_gen.get(limit_key, 0)
         bind_login_session(qq)
         stop = _start_attack_status()
         if citydb.manual_orders_running():
@@ -2914,6 +2958,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                           _login_context(), qq.ticket_brief())
         scope_blocked = any(
             citydb.attack_qq_blocked(uid) for uid in citydb.attack_context_users())
+        just_scanned = False
         if scope_blocked or not valid:
             citydb.set_attack_status("login")
             _arm_login_limit()
@@ -2922,8 +2967,9 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
             ok = relogin_with_push(qq, config, force_qr=scope_blocked)
             if on_page:
                 citydb.set_page_qr(False, user_id)
-            if not ok:
-                _give_up_login(uin)
+            if ok:
+                just_scanned = True
+            elif _give_up_login(uin):
                 return
         while True:
             try:
@@ -2941,8 +2987,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                             ok = relogin_with_push(qq, config, force_qr=True)
                             if on_page:
                                 citydb.set_page_qr(False, user_id)
-                            if not ok:
-                                _give_up_login(uin)
+                            if not ok and _give_up_login(uin):
                                 break
                             continue
                         _arm_push_keepalive()
@@ -2950,12 +2995,11 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                             citydb.set_attack_paused(False, _owner())
                             citydb.set_attack_status("login")
                             _arm_login_limit()
-                            if _login_limit_hit():
-                                _give_up_login(uin)
+                            if _login_limit_hit() and _give_up_login(uin):
                                 break
                             _connect_attack_orders(qq, config)
-                            if _login_limit_hit():
-                                _give_up_login(uin)
+                            if (not citydb.attack_in_keepalive(_owner())
+                                    and _login_limit_hit() and _give_up_login(uin)):
                                 break
                             continue
                     time.sleep(5)
@@ -2977,13 +3021,18 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                 holding = citydb.attack_hold_on()
                 if not (asked or resumed or holding or citydb.daily_job_open()):
                     break
-                _arm_login_limit()
-                if _login_limit_hit():
-                    _give_up_login(uin)
-                    break
+                if just_scanned:
+                    just_scanned = False
+                elif citydb.attack_in_keepalive(_owner()):
+                    # 已经挂上游戏的，按原来的挂机时间走，不套这 10 分钟。
+                    _clear_login_limit()
+                else:
+                    _arm_login_limit()
+                    if _login_limit_hit() and _give_up_login(uin):
+                        break
                 _connect_attack_orders(qq, config)
-                if _login_limit_hit():
-                    _give_up_login(uin)
+                if (not citydb.attack_in_keepalive(_owner())
+                        and _login_limit_hit() and _give_up_login(uin)):
                     break
                 if resumed:
                     citydb.clear_attack_resume()
@@ -3006,6 +3055,14 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
         with _pool_guard:
             if _pool.get(uin) is threading.current_thread():
                 _pool.pop(uin, None)
+        if seen_gen is not None:
+            with _login_limits_guard:
+                again = _login_gen.get(limit_key, 0) != seen_gen
+            if again:
+                try:
+                    kick_attack_login(config, user_id, claim=True)
+                except Exception:
+                    log.info("重新点登录后没能再拉起", exc_info=True)
 
 
 def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False,
@@ -3453,7 +3510,7 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
     try:
         while True:
             until = _login_until_wall()
-            if until and time.time() >= until:
+            if _login_limit_hit():
                 log.info("登录超过 10 分钟还没完成，停止等待扫码")
                 qq.note_login("登录超过 10 分钟还没完成，停止等待扫码")
                 return False
@@ -3474,17 +3531,20 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
                 if not getattr(qq, "attack_account", False):
                     notify.send(config, "坦克风暴：已重新登录", "登录成功，保活已恢复在线。")
                 return True
-            if until and time.time() >= until:
+            if _login_limit_hit():
                 log.info("登录超过 10 分钟还没完成，停止等待扫码")
                 qq.note_login("登录超过 10 分钟还没完成，停止等待扫码")
                 return False
             qq.note_login("这一轮扫码未完成，15 秒后重试。%s", qq.ticket_brief())
             log.warning("本轮登录未完成（超时/过期），15 秒后重试", )
+            until = _login_until_wall()
             pause = 15.0 if not until else min(15.0, until - time.time())
             if pause <= 0:
-                log.info("登录超过 10 分钟还没完成，停止等待扫码")
-                qq.note_login("登录超过 10 分钟还没完成，停止等待扫码")
-                return False
+                if _login_limit_hit():
+                    log.info("登录超过 10 分钟还没完成，停止等待扫码")
+                    qq.note_login("登录超过 10 分钟还没完成，停止等待扫码")
+                    return False
+                pause = 15.0
             time.sleep(pause)
     finally:
         qq._login_busy = False

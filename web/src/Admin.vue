@@ -57,7 +57,7 @@ function cityLabel(c) {
 
 function procText(p) {
   if (!p) return "没在跑";
-  if (!p.online) return p.paused && p.detail ? p.detail : "没在跑";
+  if (!p.online) return p.detail || "没在跑";
   if (p.paused && p.phase !== "login") return p.detail || "已暂停";
   return p.detail || "空闲，等订单";
 }

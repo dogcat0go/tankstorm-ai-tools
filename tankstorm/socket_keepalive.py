@@ -1837,45 +1837,7 @@ def _wait_socket(sock, spec, ctx) -> bool:
     return True
 
 
-_HOLD_HERE_GAP = 2.0
 _PATH_GAP = 10.0
-
-
-def _refresh_hold_here(rec, sock, config, last_at, last_here):
-    """挂机保活时读一次国战面板，把当前城市写给网页。
-
-    只在开战和移动时记位置的话，挂机这几小时人被打回去，页面还停在老城市。
-    """
-    now = time.time()
-    if now - last_at < _HOLD_HERE_GAP:
-        return last_at, last_here
-    from . import citydb, country_war
-
-    conf = config.get("国战") or {}
-    try:
-        country = int(conf.get("自己国家ID") or 0)
-    except (TypeError, ValueError):
-        country = 0
-    if country <= 0:
-        country = country_war._daily.read_my_country(rec) or 0
-    if not country:
-        if last_at <= 0:
-            log.info("挂机保活读不到自己的国家，所在城市先不更新")
-        return now, last_here
-    try:
-        with daily.lane_hold():
-            _power, loc, _times, panel = country_war._panel(sock, rec, int(country))
-    except Exception:
-        log.info("挂机保活时没读到所在城市", exc_info=True)
-        return now, last_here
-    if panel is None or isinstance(loc, bool) or not isinstance(loc, int) or loc <= 0:
-        return now, last_here
-    citydb.note_attack_here(loc)
-    if loc != last_here:
-        name = citydb.city_name(loc)
-        where = f"{loc} {name}".strip() if name else str(loc)
-        log.info("挂机保活，人在 %s", where)
-    return now, loc
 
 
 def _my_country(rec, config) -> int:
@@ -2303,8 +2265,6 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
 
     def _war():
         stated = False
-        here_at = 0.0
-        here_id = 0
         path_at = 0.0
         hold_closed = False
         while not stop.is_set() and not dead.is_set():
@@ -2355,11 +2315,9 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                     dead.set()
                     return
                 if not stated:
-                    here_at = 0.0
                     path_at = 0.0
                 stated = True
-                here_at, here_id = _refresh_hold_here(
-                    rec, sock, config, here_at, here_id)
+                # 空挂只心跳、等订单。所在城市在打国战订单和移动时记，扫描号自己翻城。
                 path_at = _watch_blocked_path(rec, sock, config, beater, path_at)
                 if not _wait_socket(sock, spec, ctx):
                     log.info("挂机时游戏连接断了，准备重连")

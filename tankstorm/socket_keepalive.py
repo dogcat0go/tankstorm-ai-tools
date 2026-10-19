@@ -2080,6 +2080,11 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 text = daily.page_brief(results) or "这一轮没有要做的"
                 citydb.set_attack_status("daily", task=label, note=text)
                 citydb.finish_daily_job(job["id"], "done", text)
+            elif kind == "chest":
+                from . import country_war
+                ok, why = country_war.daily_chest(rec, sock, config)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "pve":
                 user_id = citydb.attack_context_user()
                 raw = _campaign_end(params, user_id)
@@ -2351,7 +2356,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
 
     threads = [
         _spawn("war", _war),
-        _spawn("daily", lambda: _lane_jobs(("daily", "pve", "fund"))),
+        _spawn("daily", lambda: _lane_jobs(("daily", "pve", "fund", "chest"))),
         _spawn("blast", lambda: _lane_jobs(("blast",))),
         _spawn("factory", lambda: _lane_jobs(("factory",))),
         _spawn("cards", lambda: _lane_jobs((

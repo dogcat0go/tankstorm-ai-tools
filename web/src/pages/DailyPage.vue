@@ -5,6 +5,7 @@ import "element-plus/es/components/switch/style/css";
 const dailyAt = defineModel("dailyAt", { type: String, required: true });
 const pveStages = defineModel("pveStages", { type: String, required: true });
 const modoCards = defineModel("modoCards", { type: String, required: true });
+const modoAt = defineModel("modoAt", { type: String, required: true });
 
 defineProps({
   dailyQq: { type: String, default: "" },
@@ -12,6 +13,7 @@ defineProps({
   progressTasks: { type: Array, required: true },
   dailyJobs: { type: Array, required: true },
   dailyAtNote: { type: String, default: "" },
+  modoAtNote: { type: String, default: "" },
   dailyNote: { type: String, default: "" },
   dailySwitching: { type: String, default: "" },
   err: { type: String, default: "" },
@@ -20,6 +22,7 @@ defineProps({
   runDaily: { type: Function, required: true },
   cancelDaily: { type: Function, required: true },
   saveDailyAt: { type: Function, required: true },
+  saveModoAt: { type: Function, required: true },
   saveDailySwitch: { type: Function, required: true },
   addModo: { type: Function, required: true },
   showErr: { type: Function, required: true },
@@ -74,7 +77,13 @@ defineProps({
       <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>
       <button type="submit" :disabled="!dailyQq || !(proc && proc.keepalive)">提交</button>
     </form>
-    <p class="muted">按攻打号的国家，去离自己最近的一座摩多军团。先走进那座城，召唤支援兵，再打。召唤失败时用功勋补一轮支援兵，再召唤一次；紧接着还失败就停。恢复卡都在这一座用完。0 表示不用卡，行动力不够就停。提交后跳到国战助手，订单和进度都在那里。击退数量按 4 次扫荡算 1 个。要这个号已经挂机保活。</p>
+    <form class="lock-row" @submit.prevent="saveModoAt().catch((e) => showErr(e.message))">
+      <span class="switch">定时刷摩多</span>
+      <label>北京时间<input v-model="modoAt" type="time" class="clock" /></label>
+      <button type="submit" :disabled="!dailyQq">保存</button>
+      <span class="muted">{{ modoAtNote }}</span>
+    </form>
+    <p class="muted">按攻打号的国家，去离自己最近的一座摩多军团。先走进那座城，召唤支援兵，再打。召唤失败时用功勋补一轮支援兵，再召唤一次；紧接着还失败就停。恢复卡都在这一座用完。0 表示不用卡，行动力不够就停。提交后跳到国战助手，订单和进度都在那里。击退数量按 4 次扫荡算 1 个。要这个号已经挂机保活。填了时间就每天到点按这里的恢复卡数量再刷一轮，刷完再领一次国家宝箱。正在打的那一单会先打完。留空不定时。</p>
     <p v-if="dailyNote" class="muted">{{ dailyNote }}</p>
     <p v-if="err && errAt === 'daily'" class="err">{{ err }}</p>
     <h2>最近执行</h2>

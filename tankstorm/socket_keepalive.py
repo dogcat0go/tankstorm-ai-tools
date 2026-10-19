@@ -2328,20 +2328,17 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 time.sleep(1)
 
     def _lane_jobs(kinds):
-        busy = False
         while not stop.is_set() and not dead.is_set():
             try:
                 if citydb.attack_paused():
+                    if not citydb.daily_pending_kinds().intersection(kinds):
+                        return
                     time.sleep(0.5)
                     continue
                 job = citydb.claim_daily_job(kinds)
                 if not job:
-                    if busy:
-                        citydb.set_attack_status("hold")
-                        busy = False
-                    time.sleep(0.5)
-                    continue
-                busy = True
+                    citydb.set_attack_status("hold")
+                    return
                 idle_exit.clear()
                 with _order_account(int(job.get("user_id") or 0)):
                     _run_one_daily(rec, sock, config, beater, job)
@@ -2349,20 +2346,36 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 log.info("读库失败，游戏先不断开：%s", exc)
                 time.sleep(1)
 
-    threads = [
-        _spawn("war", _war),
-        _spawn("daily", lambda: _lane_jobs(("daily", "pve", "fund"))),
-        _spawn("blast", lambda: _lane_jobs(("blast",))),
-        _spawn("factory", lambda: _lane_jobs(("factory",))),
-        _spawn("cards", lambda: _lane_jobs((
+    # 国战这条连接一直要有，负责领订单和挂机。其余路有排队的任务才拉起，做完就退出。
+    side_lanes = (
+        ("daily", ("daily", "pve", "fund"), "日常"),
+        ("blast", ("blast",), "兵营"),
+        ("factory", ("factory",), "工厂"),
+        ("cards", (
             "cards", "haoyin", "admiral", "admiral10",
-            "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50"))),
-    ]
+            "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
+        ), "开卡"),
+    )
+    lane_threads = {}
+
+    def _ensure_lanes():
+        pending = citydb.daily_pending_kinds()
+        for name, kinds, label in side_lanes:
+            if not pending.intersection(kinds):
+                continue
+            running = lane_threads.get(name)
+            if running is not None and running.is_alive():
+                continue
+            log.info("%s有任务，拉起这一路", label)
+            lane_threads[name] = _spawn(name, lambda kinds=kinds: _lane_jobs(kinds))
+
+    threads = [_spawn("war", _war)]
     try:
         while not stop.is_set():
             try:
                 if dead.is_set() or _shutdown_stop():
                     return 0
+                _ensure_lanes()
                 daily.note_blast_count(rec)
                 daily.note_population(rec)
                 daily.note_base_wallet(rec)
@@ -2391,7 +2404,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 time.sleep(1)
     finally:
         stop.set()
-        for thread in threads:
+        for thread in list(threads) + list(lane_threads.values()):
             thread.join(timeout=5)
 
 

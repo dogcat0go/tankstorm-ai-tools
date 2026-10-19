@@ -4634,6 +4634,23 @@ def daily_job_open() -> bool:
     return bool(row)
 
 
+def daily_pending_kinds() -> set:
+    """这个攻打 QQ 上还在排队的任务种类。没有排队的路不必拉线程。"""
+    ids = executable_users()
+    if not ids:
+        return set()
+    slot = ",".join("?" * len(ids))
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT kind FROM daily_job WHERE user_id IN (" + slot + ") "
+            "AND status='pending'",
+            tuple(ids)).fetchall()
+    finally:
+        conn.close()
+    return {str(row[0] or "") for row in rows}
+
+
 def _saved_daily_switches(conn, user_id: int):
     """这个账号自己存过的开关。没存过返回 None。"""
     row = conn.execute(

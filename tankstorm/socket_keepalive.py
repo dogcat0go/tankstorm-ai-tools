@@ -1725,7 +1725,7 @@ def _wait_socket(sock, spec, ctx) -> bool:
     return True
 
 
-_HOLD_HERE_GAP = 10.0
+_HOLD_HERE_GAP = 2.0
 _PATH_GAP = 10.0
 
 
@@ -1873,6 +1873,8 @@ def _run_requested_move(rec, sock, config, beater) -> bool:
         landed_name = citydb.city_name(landed) or str(landed or "")
         citydb.note_attack_move_text(
             f"朝 {label} 走了，停在 {landed} {landed_name}".strip())
+    if landed > 0:
+        citydb.note_attack_here(landed)
     log.info("移动到 %s 结束，停在 %s", label, landed or "未知")
     return True
 

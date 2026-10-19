@@ -170,6 +170,49 @@ def _retry_cd21(out, last_ok, fallback, tag, who="", code=21, *, on_wait=None):
     return n
 
 
+def _note_here_from(data) -> None:
+    """回包里带着当前城市、体力和士气就写到页面。缺的那一项留着上次的数。"""
+    if not isinstance(data, dict):
+        return
+    from . import citydb
+    citydb.note_attack_here(
+        _read_path(data, F_CITY),
+        _read_path(data, F_POWER),
+        _read_path(data, F_MORALE))
+
+
+def _peek_here(sock, rec, country) -> None:
+    """短超时读一次面板，刷新页面上的所在城市。读不到就保持原样。"""
+    try:
+        country = int(country or 0)
+    except (TypeError, ValueError):
+        return
+    if country <= 0:
+        return
+    try:
+        since = _send(sock, rec, 2, country=country, check=True)
+        data = _wait(sock, rec, since, 2, timeout=1.0)
+    except OSError:
+        raise
+    _note_here_from(data)
+
+
+def _nap_here(sock, rec, country, wait):
+    """冷却仍在原定时刻结束。每隔约 2 秒，来得及就读一次所在城市。"""
+    deadline = time.time() + max(0.0, float(wait or 0))
+    while True:
+        left = deadline - time.time()
+        if left <= 0.05:
+            return True
+        if left < 2.4:
+            _nap(left)
+            return True
+        _nap(2.0)
+        if deadline - time.time() < 1.3:
+            continue
+        _peek_here(sock, rec, country)
+
+
 BAG_USE_OPCODE = "0440"       # RceBagItemUse
 BAG_LST = "RseBagItemLst"
 CARD_ITEM_ID = 40004          # 国战恢复卡，抓包实测：用掉后行动力与士气全满
@@ -584,6 +627,9 @@ def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
 
     from . import citydb
 
+    def _cool(wait):
+        return _nap_here(sock, rec, country, wait)
+
     for i in range(1, rounds + 1):
         stopped = _manual_stop()
         if stopped:
@@ -683,7 +729,7 @@ def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
         # 冷却对扫荡和普通攻击共用。间隔优先读回包 countryData.cdTime，
         # 没有则用学到的秒数；ret=21 不带剩余秒，1 秒后再打。
         _sleep_cd(last_act, out.get("cd_until"),
-                  out.get("cd_sec") or cooldown, "国战")
+                  out.get("cd_sec") or cooldown, "国战", on_wait=_cool)
         prev_act = last_act
         since = _send(sock, rec, act, country=npc_country, city=npc_city,
                       atk=target)
@@ -694,10 +740,11 @@ def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
             _apply_cd(out, sent_at, None, cooldown)
             out["停止原因"] = f"{name}没有回包，停手"
             break
+        _note_here_from(r)
         ret = r.get("ret")
         if ret == 21:
             last_act = prev_act
-            if _retry_cd21(out, last_act, cooldown, "国战") > 20:
+            if _retry_cd21(out, last_act, cooldown, "国战", on_wait=_cool) > 20:
                 out["停止原因"] = f"{name}冷却一直没好（ret=21），停手"
                 break
             continue
@@ -1375,6 +1422,10 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
     raw_merit = _read_path(panel, F_MERIT)
     merit0 = raw_merit if isinstance(raw_merit, int) and not isinstance(raw_merit, bool) else 0
     panel_miss = 0
+
+    def _cool(wait):
+        return _nap_here(sock, rec, my, wait)
+
     for i in range(1, cap + 1):
         stopped = _manual_stop()
         if stopped:
@@ -1427,6 +1478,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
         if not isinstance(cd, dict):
             log.info("[打人] 第 %d 次打开目标城市面板超时，打下一次", i)
             continue
+        _note_here_from(cd)
         got_owner = _read_path(cd, "cityData.field2")
         if isinstance(got_owner, int) and got_owner:
             owner = got_owner
@@ -1450,7 +1502,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
             out["cd_until"] = got_cd
         if _sleep_cd(last_act, out.get("cd_until"),
                      out.get("cd_sec") or cooldown, "打人",
-                     on_wait=on_wait) is False:
+                     on_wait=on_wait or _cool) is False:
             break
         prev_act = last_act
         since = _send(sock, rec, act, country=owner, city=city, atk=uid)
@@ -1462,12 +1514,13 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
             log.info("[打人] 第 %d 次%s回包超时（%.0f 秒），打下一次",
                      i, name, WAIT_ATK)
             continue
+        _note_here_from(r)
         ret = r.get("ret")
         if ret == 21:
             last_act = prev_act
             out["last_act"] = last_act
             n21 = _retry_cd21(out, last_act, cooldown, "打人", who,
-                              on_wait=on_wait)
+                              on_wait=on_wait or _cool)
             if n21 < 0:
                 break
             if n21 > 20:
@@ -1957,7 +2010,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                          _fmt_sec(wait), left_gap)
             left = deadline - time.time()
             if left > 0.05 and not out["停止原因"]:
-                _nap(left)
+                _nap_here(sock, rec, country, left)
             return not out["停止原因"]
 
         if limited:
@@ -2184,6 +2237,7 @@ def _open_city(sock, rec, city, country, retry=True):
     here = _read_path(cd, F_CITY)
     power = _read_path(cd, F_POWER)
     morale = _read_path(cd, F_MORALE)
+    _note_here_from(cd)
     return {"owner": int(owner or 0), "userCnt": int(cnt or 0),
             "need": int(need) if isinstance(need, int) and not isinstance(need, bool) else 0,
             "here": int(here) if isinstance(here, int) and not isinstance(here, bool) else 0,
@@ -2229,6 +2283,9 @@ def _commit_move(sock, rec, city, owner, my=0, config=None, cards=None):
     移动和占领的间隔也是 6.5、10、15 秒。ret=30 升一档再试。
     体力不够时，移动和后退服务端都回 ret=9。先开一张恢复卡再走；开不了就停下。
     """
+    def _cool(wait):
+        return _nap_here(sock, rec, my, wait)
+
     refilled = False
     for _ in range(6):
         info = _open_city(sock, rec, city, owner, retry=False)
@@ -2263,12 +2320,13 @@ def _commit_move(sock, rec, city, owner, my=0, config=None, cards=None):
             refilled = True
             continue
         _sleep_cd(_MOVE_CD.get("last_act") or 0, _MOVE_CD.get("cd_until") or 0,
-                  _MOVE_CD.get("cd_sec"), "移动")
+                  _MOVE_CD.get("cd_sec"), "移动", on_wait=_cool)
         sent = time.time()
         since = _send(sock, rec, 4, country=send_country, city=int(city))
         got = _wait(sock, rec, since, 4)
         if not isinstance(got, dict):
             return None, "移动没有回包"
+        _note_here_from(got)
         if got.get("ret") in (0, None):
             here = _read_path(got, F_CITY)
             if here not in (None, int(city)):
@@ -2292,7 +2350,7 @@ def _commit_move(sock, rec, city, owner, my=0, config=None, cards=None):
         if got.get("ret") != 30:
             return None, f"移动被拒 ret={got.get('ret')}"
         if _retry_cd21(_MOVE_CD, _MOVE_CD.get("last_act") or 0, _CD_GEARS[0],
-                       "移动", code=30) > 4:
+                       "移动", code=30, on_wait=_cool) > 4:
             return None, "移动被拒 ret=30"
     return None, "移动被拒 ret=30"
 

@@ -4130,6 +4130,11 @@ def attack_status(user_id: int) -> dict:
             set_attack_paused(False, user_id)
         if blocked:
             return mismatch
+        if login_expired(user_id):
+            return pack({"online": False, "phase": "offline",
+                         "detail": "登录超过 10 分钟，已停止",
+                         "seen_at": beijing_ts(seen), "qr": False, "here": "",
+                         "paused": False, "hold_left": None})
         return pack({"online": False, "phase": "offline", "detail": "没在跑",
                      "seen_at": beijing_ts(seen), "qr": False, "here": "",
                      "paused": False, "hold_left": None})
@@ -4332,6 +4337,19 @@ def save_scan_plan(gap_sec, quiet_start, quiet_end, ranges) -> str:
 def ask_attack_login(user_id: int = 0) -> None:
     """让这个攻打 QQ 自己的线程去推二维码。不碰别的 QQ。"""
     _upsert_signal(_mark_name("login", user_id), "1")
+
+
+def mark_login_expired(user_id: int = 0) -> None:
+    """登录超过 10 分钟还没挂上。自动拉起不再开线程，等人再点登录。"""
+    _upsert_signal(_mark_name("logingive", user_id), "1")
+
+
+def login_expired(user_id: int = 0) -> bool:
+    return _signal_value(_mark_name("logingive", user_id)) == "1"
+
+
+def clear_login_expired(user_id: int = 0) -> None:
+    _delete_signal(_mark_name("logingive", user_id))
 
 
 def note_attack_logging_in(user_id: int = 0) -> None:

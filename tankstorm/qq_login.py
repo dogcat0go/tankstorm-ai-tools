@@ -1621,7 +1621,8 @@ class QQSession:
         return {"ok": False, "captcha": False, "code": "0",
                 "msg": "check_sig 后游戏页仍不认这张票"}
 
-    def qr_login(self, timeout_sec: int = 180, on_qr=None, push_uin=None) -> bool:
+    def qr_login(self, timeout_sec: int = 180, on_qr=None, push_uin=None,
+                 until: float = 0) -> bool:
         """扫码登录。on_qr(qrcode_path) 在二维码生成后回调（用于推送到手机等）。
 
         push_uin 非空时启用**推送登录**：不用扫码，腾讯直接往该 QQ 号的手机客户端
@@ -1637,6 +1638,8 @@ class QQSession:
         if push_uin is None:
             push_uin = self.uin or None
         while True:
+            if until and time.time() >= until:
+                return False
             started = self.start_qr(push_uin=push_uin, on_qr=on_qr, announce=False)
             if not started.get("ok"):
                 return False
@@ -1658,14 +1661,20 @@ class QQSession:
                 except OSError:
                     pass
             deadline = time.time() + timeout_sec
+            if until:
+                deadline = min(deadline, until)
             if result.get("scanned"):
                 deadline = max(deadline, time.time() + 120)
+                if until:
+                    deadline = min(deadline, until)
             timed_out = True
             while time.time() < deadline:
                 time.sleep(3)
                 result = self.poll_qr()
                 if result.get("scanned"):
                     deadline = max(deadline, time.time() + 120)
+                    if until:
+                        deadline = min(deadline, until)
                 if not result.get("done"):
                     continue
                 if result.get("ok"):

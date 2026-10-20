@@ -3303,6 +3303,11 @@ def set_lane(name: str) -> None:
     _attack_local.lane = str(name or "")
 
 
+def current_lane() -> str:
+    """这条线程现在记在哪一路。冷却里插打国战时用来做完再改回去。"""
+    return str(getattr(_attack_local, "lane", "") or "")
+
+
 def set_fighting_order(order_id: int) -> None:
     """这条线程正在打的订单。关停后 fighting_order_stopped 变成真。"""
     _attack_local.order = int(order_id or 0)
@@ -5434,7 +5439,7 @@ def claim_attack_order(city_id=None, auto_only=False):
             row = conn.execute(
                 "SELECT o.id, o.city_id, IFNULL(o.uid,''), IFNULL(u.tier,'初级'), "
                 "IFNULL(u.expires_at,''), IFNULL(o.auto,0), o.card_max, IFNULL(o.kind,''), "
-                "o.user_id "
+                "o.user_id, o.beats "
                 "FROM atk_order o JOIN app_user u ON u.id=o.user_id "
                 "WHERE o.status='pending' AND o.user_id IN (" + slot + ") "
                 + extra +
@@ -5472,9 +5477,11 @@ def claim_attack_order(city_id=None, auto_only=False):
             conn.commit()
             if cur.rowcount != 1:
                 return None
+            beats = row[9]
             return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[5]),
                     "cards": None if row[6] is None else int(row[6]),
-                    "kind": str(row[7] or ""), "user_id": owner}
+                    "kind": str(row[7] or ""), "user_id": owner,
+                    "beats": 0 if beats is None else int(beats)}
     finally:
         conn.close()
 
@@ -5578,6 +5585,23 @@ def note_attack_beats(order_id: int, n: int, name: str = "") -> None:
         conn.commit()
     except sqlite3.Error:
         return
+    finally:
+        conn.close()
+
+
+def yield_attack_order(order_id: int) -> bool:
+    """冷却空档要先做外层到点的动作。正在打的改回排队，打过的次数留着。
+
+    已经不是正在打的不动。改成功返回 True。
+    """
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE atk_order SET status='pending', updated_at=? "
+            "WHERE id=? AND status='running'",
+            (now_ts(), int(order_id)))
+        conn.commit()
+        return cur.rowcount == 1
     finally:
         conn.close()
 

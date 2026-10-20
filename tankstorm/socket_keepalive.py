@@ -1550,9 +1550,54 @@ def _order_account(user_id: int):
             citydb.set_attack_context(prev, qq)
 
 
+_sched_local = threading.local()
+# 外层空等还剩这么多秒以内，就不再新开一单国战，免得起步后立刻被打断。
+_PUMP_MIN = 8.0
+
+
+def _war_depth() -> int:
+    return int(getattr(_sched_local, "war", 0) or 0)
+
+
+def _enter_war() -> None:
+    _sched_local.war = _war_depth() + 1
+
+
+def _leave_war() -> bool:
+    """退出一层国战。最外层退出时返回 True。"""
+    left = _war_depth() - 1
+    if left < 0:
+        left = 0
+    _sched_local.war = left
+    return left == 0
+
+
 def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
-    with daily.lane_hold():
-        return _fight_locked(rec, sock, config, beater, job, from_chain)
+    from . import citydb
+
+    prev = citydb.current_lane()
+    _enter_war()
+    citydb.set_lane("war")
+    try:
+        try:
+            with daily.lane_hold():
+                return _fight_locked(rec, sock, config, beater, job, from_chain)
+        except daily.Preempt:
+            if citydb.yield_attack_order(int(job["id"])):
+                log.info("订单 %s 先让出连接，外层到点的动作做完再打", job["id"])
+            raise
+        except daily.Stopped:
+            if citydb.yield_attack_order(int(job["id"])):
+                log.info("订单 %s 先放回排队，当前这项已停下", job["id"])
+            raise
+    finally:
+        outermost = _leave_war()
+        try:
+            if outermost:
+                citydb.set_lane("war")
+                citydb.set_attack_status("hold")
+        finally:
+            citydb.set_lane(prev)
 
 
 def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
@@ -1807,33 +1852,57 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
         citydb.set_fighting_order(0)
 
 
-def _wait_socket(sock, spec, ctx) -> bool:
-    """等一秒并回应在线探测。连接还在返回 True。
-
-    用 select 等可读，不占收发锁。心跳线程卡在发包时，挂机循环仍能每秒回到领单。
-    """
+def _socket_raw(sock):
     raw = sock
-    while hasattr(raw, "_sock"):
+    while hasattr(raw, "_sock") and getattr(raw, "_sock", None) is not raw:
         raw = raw._sock
+    return raw
+
+
+def _reply_online(sock, spec, ctx, data: bytes) -> bool:
+    """这块字节开头是在线探测就回应。连接还在返回 True。"""
+    reply = protocol.maybe_online_reply(spec, data, ctx)
+    if not reply:
+        return True
+    try:
+        sock.sendall(reply)
+    except OSError:
+        return False
+    log.info("收到在线探测，已回应")
+    return True
+
+
+def _wait_socket(sock, spec, ctx) -> bool:
+    """空闲时最多等一秒，并把已经到达的包读完。连接还在返回 True。
+
+    用 select 等可读，不占收发锁。没有字节才等到那一秒；有字节就立刻读，
+    内核里排队的块一次读完，然后再回到领单。
+    """
+    raw = _socket_raw(sock)
     try:
         readable, _, _ = select.select([raw], [], [], 1.0)
     except (OSError, TypeError, ValueError):
         readable = None
     if readable is not None and not readable:
         return True
-    try:
-        sock.settimeout(1.0)
-        data = sock.recv(8192)
-    except socket.timeout:
-        return True
-    except OSError:
-        return False
-    if not data:
-        return False
-    reply = protocol.maybe_online_reply(spec, data, ctx)
-    if reply:
-        sock.sendall(reply)
-        log.info("收到在线探测，已回应")
+    for _ in range(48):
+        try:
+            sock.settimeout(0.2)
+            data = sock.recv(8192)
+        except socket.timeout:
+            return True
+        except OSError:
+            return False
+        if not data:
+            return False
+        if not _reply_online(sock, spec, ctx, data):
+            return False
+        try:
+            more, _, _ = select.select([raw], [], [], 0)
+        except (OSError, TypeError, ValueError):
+            return True
+        if not more:
+            return True
     return True
 
 
@@ -2230,16 +2299,18 @@ def _shutdown_stop() -> bool:
 def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     """同一条游戏连接上用一个定时循环处理国战、日常、兵营、工厂和开卡。
 
-    每轮先领国战订单，没有再领最早的一条其他任务。一项在冷却时这条循环就在等，
-    下一项要等这次冷却结束。心跳仍在独立线程发。
+    每轮先领国战订单，没有再领最早的一条其他任务。兵营、工厂要空等的冷却会把
+    连接让出来，到点的国战先打，外层到点再停手回来。心跳仍在独立线程发。
     """
     from . import citydb
 
     stop = threading.Event()
     prev_stop = daily.bind_stop(stop)
+    prev_sock = daily.bind_sock(sock)
+    prev_rec = daily.bind_rec(rec)
     citydb.set_lane("war")
     stated = False
-    path_at = 0.0
+    path_box = [0.0]
     hold_closed = False
     side_kinds = (
         "daily", "pve", "fund", "blast", "factory", "cards",
@@ -2260,6 +2331,48 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
         return (citydb.daily_job_open() or citydb.attack_order_open()
                 or citydb.attack_move_pending() > 0)
 
+    def _pump():
+        """冷却空档。到点的空城改回排队；剩下的时间还够，就先打一单国战。"""
+        if citydb.attack_paused():
+            return False
+        try:
+            citydb.release_due_waits()
+        except sqlite3.Error:
+            log.info("到点的空城订单没改回排队", exc_info=True)
+            return False
+        if _war_depth() or getattr(_sched_local, "pumping", False):
+            return False
+        left = daily.soonest_wait()
+        if left is not None and left < _PUMP_MIN:
+            return False
+        _sched_local.pumping = True
+        try:
+            try:
+                job = citydb.claim_attack_order()
+            except sqlite3.Error:
+                log.info("冷却空档领国战没领成", exc_info=True)
+                return False
+            if job:
+                log.info("冷却空档领到订单 %s，城市 %s UID %s",
+                         job["id"], job["city_id"], job["uid"])
+                with _order_account(int(job.get("user_id") or 0)):
+                    _fight_claimed(rec, sock, config, beater, job)
+                return True
+            try:
+                if citydb.attack_order_open():
+                    return False
+            except sqlite3.Error:
+                log.info("冷却空档看国战队列没看成", exc_info=True)
+                return False
+            path_box[0] = _watch_blocked_path(
+                rec, sock, config, beater, path_box[0])
+            return False
+        finally:
+            _sched_local.pumping = False
+
+    prev_pump = daily.bind_idle_pump(_pump)
+    prev_recv = daily.bind_on_recv(
+        lambda data: _reply_online(sock, spec, ctx, data))
     try:
         while not stop.is_set():
             try:
@@ -2307,7 +2420,8 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 if citydb.attack_order_open():
                     hold_closed = False
                     citydb.set_attack_status("queue")
-                    time.sleep(1)
+                    if not _wait_socket(sock, spec, ctx):
+                        raise OSError("服务器关闭连接")
                     continue
                 side = citydb.claim_daily_job(side_kinds)
                 if side:
@@ -2320,36 +2434,46 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                     citydb.set_lane("war")
                     continue
                 if not citydb.attack_hold_on() and _jobs_open():
-                    time.sleep(0.5)
+                    if not _wait_socket(sock, spec, ctx):
+                        raise OSError("服务器关闭连接")
                     continue
                 if citydb.attack_hold_on():
                     hold_closed = False
                 if hold_closed:
-                    time.sleep(1)
+                    if not _wait_socket(sock, spec, ctx):
+                        raise OSError("服务器关闭连接")
                     continue
                 if not _begin_attack_hold(fresh=not stated):
                     hold_closed = True
-                    time.sleep(1)
+                    if not _wait_socket(sock, spec, ctx):
+                        raise OSError("服务器关闭连接")
                     continue
                 if not citydb.attack_link_alive():
                     log.info("挂机保活游戏心跳没了，准备重连")
                     return 0
                 if not stated:
-                    path_at = 0.0
+                    path_box[0] = 0.0
                 stated = True
                 # 空挂只心跳、等订单。所在城市在打国战订单和移动时记，扫描号自己翻城。
-                path_at = _watch_blocked_path(rec, sock, config, beater, path_at)
+                path_box[0] = _watch_blocked_path(
+                    rec, sock, config, beater, path_box[0])
                 if not _wait_socket(sock, spec, ctx):
                     log.info("挂机时游戏连接断了，准备重连")
                     return 0
             except sqlite3.Error as exc:
                 log.info("读库失败，游戏先不断开：%s", exc)
-                time.sleep(1)
+                if not _wait_socket(sock, spec, ctx):
+                    log.info("攻打连接断了，准备重连")
+                    return 0
             except OSError:
                 log.info("攻打连接断了，准备重连")
                 return 0
     finally:
         stop.set()
+        daily.bind_on_recv(prev_recv)
+        daily.bind_idle_pump(prev_pump)
+        daily.bind_rec(prev_rec)
+        daily.bind_sock(prev_sock)
         daily.bind_stop(prev_stop)
 
 

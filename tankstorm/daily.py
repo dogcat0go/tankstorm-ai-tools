@@ -133,6 +133,40 @@ def bind_stop(event):
     return prev
 
 
+class Preempt(BaseException):
+    """外层空等到点了。插进来的国战先停手，让外层把到点的动作做完。"""
+
+
+def bind_idle_pump(fn):
+    """空等超过 1 秒时调用。用来在冷却里领国战。返回换之前的那个。"""
+    prev = getattr(_sock_local, "pump", None)
+    _sock_local.pump = fn
+    return prev
+
+
+def bind_on_recv(fn):
+    """每读到一块服务器字节就调用。用来回应在线探测。返回换之前的那个。"""
+    prev = getattr(_sock_local, "on_recv", None)
+    _sock_local.on_recv = fn
+    return prev
+
+
+def soonest_wait():
+    """这条线程上还要空等的最短秒数。没有空等返回 None。"""
+    stack = getattr(_sock_local, "deadlines", None) or []
+    if not stack:
+        return None
+    return min(stack) - time.time()
+
+
+def _outer_due() -> bool:
+    """更外层的空等已经到点（或只差 0.05 秒）。"""
+    stack = getattr(_sock_local, "deadlines", None) or []
+    if len(stack) < 2:
+        return False
+    return time.time() >= min(stack[:-1]) - 0.05
+
+
 class _Lane:
     """几条分路共用一条连接。发包和等回包占着锁，空等时放开，别的路才能发。"""
 
@@ -182,31 +216,42 @@ def lane_hold():
         _lane.release()
 
 
+def _socket_raw(sock):
+    raw = sock
+    while hasattr(raw, "_sock") and getattr(raw, "_sock", None) is not raw:
+        raw = raw._sock
+    return raw
+
+
 def _drain_incoming() -> None:
-    """把已经到的包读掉。超级强攻靠这次读取才会走拒绝。
+    """把已经到的包读完。超级强攻靠这次读取才会走拒绝。
 
     只在做任务的这一条线程上读。心跳线程只发心跳，两边用同一把收发锁，
-    不会同时 recv。
+    不会同时 recv。一次醒来把内核里已经排队的块都读走，不把后面的留到下一轮。
     """
     sock = getattr(_sock_local, "sock", None)
     if sock is None:
         return
-    raw = sock
-    while hasattr(raw, "_sock") and getattr(raw, "_sock", None) is not raw:
-        raw = raw._sock
-    try:
-        readable, _, _ = select.select([raw], [], [], 0)
-    except (OSError, TypeError, ValueError):
-        return
-    if not readable:
-        return
-    try:
-        sock.settimeout(0.2)
-        data = sock.recv(8192)
-    except (TimeoutError, OSError):
-        return
-    if data == b"":
-        raise OSError("服务器关闭连接")
+    raw = _socket_raw(sock)
+    on_recv = getattr(_sock_local, "on_recv", None)
+    for _ in range(48):
+        try:
+            readable, _, _ = select.select([raw], [], [], 0)
+        except (OSError, TypeError, ValueError):
+            return
+        if not readable:
+            return
+        try:
+            sock.settimeout(0.2)
+            data = sock.recv(8192)
+        except (TimeoutError, BlockingIOError):
+            return
+        except OSError:
+            return
+        if data == b"":
+            raise OSError("服务器关闭连接")
+        if on_recv is not None:
+            on_recv(data)
 
 
 class Stopped(BaseException):
@@ -225,25 +270,49 @@ def _stop_set() -> bool:
 
 
 def _nap(seconds: float) -> None:
-    """等到点。心跳在独立线程发，这里把已经到达的包读掉。
+    """等到点。心跳在独立线程发，这里把已经到达的包读完。
 
-    占着连接锁时先放开。现在任务在同一条定时循环里做，冷却结束才会领下一项。
+    占着连接锁时先放开。等够 1 秒时，空档里可以先打国战；外层到点后国战停手，
+    这次等待仍按原来的时刻结束。短于 1 秒的是在等紧跟着的回包，不插别的任务。
     """
     depth = _lane.yield_for_wait()
+    stack = getattr(_sock_local, "deadlines", None)
+    if stack is None:
+        stack = []
+        _sock_local.deadlines = stack
+    end = time.time() + max(0.0, float(seconds or 0))
+    long_wait = float(seconds or 0) >= 1.0
+    stack.append(end)
     try:
-        end = time.time() + max(0.0, float(seconds or 0))
         while True:
             raise_if_stopped()
             if _stop_set():
                 raise OSError("连接中断")
-            left = end - time.time()
-            if left <= 0:
+            now = time.time()
+            if long_wait and _outer_due():
+                raise Preempt()
+            if now >= end:
                 return
             _beat()
             _drain_incoming()
             note_base_wallet(getattr(_sock_local, "rec", None))
-            time.sleep(min(left, 0.5))
+            if long_wait:
+                fn = getattr(_sock_local, "pump", None)
+                if fn is not None:
+                    fn()
+            left = end - time.time()
+            if left <= 0:
+                return
+            slice_ = min(left, 0.5)
+            if len(stack) >= 2:
+                outer_left = min(stack[:-1]) - time.time()
+                slice_ = min(slice_, max(0.05, outer_left))
+            time.sleep(slice_)
+    except Preempt:
+        if _outer_due():
+            raise
     finally:
+        stack.pop()
         _lane.restore(depth)
 
 
@@ -4345,12 +4414,17 @@ def _await_response(sock, rec, rse_msg, since_seq, timeout, want=None,
         _beat()          # 等回包是耗时大头，心跳得在这儿续上
         try:
             sock.settimeout(0.5)
-            if not sock.recv(8192):
+            data = sock.recv(8192)
+            if not data:
                 break
         except TimeoutError:
             continue
         except OSError:
             break
+        fn = getattr(_sock_local, "on_recv", None)
+        if fn is not None:
+            fn(data)
+        _drain_incoming()
     if relaxed is not None:
         hit = _pick_recent(rec, rse_msg, since_seq, relaxed)
         if hit is not None:

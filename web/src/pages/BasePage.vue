@@ -121,7 +121,8 @@ function resText(n) {
           <label>次数<input v-model="auto50Count" class="mins" inputmode="numeric" required /></label>
           <button type="submit" :disabled="!dailyQq">探索</button>
         </form>
-        <p class="muted">实验室 50 连一次用 50 张实验卡，自动化探索 50 连一次用 50 张自动化探索卡，次数默认 1。点下去会先确认。</p>
+        <p v-if="err && errAt === 'base' && err.includes('数量不足')" class="err">{{ err }}</p>
+        <p class="muted">实验室 50 连一次用 50 张实验卡，自动化探索 50 连一次用 50 张自动化探索卡，次数默认 1。点下去会先确认。背包不够这次要的张数时，提示数量不足，不发，也不扣勋章。</p>
       </div>
     </details>
     <h2>兵营</h2>

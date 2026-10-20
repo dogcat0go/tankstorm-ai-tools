@@ -118,6 +118,9 @@ const fundBuildings = [
 const dailyNote = ref("");
 const dailyAt = ref("");
 const dailyAtNote = ref("");
+const modoAt = ref("");
+const modoAtNote = ref("");
+let modoAtReady = false;
 const dailySwitching = ref("");
 let dailyAtReady = false;
 const moveCity = ref("");
@@ -185,6 +188,9 @@ async function refreshDaily() {
     dailyAt.value = "";
     dailyAtNote.value = "";
     dailyAtReady = false;
+    modoAt.value = "";
+    modoAtNote.value = "";
+    modoAtReady = false;
     return;
   }
   const data = await api("/api/daily");
@@ -199,6 +205,11 @@ async function refreshDaily() {
     dailyAt.value = data.schedule || "";
     dailyAtReady = true;
     dailyAtNote.value = data.schedule ? "已设定每天 " + data.schedule : "";
+  }
+  if (!modoAtReady) {
+    modoAt.value = data.modo_at || "";
+    modoAtReady = true;
+    modoAtNote.value = data.modo_at ? "已设定每天 " + data.modo_at + "，刷完再领国家宝箱" : "";
   }
 }
 
@@ -227,6 +238,16 @@ async function saveDailyAt() {
   dailyAt.value = data.schedule || "";
   dailyAtReady = true;
   dailyAtNote.value = data.schedule ? "已设定每天 " + data.schedule : "已关掉定时";
+}
+
+async function saveModoAt() {
+  showErr("", "daily");
+  modoAtNote.value = "";
+  const data = await api("/api/daily/modo-schedule", { at: modoAt.value, cards: modoCards.value });
+  modoAt.value = data.modo_at || "";
+  modoAtReady = true;
+  if (data.modo_cards != null) modoCards.value = String(data.modo_cards);
+  modoAtNote.value = data.modo_at ? "已设定每天 " + data.modo_at + "，刷完再领国家宝箱" : "已关掉定时";
 }
 
 async function refreshBase() {
@@ -508,6 +529,7 @@ function takeUser(user) {
   if (!user.base_war && tab.value === "base") tab.value = "attack";
   pveStagesReady = false;
   dailyAtReady = false;
+  modoAtReady = false;
   qqTarget.value = user.qq_target || "";
   autoLock.value = !!user.auto_lock;
   holdMin.value = String(user.hold_min ?? 0);
@@ -891,6 +913,9 @@ async function logout() {
   dailyAt.value = "";
   dailyAtNote.value = "";
   dailyAtReady = false;
+  modoAt.value = "";
+  modoAtNote.value = "";
+  modoAtReady = false;
   holdNote.value = "";
   offAt.value = "";
   offNote.value = "";
@@ -1051,7 +1076,9 @@ onUnmounted(() => {
         :campaign-tasks="campaignTasks"
         :progress-tasks="progressTasks"
         :daily-jobs="dailyJobs"
+        v-model:modo-at="modoAt"
         :daily-at-note="dailyAtNote"
+        :modo-at-note="modoAtNote"
         :daily-note="dailyNote"
         :daily-switching="dailySwitching"
         :err="err"
@@ -1060,6 +1087,7 @@ onUnmounted(() => {
         :run-daily="runDaily"
         :cancel-daily="cancelDaily"
         :save-daily-at="saveDailyAt"
+        :save-modo-at="saveModoAt"
         :save-daily-switch="saveDailySwitch"
         :add-modo="addModo"
         :show-err="showErr"

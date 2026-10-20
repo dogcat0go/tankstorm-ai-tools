@@ -10,7 +10,8 @@
 用途：像"超级强攻令"这种事件很随机（对方用令后你要在 5 分钟内输验证码，否则基地被强攻），
 没法蹲着抓包。但保活守护进程本来就 24 小时连在游戏 socket 上，让它顺便：
 
-  1. 把**双向**消息按协议帧切好，落盘到 logs/frames-YYYY-MM-DD.jsonl；
+  1. 解密后的内容留在内存里给任务和告警用。默认不写磁盘；
+     config「录制.落盘」为 true 时才写入 logs/frames-YYYY-MM-DD.jsonl；
   2. 一旦发现"没见过的消息类型"或命中关键词（验证码/强攻/进攻…），
      立刻通过 PushPlus 推到你微信 —— 你就能在 5 分钟窗口内自己打开游戏处理；
   3. 自动识别**载荷加密**的消息（高熵 + 非 protobuf），完整存成独立 .bin，
@@ -269,11 +270,12 @@ class Recorder:
     def __init__(self, config: dict, on_alert=None, on_super_storm=None):
         conf = (config.get("录制", {}) or {})
         self.enabled = conf.get("启用", True)
+        self.persist = bool(conf.get("落盘", False))
         self.alert_unknown = conf.get("未知消息告警", True)
         self.alert_keywords = conf.get("关键词告警", True)
         self.keep_body_max = int(conf.get("单条最大记录字节", 16384))
         self.record_out = conf.get("录制上行", True)      # 客户端发出的包也记
-        self.dump_enc = conf.get("导出加密载荷", True)     # 加密 body 存独立 .bin
+        self.dump_enc = self.persist and conf.get("导出加密载荷", True)
         self.auto_reject = conf.get("自动拒绝超级强攻", False)
         self.on_alert = on_alert
         self.on_super_storm = on_super_storm   # 收到 027c 时的回调
@@ -327,13 +329,11 @@ class Recorder:
         self._probe = [0, 0]        # [合法数, 已验数]
         self._rc4_out_rec = None    # 录制上行专用的第二条 c2s 密钥流
 
-        # 原始字节流旁路。默认**开启**，而且不该关：RC4 密钥流在同方向的
-        # 非豁免 body 之间连续累积，唯一保险的做法就是把整条流从第一个字节
-        # 一字不差地存下来。解密用 tools/redwar_rc4.py。
+        # 原始字节流旁路。hook 始终要有，内存解密靠它。文件默认不写。
         raw = conf.get("原始流", {}) or {}
         self.stream = StreamRecorder(
             base_dir=raw.get("目录", "logs/streams"),
-            enabled=raw.get("启用", True),
+            enabled=self.persist and bool(raw.get("启用", True)),
             keep_sessions=int(raw.get("保留会话数", 10)),
             max_bytes=int(raw.get("单会话上限MB", 256)) * 1024 * 1024,
             log=log, hook=self._on_bytes,
@@ -524,6 +524,8 @@ class Recorder:
         return self._fh
 
     def _write(self, rec: dict):
+        if not self.persist:
+            return
         try:
             f = self._file()
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -617,16 +619,17 @@ class Recorder:
                     rec["enc"]["entropy"] = round(ent, 3)
 
                 if plain is None:
-                    # 没开实时解密或自检没过：留密文取证，不做文本分析
-                    rec["sha256"] = hashlib.sha256(body).hexdigest()
-                    rec["hex"] = body.hex()
-                    if op in EVENT_SIGNATURES or (
-                            not outgoing and op not in KNOWN_OPCODES
-                            and op not in self.learned):
-                        blob = self._dump_enc(op, body, direction, idx, off)
-                        if blob:
-                            rec["blob"] = blob
-                    self._write(rec)
+                    # 没开实时解密或自检没过：只在落盘时留密文。
+                    if self.persist:
+                        rec["sha256"] = hashlib.sha256(body).hexdigest()
+                        rec["hex"] = body.hex()
+                        if op in EVENT_SIGNATURES or (
+                                not outgoing and op not in KNOWN_OPCODES
+                                and op not in self.learned):
+                            blob = self._dump_enc(op, body, direction, idx, off)
+                            if blob:
+                                rec["blob"] = blob
+                        self._write(rec)
                     if not outgoing:
                         self._maybe_flag(op, seq, body, "", rec)
                     continue
@@ -690,9 +693,10 @@ class Recorder:
             if op in BULK_OPCODES and not important:
                 if counts[op] % 50 != 1:      # 每 50 条留 1 条摘要即可
                     continue
-                rec["note"] = "bulk-sampled"
-                rec["text"] = text[:120]
-            else:
+                if self.persist:
+                    rec["note"] = "bulk-sampled"
+                    rec["text"] = text[:120]
+            elif self.persist:
                 # 已确认的事件消息完整保存，绝不截断——这是最不能丢的数据
                 cap = len(body) if signature else self.keep_body_max
                 rec["hex"] = body[:cap].hex()
@@ -700,7 +704,8 @@ class Recorder:
                     rec["truncated"] = len(body)   # 标明原始长度，便于发现丢数据
                 if text:
                     rec["text"] = text[:500]
-            self._write(rec)
+            if self.persist:
+                self._write(rec)
 
             if outgoing:
                 continue

@@ -110,6 +110,8 @@ CREATE TABLE IF NOT EXISTS app_user (
     daily_switch    TEXT,
     daily_at        TEXT NOT NULL DEFAULT '',
     daily_last      TEXT NOT NULL DEFAULT '',
+    modo_at         TEXT NOT NULL DEFAULT '',
+    modo_last       TEXT NOT NULL DEFAULT '',
     off_at          TEXT NOT NULL DEFAULT '',
     region          INTEGER NOT NULL DEFAULT 0,
     storm_cap       INTEGER,
@@ -387,6 +389,14 @@ def connect(readonly=False, timeout=15):
             if ucols and "daily_last" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN daily_last TEXT NOT NULL DEFAULT ''")
+                setup.commit()
+            if ucols and "modo_at" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN modo_at TEXT NOT NULL DEFAULT ''")
+                setup.commit()
+            if ucols and "modo_last" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN modo_last TEXT NOT NULL DEFAULT ''")
                 setup.commit()
             if ucols and "off_at" not in ucols:
                 setup.execute(
@@ -1170,7 +1180,8 @@ def list_members() -> list:
             "IFNULL(retreat_city,0), IFNULL(retreat_fail,0), "
             "IFNULL(lock_cards,3), IFNULL(modo_cards,0), IFNULL(region,0), "
             "IFNULL(off_at,''), IFNULL(attack_qq,''), IFNULL(daily_at,''), "
-            "storm_cap, IFNULL(storm_used,0), IFNULL(storm_day,'') "
+            "storm_cap, IFNULL(storm_used,0), IFNULL(storm_day,''), "
+            "IFNULL(modo_at,'') "
             "FROM app_user ORDER BY id").fetchall()
     finally:
         conn.close()
@@ -1199,6 +1210,7 @@ def list_members() -> list:
             "daily_at": str(row[19] or "").strip(),
             "storm_cap": None if row[20] is None else int(row[20]),
             "storm_used": int(row[21] or 0) if str(row[22] or "") == beijing_day() else 0,
+            "modo_at": str(row[23] or "").strip(),
         })
     return items
 
@@ -1222,7 +1234,7 @@ def reset_member_settings(user_id: int) -> str:
             "clear_mode='head', clear_from=1, clear_to=5, clear_wait=0, clear_scan=0, "
             "clear_retreat_mode='off', clear_retreat_hops=3, clear_retreat_city=0, "
             "clear_retreat_fail=0, modo_cards=0, daily_switch=NULL, "
-            "daily_at='', daily_last='', off_at='' "
+            "daily_at='', daily_last='', modo_at='', modo_last='', off_at='' "
             "WHERE id=?",
             (user_id,))
         if cur.rowcount != 1:
@@ -1549,8 +1561,11 @@ def modo_stands(country_id: int) -> list:
     return stands
 
 
-def add_modo_order(user_id: int, cards) -> str:
-    """提交一条刷摩多军团。按攻打号的国家打离自己最近的一座。成功返回空字符串。"""
+def add_modo_order(user_id: int, cards, scheduled: bool = False) -> str:
+    """提交一条刷摩多军团。按攻打号的国家打离自己最近的一座。成功返回空字符串。
+
+    scheduled 是到点自动排的。不要求当时已经在保活，并在这一单结束后续领国家宝箱。
+    """
     try:
         n = int(str(cards).strip())
     except (TypeError, ValueError, AttributeError):
@@ -1560,7 +1575,7 @@ def add_modo_order(user_id: int, cards) -> str:
     user_id = int(user_id)
     if shutdown_due(user_id):
         return "已定时关闭，不再执行任务"
-    if not attack_in_keepalive(user_id):
+    if not scheduled and not attack_in_keepalive(user_id):
         return "不在保活，下了订单游戏也登不进去"
     online = proc_online(user_id)
     if not online:
@@ -1579,8 +1594,9 @@ def add_modo_order(user_id: int, cards) -> str:
             conn.commit()
             return "账号已过期"
         dup = conn.execute(
-            "SELECT 1 FROM atk_order WHERE user_id=? AND IFNULL(kind,'')='modo' "
-            "AND status IN ('pending','running','blocked','wait')",
+            "SELECT id FROM atk_order WHERE user_id=? AND IFNULL(kind,'')='modo' "
+            "AND status IN ('pending','running','blocked','wait') "
+            "ORDER BY id DESC LIMIT 1",
             (user_id,)).fetchone()
         if dup:
             conn.execute(
@@ -1591,21 +1607,28 @@ def add_modo_order(user_id: int, cards) -> str:
                 "UPDATE app_user SET modo_cards=? WHERE id=?",
                 (n, user_id))
             conn.commit()
+            if scheduled:
+                _mark_modo_chest(dup[0])
+                mark_attack_resume(user_id)
             return ""
         if _open_attack_count(conn, user_id) >= 2:
             conn.commit()
             return "最多同时两条攻打订单"
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO atk_order(user_id, city_id, uid, status, reason, card_max, kind, created_at, updated_at) "
             "VALUES (?,?,?,?,?,?,?,?,?)",
             (user_id, 0, "", "pending", "", n, "modo", now, now))
         conn.execute(
             "UPDATE app_user SET modo_cards=? WHERE id=?",
             (n, user_id))
+        order_id = int(cur.lastrowid or 0)
         conn.commit()
-        return ""
     finally:
         conn.close()
+    if scheduled and order_id:
+        _mark_modo_chest(order_id)
+        mark_attack_resume(user_id)
+    return ""
 
 
 def set_attack_cards(user_id: int, cards) -> str:
@@ -4494,6 +4517,7 @@ DAILY_KIND_LABEL = {
     "pick_auto": "换自动化探索卡",
     "lab50": "实验室探索50连",
     "auto50": "自动化探索50连",
+    "chest": "国家宝箱",
 }
 _BASE_LANE = (
     "blast", "factory", "cards", "haoyin", "admiral", "admiral10",
@@ -4750,6 +4774,78 @@ def daily_schedule(user_id: int) -> str:
     return str(row[0] or "").strip() if row else ""
 
 
+def modo_schedule(user_id: int) -> str:
+    """这个登录账号记下的刷摩多时刻。空字符串表示不定时。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(modo_at,'') FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+    finally:
+        conn.close()
+    return str(row[0] or "").strip() if row else ""
+
+
+def modo_cards_of(user_id: int) -> int:
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(modo_cards,0) FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+    finally:
+        conn.close()
+    return int(row[0] or 0) if row else 0
+
+
+def set_modo_schedule(user_id: int, raw, cards=None) -> str:
+    """记下每天刷摩多的北京时间。空的表示关掉。成功返回空字符串。
+
+    今天这一档已经排过，又改到还没到的时刻，就清掉标记，让新时刻再排一次。
+    改到已经过去的时刻则把新时刻记成做过，避免马上再跑一轮。
+    带了恢复卡数量就一起记下，到点按这个数量刷。
+    """
+    try:
+        at = _clock(raw)
+    except ValueError as exc:
+        return str(exc)
+    card_n = None
+    if cards is not None and str(cards).strip() != "":
+        try:
+            card_n = int(str(cards).strip())
+        except (TypeError, ValueError):
+            return "恢复卡数量要是数字"
+        if card_n < 0 or card_n > 999:
+            return "恢复卡数量要是 0 到 999"
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(modo_last,'') FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+        if not row:
+            return "账号不存在"
+        old_last = str(row[0] or "")
+        done_day, sep, done_at = old_last.partition("|")
+        ran_today = bool(old_last) and done_day == beijing_day()
+        clock = beijing_clock()
+        last = old_last
+        if at and ran_today and at >= clock and (not sep or done_at != at):
+            last = ""
+        elif at and ran_today and sep and done_at != at and at < clock:
+            last = f"{done_day}|{at}"
+        if card_n is None:
+            conn.execute(
+                "UPDATE app_user SET modo_at=?, modo_last=? WHERE id=?",
+                (at, last, int(user_id)))
+        else:
+            conn.execute(
+                "UPDATE app_user SET modo_at=?, modo_last=?, modo_cards=? WHERE id=?",
+                (at, last, card_n, int(user_id)))
+        conn.commit()
+        return ""
+    finally:
+        conn.close()
+
+
 def set_daily_schedule(user_id: int, raw) -> str:
     """记下每天跑日常的北京时间。空的表示关掉。成功返回空字符串。
 
@@ -4860,6 +4956,49 @@ def enqueue_due_daily_jobs() -> list:
         conn.close()
 
 
+def enqueue_due_modo_orders() -> list:
+    """到点且这一档今天还没排过的账号，排一条刷摩多。返回刚排上的 user_id。
+
+    这一单结束后续领一次国家宝箱。两条攻打订单都占着时先不记已做，下一轮再试。
+    """
+    clock = beijing_clock()
+    day = beijing_day()
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT id, username, modo_at, IFNULL(modo_last,''), IFNULL(expires_at,''), "
+            "IFNULL(attack_qq,''), IFNULL(modo_cards,0) "
+            "FROM app_user WHERE IFNULL(modo_at,'') != ''").fetchall()
+    finally:
+        conn.close()
+    queued = []
+    for user_id, name, at, last, expires, qq, cards in rows:
+        done_day, sep, done_at = str(last or "").partition("|")
+        if ((done_day == day and (not sep or done_at == at))
+                or clock < at or account_expired(expires)
+                or shutdown_due(user_id)):
+            continue
+        if not str(qq or "").strip():
+            continue
+        err = add_modo_order(user_id, cards, scheduled=True)
+        if err == "最多同时两条攻打订单":
+            continue
+        if err:
+            log.info("定时刷摩多：账号 %s 没排上：%s", name, err)
+            continue
+        conn = connect()
+        try:
+            conn.execute(
+                "UPDATE app_user SET modo_last=? WHERE id=?",
+                (f"{day}|{at}", int(user_id)))
+            conn.commit()
+        finally:
+            conn.close()
+        queued.append(int(user_id))
+        log.info("定时刷摩多：账号 %s 到点 %s，已排队，刷完再领国家宝箱", name, at)
+    return queued
+
+
 def set_campaign_stages(user_id: int, raw) -> str:
     """记下征战终点。空的表示清除。成功返回空字符串。"""
     text = str(raw or "").strip()
@@ -4895,7 +5034,7 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
     """排一项日常。成功返回空字符串。只排给这个登录账号绑定的攻打号。"""
     user_id = int(user_id)
     kind = str(kind or "").strip()
-    if kind not in DAILY_KIND_LABEL:
+    if kind not in DAILY_KIND_LABEL or kind == "chest":
         return "没有这项日常"
     if shutdown_due(user_id):
         return "已定时关闭，不再执行任务"
@@ -5570,6 +5709,9 @@ def fail_blocked_orders() -> None:
     slot = ",".join("?" * len(ids))
     conn = connect()
     try:
+        rows = conn.execute(
+            "SELECT id FROM atk_order WHERE user_id IN (" + slot + ") AND status='blocked'",
+            tuple(ids)).fetchall()
         conn.execute(
             "UPDATE atk_order SET status='failed', updated_at=? "
             "WHERE user_id IN (" + slot + ") AND status='blocked'",
@@ -5577,6 +5719,8 @@ def fail_blocked_orders() -> None:
         conn.commit()
     finally:
         conn.close()
+    for (order_id,) in rows:
+        _follow_modo_chest(int(order_id), "failed")
 
 
 def append_order_reason(order_id: int, extra: str) -> None:
@@ -5609,35 +5753,116 @@ def append_order_reason(order_id: int, extra: str) -> None:
         conn.close()
 
 
+def _modo_chest_name(order_id: int) -> str:
+    return f"modochest:{int(order_id)}"
+
+
+def _mark_modo_chest(order_id: int) -> None:
+    """这一条刷摩多结束后续领国家宝箱。"""
+    if int(order_id or 0) <= 0:
+        return
+    _upsert_signal(_modo_chest_name(order_id), "1")
+
+
+def _clear_modo_chest(order_id: int) -> None:
+    if int(order_id or 0) <= 0:
+        return
+    _delete_signal(_modo_chest_name(order_id))
+
+
+def enqueue_chest_job(user_id: int) -> str:
+    """排一次国家宝箱领取。已经有一条没做完的就不再排。成功返回空字符串。"""
+    user_id = int(user_id)
+    if shutdown_due(user_id):
+        return "已定时关闭，不再执行任务"
+    if not attack_qq_of(user_id):
+        return "还没绑定攻打 QQ"
+    conn = connect()
+    try:
+        who = conn.execute(
+            "SELECT IFNULL(expires_at,'') FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+        if not who:
+            return "没有这个登录账号"
+        if account_expired(who[0]):
+            return "账号已过期"
+        waiting = conn.execute(
+            "SELECT 1 FROM daily_job WHERE user_id=? AND kind='chest' "
+            "AND status IN ('pending','running')",
+            (user_id,)).fetchone()
+        if waiting:
+            return ""
+        now = now_ts()
+        conn.execute(
+            "INSERT INTO daily_job(user_id, kind, params, status, detail, created_at, updated_at) "
+            "VALUES (?,'chest','{}','pending','',?,?)",
+            (user_id, now, now))
+        conn.commit()
+    finally:
+        conn.close()
+    log.info("登录账号 %s 刷摩多结束，排队领取国家宝箱", username_of(user_id))
+    return ""
+
+
+def _follow_modo_chest(order_id: int, status: str) -> None:
+    """定时刷摩多结束后续领国家宝箱。手动关停则不再领。"""
+    status = str(status or "")
+    if status == "ended":
+        _clear_modo_chest(order_id)
+        return
+    if status not in ("done", "failed"):
+        return
+    name = _modo_chest_name(order_id)
+    if _signal_value(name) != "1":
+        return
+    _delete_signal(name)
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT user_id, IFNULL(kind,'') FROM atk_order WHERE id=?",
+            (int(order_id),)).fetchone()
+    finally:
+        conn.close()
+    if not row or str(row[1] or "") != "modo":
+        return
+    why = enqueue_chest_job(int(row[0]))
+    if why:
+        log.info("订单 %s 刷完没排上国家宝箱：%s", order_id, why)
+
+
 def finish_attack_order(order_id: int, status: str, reason: str = "", beats=None,
                          keep_reason: bool = False) -> None:
     conn = connect()
     try:
         now = now_ts()
+        order_id = int(order_id)
         if keep_reason:
             if beats is None:
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE atk_order SET status=?, updated_at=? "
                     "WHERE id=? AND status='running'",
-                    (status, now, int(order_id)))
+                    (status, now, order_id))
             else:
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE atk_order SET status=?, beats=?, updated_at=? "
                     "WHERE id=? AND status='running'",
-                    (status, int(beats), now, int(order_id)))
+                    (status, int(beats), now, order_id))
         elif beats is None:
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE atk_order SET status=?, reason=?, updated_at=? "
                 "WHERE id=? AND status='running'",
-                (status, reason or "", now, int(order_id)))
+                (status, reason or "", now, order_id))
         else:
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE atk_order SET status=?, reason=?, beats=?, updated_at=? "
                 "WHERE id=? AND status='running'",
-                (status, reason or "", int(beats), now, int(order_id)))
+                (status, reason or "", int(beats), now, order_id))
         conn.commit()
+        changed = cur.rowcount == 1
     finally:
         conn.close()
+    if changed:
+        _follow_modo_chest(order_id, status)
 
 
 def cancel_attack_order(user_id: int, order_id: int) -> str:
@@ -5658,6 +5883,7 @@ def cancel_attack_order(user_id: int, order_id: int) -> str:
             "WHERE id=? AND user_id=? AND status IN ('pending','running','blocked','wait')",
             ("已手动关停", now_ts(), order_id, user_id))
         conn.commit()
+        _clear_modo_chest(order_id)
         log.info("登录账号 %s 关停订单 %s", username_of(user_id), order_id)
         return ""
     finally:

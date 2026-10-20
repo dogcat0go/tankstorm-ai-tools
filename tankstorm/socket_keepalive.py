@@ -2149,6 +2149,11 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 text = daily.page_brief(results) or "这一轮没有要做的"
                 citydb.set_attack_status("daily", task=label, note=text)
                 citydb.finish_daily_job(job["id"], "done", text)
+            elif kind == "chest":
+                from . import country_war
+                ok, why = country_war.daily_chest(rec, sock, config)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "pve":
                 user_id = citydb.attack_context_user()
                 raw = _campaign_end(params, user_id)
@@ -2313,13 +2318,13 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     path_box = [0.0]
     hold_closed = False
     side_kinds = (
-        "daily", "pve", "fund", "blast", "factory", "cards",
+        "daily", "pve", "fund", "chest", "blast", "factory", "cards",
         "haoyin", "admiral", "admiral10",
         "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
     )
 
     def _lane_for(kind):
-        if kind in ("daily", "pve", "fund"):
+        if kind in ("daily", "pve", "fund", "chest"):
             return "daily"
         if kind == "blast":
             return "blast"

@@ -2662,6 +2662,57 @@ def _bag_left(rec, item_id):
     return None if not found else found[1]
 
 
+def latest_card(rec, item_id):
+    """最新一份背包里的 (张数, 槽位)。没收到背包返回 None。
+
+    张数和页面是同一份：这一份里后出现的那一行算数，没有这张就是 0。
+    更早的背包不拿来凑，避免页面已经是 49 张、旧背包还记着更多时把 50 连发出去。
+    槽位只认这一行自己的。
+    """
+    one = (getattr(rec, "latest", {}) or {}).get("RseBagItemLst") if rec else None
+    data = one[1] if isinstance(one, tuple) and len(one) > 1 else one
+    if not isinstance(data, dict):
+        return None
+    rows = data.get("bagItem")
+    if isinstance(rows, dict):
+        nested = rows.get("field1") or rows.get("field2")
+        rows = nested if isinstance(nested, list) else [rows]
+    if not isinstance(rows, list):
+        return None
+    found = None
+    slot = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        tid = row.get("field2")
+        if not isinstance(tid, int) or isinstance(tid, bool):
+            tid = row.get("itemID")
+        if tid != item_id:
+            continue
+        count = row.get("field4")
+        if not isinstance(count, int) or isinstance(count, bool):
+            count = row.get("count") or 0
+        if not isinstance(count, int) or isinstance(count, bool):
+            continue
+        raw_slot = row.get("field1")
+        if isinstance(raw_slot, bool) or not isinstance(raw_slot, int) or raw_slot <= 0:
+            raw_slot = None
+        found = count
+        slot = raw_slot
+    if found is None:
+        return 0, None
+    return found, slot
+
+
+def _batch_short(name, have, need, done, times):
+    head = f"完成 {done}/{times}。" if done else ""
+    return f"{head}{name}数量不足，只有 {have} 张，这次要 {need} 张，不发"
+
+
+def _medal_short(name, before, after, done):
+    return f"{name}数量不足，要扣勋章（从 {before} 变成 {after}），已停。已完成 {done} 次"
+
+
 def pick_pack(rec, sock, kind, count=1, on_progress=None):
     """用一张自选包换成指定物品。count 是要换出的张数，也是消耗的包数。"""
     spec = _PACKS.get(kind)
@@ -2723,6 +2774,9 @@ def lab50_probe(rec, sock, times=1, on_progress=None):
         return False, "次数要是数字"
     if not 1 <= times <= 999:
         return False, "次数要在 1 到 999"
+    known = latest_card(rec, _LAB_CARD)
+    if known is not None and known[0] < _LAB_BATCH:
+        return False, _batch_short("实验室探索卡", known[0], _LAB_BATCH, 0, times)
     mark = rec.seq_mark()
     sender.send_frame(sock, "0437", encode_message(
         {1: ("int32", 1)}, omit_zero=False), rec.rc4_c2s)
@@ -2730,18 +2784,22 @@ def lab50_probe(rec, sock, times=1, on_progress=None):
     done = 0
     while done < times:
         raise_if_stopped()
-        item = _draw_slot(rec, _LAB_CARD)
-        have = 0 if not item else item[1]
-        if not item or have < _LAB_BATCH:
-            head = f"完成 {done}/{times}。" if done else ""
-            return False, f"{head}实验室探索卡只有 {have} 张，50 连要 {_LAB_BATCH} 张，不发"
+        known = latest_card(rec, _LAB_CARD)
+        head = f"完成 {done}/{times}。" if done else ""
+        if known is None:
+            return False, f"{head}还没读到实验室探索卡的数量，不发"
+        have, slot = known
+        if have < _LAB_BATCH:
+            return False, _batch_short("实验室探索卡", have, _LAB_BATCH, done, times)
+        if slot is None:
+            return False, f"{head}实验室探索卡有 {have} 张，没读到背包槽位，不发"
         before = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
         sent = (f"043a scene={_LAB_SCENE} expType=1 exploreCnt={_LAB_BATCH} "
-                f"credit=0 槽={item[0]} useItemCnt={_LAB_BATCH}")
+                f"credit=0 槽={slot} useItemCnt={_LAB_BATCH}")
         mark = rec.seq_mark()
         sender.send_frame(sock, "043a", encode_message({
             1: ("int32", _LAB_SCENE), 2: ("int32", 1), 3: ("int32", _LAB_BATCH),
-            4: ("int32", 0), 5: ("int32", item[0]), 6: ("int32", _LAB_BATCH),
+            4: ("int32", 0), 5: ("int32", slot), 6: ("int32", _LAB_BATCH),
             7: ("int32", 0),
         }, omit_zero=False), rec.rc4_c2s)
         got = _await_response(
@@ -2766,7 +2824,7 @@ def lab50_probe(rec, sock, times=1, on_progress=None):
                 break
         after = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
         if before is not None and after is not None and after < before:
-            return False, f"勋章从 {before} 变成 {after}，已停。已完成 {done} 次"
+            return False, _medal_short("实验室探索卡", before, after, done)
         done += 1
         note_bag_cards(rec)
         left = _bag_left(rec, _LAB_CARD)
@@ -2786,13 +2844,16 @@ _AUTO_BATCH = 50
 
 
 def auto50_probe(rec, sock, times=1, on_progress=None):
-    """军备自动化探索 50 连。一次用 50 张自动化探索卡，不写勋章。"""
+    """军备自动化探索 50 连。一次用 50 张自动化探索卡。不够就提示数量不足，不发，也不扣勋章。"""
     try:
         times = int(times)
     except (TypeError, ValueError):
         return False, "次数要是数字"
     if not 1 <= times <= 999:
         return False, "次数要在 1 到 999"
+    known = latest_card(rec, _AUTO_CARD)
+    if known is not None and known[0] < _AUTO_BATCH:
+        return False, _batch_short("自动化探索卡", known[0], _AUTO_BATCH, 0, times)
     for kind in (21, 0, 21):
         mark = rec.seq_mark()
         sender.send_frame(sock, "04e1", encode_message(
@@ -2803,11 +2864,13 @@ def auto50_probe(rec, sock, times=1, on_progress=None):
     done = 0
     while done < times:
         raise_if_stopped()
-        item = _draw_slot(rec, _AUTO_CARD)
-        have = 0 if not item else item[1]
-        if not item or have < _AUTO_BATCH:
-            head = f"完成 {done}/{times}。" if done else ""
-            return False, f"{head}自动化探索卡只有 {have} 张，50 连要 {_AUTO_BATCH} 张，不发"
+        known = latest_card(rec, _AUTO_CARD)
+        head = f"完成 {done}/{times}。" if done else ""
+        if known is None:
+            return False, f"{head}还没读到自动化探索卡的数量，不发"
+        have, _slot = known
+        if have < _AUTO_BATCH:
+            return False, _batch_short("自动化探索卡", have, _AUTO_BATCH, done, times)
         before = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
         sent = f"04e1 type=22 nExlType=6 item={_AUTO_CARD}"
         mark = rec.seq_mark()
@@ -2836,7 +2899,7 @@ def auto50_probe(rec, sock, times=1, on_progress=None):
                 break
         after = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
         if before is not None and after is not None and after < before:
-            return False, f"勋章从 {before} 变成 {after}，已停。已完成 {done} 次"
+            return False, _medal_short("自动化探索卡", before, after, done)
         done += 1
         note_bag_cards(rec)
         left = _bag_left(rec, _AUTO_CARD)

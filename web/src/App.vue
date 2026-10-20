@@ -150,6 +150,19 @@ function cardNum(count) {
   return n;
 }
 
+function knownCards(raw) {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Math.trunc(n);
+}
+
+function tellShortage(name, have, need) {
+  const text = `${name}数量不足，只有 ${have.toLocaleString("zh-CN")} 张，这次要 ${need.toLocaleString("zh-CN")} 张。`;
+  showErr(text, "base");
+  notice.value = { ok: false, title: "数量不足", text };
+}
+
 function showErr(message, where) {
   const text = message || "";
   err.value = text;
@@ -346,7 +359,13 @@ async function runAuto50(count) {
   showErr("", "base");
   baseNote.value = "";
   const n = cardNum(count);
-  const ok = await confirmUse(`使用自动化探索卡 ${n * 50} 张，做 ${n} 次 50 连。`);
+  const need = n * 50;
+  const have = knownCards(baseCards.value.auto);
+  if (have !== null && have < need) {
+    tellShortage("自动化探索卡", have, need);
+    return;
+  }
+  const ok = await confirmUse(`使用自动化探索卡 ${need} 张，做 ${n} 次 50 连。`);
   if (!ok) return;
   await api("/api/base", { kind: "auto50", count: n });
   baseNote.value = "自动化探索已交给绑定的攻打号";
@@ -358,7 +377,13 @@ async function runLab50(count) {
   showErr("", "base");
   baseNote.value = "";
   const n = cardNum(count);
-  const ok = await confirmUse(`使用实验卡 ${n * 50} 张，做 ${n} 次 50 连。`);
+  const need = n * 50;
+  const have = knownCards(baseCards.value.lab);
+  if (have !== null && have < need) {
+    tellShortage("实验卡", have, need);
+    return;
+  }
+  const ok = await confirmUse(`使用实验卡 ${need} 张，做 ${n} 次 50 连。`);
   if (!ok) return;
   await api("/api/base", { kind: "lab50", count: n });
   baseNote.value = "实验室探索已交给绑定的攻打号";

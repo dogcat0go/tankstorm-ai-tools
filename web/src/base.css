@@ -14,6 +14,7 @@ form.retreat-row { margin-top: 8px; }
 label.switch { flex-direction: row; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; }
 label.choice { flex-direction: row; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; }
 span.switch { font-size: 15px; font-weight: 700; }
+.card-have { color: #16375f; font-weight: 700; white-space: nowrap; }
 .lead { margin: 0 0 16px; color: #444; }
 .account-bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
 .account-bar .account-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }

@@ -70,16 +70,19 @@ function resText(n) {
         <h3>抽卡</h3>
         <form class="lock-row" @submit.prevent="runDraw('haoyin', drinkCount).catch((e) => showErr(e.message))">
           <span class="switch">英雄豪饮</span>
+          <span class="card-have">豪饮卡 {{ resText(cards.drink) }}</span>
           <label>卡数量<input v-model="drinkCount" class="mins" inputmode="numeric" required /></label>
           <button type="submit" :disabled="!dailyQq">抽取</button>
         </form>
         <form class="lock-row" @submit.prevent="runDraw('admiral', admiralCount).catch((e) => showErr(e.message))">
           <span class="switch">高级将领单抽</span>
+          <span class="card-have">高级将领卡 {{ resText(cards.general) }}</span>
           <label>卡数量<input v-model="admiralCount" class="mins" inputmode="numeric" required /></label>
           <button type="submit" :disabled="!dailyQq">抽取</button>
         </form>
         <form class="lock-row" @submit.prevent="runDraw('admiral10', admiral10Count).catch((e) => showErr(e.message))">
           <span class="switch">高级将领十连</span>
+          <span class="card-have">高级将领卡 {{ resText(cards.general) }}</span>
           <label>卡数量<input v-model="admiral10Count" class="mins" inputmode="numeric" required /></label>
           <button type="submit" :disabled="!dailyQq">抽取</button>
         </form>
@@ -89,21 +92,25 @@ function resText(n) {
         <h3>换卡</h3>
         <form class="lock-row" @submit.prevent="runPick('pick_general', generalCount).catch((e) => showErr(e.message))">
           <span class="switch">换高级将领卡</span>
+          <span class="card-have">招募卡自选 {{ resText(cards.recruit) }} · 高级将领卡 {{ resText(cards.general) }}</span>
           <label>数量<input v-model="generalCount" class="mins" inputmode="numeric" required /></label>
           <button type="submit" :disabled="!dailyQq">兑换</button>
         </form>
         <form class="lock-row" @submit.prevent="runPick('pick_staff', staffCount).catch((e) => showErr(e.message))">
           <span class="switch">换参谋卡</span>
+          <span class="card-have">招募卡自选 {{ resText(cards.recruit) }} · 参谋卡 {{ resText(cards.staff) }}</span>
           <label>数量<input v-model="staffCount" class="mins" inputmode="numeric" required /></label>
           <button type="submit" :disabled="!dailyQq">兑换</button>
         </form>
         <form class="lock-row" @submit.prevent="runPick('pick_lab', labPickCount).catch((e) => showErr(e.message))">
           <span class="switch">换实验卡</span>
+          <span class="card-have">探索卡自选 {{ resText(cards.explore) }} · 实验卡 {{ resText(cards.lab) }}</span>
           <label>数量<input v-model="labPickCount" class="mins" inputmode="numeric" required /></label>
           <button type="submit" :disabled="!dailyQq">兑换</button>
         </form>
         <form class="lock-row" @submit.prevent="runPick('pick_auto', autoCount).catch((e) => showErr(e.message))">
           <span class="switch">换自动化探索卡</span>
+          <span class="card-have">探索卡自选 {{ resText(cards.explore) }} · 自动化探索卡 {{ resText(cards.auto) }}</span>
           <label>数量<input v-model="autoCount" class="mins" inputmode="numeric" required /></label>
           <button type="submit" :disabled="!dailyQq">兑换</button>
         </form>
@@ -113,11 +120,13 @@ function resText(n) {
         <h3>探索</h3>
         <form class="lock-row" @submit.prevent="runLab50(lab50Count).catch((e) => showErr(e.message))">
           <span class="switch">实验室探索50连</span>
+          <span class="card-have">实验卡 {{ resText(cards.lab) }}</span>
           <label>次数<input v-model="lab50Count" class="mins" inputmode="numeric" required /></label>
           <button type="submit" :disabled="!dailyQq">探索</button>
         </form>
         <form class="lock-row" @submit.prevent="runAuto50(auto50Count).catch((e) => showErr(e.message))">
           <span class="switch">自动化探索50连</span>
+          <span class="card-have">自动化探索卡 {{ resText(cards.auto) }}</span>
           <label>次数<input v-model="auto50Count" class="mins" inputmode="numeric" required /></label>
           <button type="submit" :disabled="!dailyQq">探索</button>
         </form>

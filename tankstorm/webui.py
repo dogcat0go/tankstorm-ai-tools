@@ -345,6 +345,7 @@ def _handler(config: dict):
                     "process": citydb.attack_status(user["id"]),
                     "stages": citydb.campaign_stages(user["id"]),
                     "schedule": citydb.daily_schedule(user["id"]),
+                    "modo_at": citydb.modo_schedule(user["id"]),
                 })
                 return
             if path == "/api/admin/fighters":
@@ -490,6 +491,16 @@ def _handler(config: dict):
                     _json(self, 200, {
                         "ok": True,
                         "schedule": citydb.daily_schedule(user["id"]),
+                    })
+                elif path == "/api/daily/modo-schedule":
+                    why = citydb.set_modo_schedule(
+                        user["id"], data.get("at"), data.get("cards"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {
+                        "ok": True,
+                        "modo_at": citydb.modo_schedule(user["id"]),
+                        "modo_cards": citydb.modo_cards_of(user["id"]),
                     })
                 elif path == "/api/daily/switch":
                     from . import daily
@@ -919,6 +930,7 @@ def _wake_attack_orders(config) -> None:
         try:
             citydb.shelve_due_accounts()
             citydb.enqueue_due_daily_jobs()
+            citydb.enqueue_due_modo_orders()
             users = citydb.users_needing_attack()
         except Exception:
             log.info("自动拉起攻打没成", exc_info=True)

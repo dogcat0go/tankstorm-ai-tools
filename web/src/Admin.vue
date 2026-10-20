@@ -562,6 +562,7 @@ onUnmounted(() => {
                   <p>清城后退：{{ retreatText(m.clear_retreat_mode, m.clear_retreat_hops, m.clear_retreat_city, m.clear_retreat_fail) }}</p>
                   <p>优先 UID：{{ prioText(m) }}</p>
                   <p>日常定时：{{ m.daily_at || "未设" }}</p>
+                  <p>刷摩多定时：{{ m.modo_at || "未设" }} · 恢复卡 {{ m.modo_cards || 0 }}</p>
                   <p>
                     超级强攻：今日已拒绝 {{ m.storm_used || 0 }} 次
                     <template v-if="m.storm_cap == null">· 不限制</template>

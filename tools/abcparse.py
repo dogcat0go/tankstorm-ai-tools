@@ -69,6 +69,7 @@ class ABC:
 
     def __init__(self, data: bytes):
         self.raw = data
+        self.trait_mn = {}
         p = 0
         self.minor, self.major = struct.unpack_from("<HH", data, p)
         p += 4
@@ -100,6 +101,7 @@ class ABC:
             v, p = _d64(b, p)
             self.doubles.append(v)
 
+        self.pool_at = {"str": p}
         n, p = _u30(b, p)
         self.strings = [""]
         for _ in range(max(0, n - 1)):
@@ -107,6 +109,7 @@ class ABC:
             self.strings.append(b[p:p + ln].decode("utf-8", "replace"))
             p += ln
 
+        self.pool_at["ns"] = p
         n, p = _u30(b, p)
         self.namespaces = [(0, 0)]          # (kind, name_index)
         for _ in range(max(0, n - 1)):
@@ -115,6 +118,7 @@ class ABC:
             ni, p = _u30(b, p)
             self.namespaces.append((kind, ni))
 
+        self.pool_at["nss"] = p
         n, p = _u30(b, p)
         self.ns_sets = [()]
         for _ in range(max(0, n - 1)):
@@ -125,6 +129,7 @@ class ABC:
                 items.append(v)
             self.ns_sets.append(tuple(items))
 
+        self.pool_at["mn"] = p
         n, p = _u30(b, p)
         self.multinames = [(0, None)]       # (kind, payload)
         for _ in range(max(0, n - 1)):
@@ -157,6 +162,7 @@ class ABC:
             else:                            # 未知 kind，无法继续安全解析
                 raise ValueError(f"未知 multiname kind 0x{kind:02x} @ {p - 1}")
             self.multinames.append((kind, pay))
+        self.pool_at["mn_end"] = p
         return p
 
     # ---------- 方法签名 ----------
@@ -200,6 +206,7 @@ class ABC:
     def _read_traits(self, b, p):
         cnt, p = _u30(b, p)
         out = []
+        name_ids = []
         for _ in range(cnt):
             name_i, p = _u30(b, p)
             tag = b[p]
@@ -232,6 +239,8 @@ class ABC:
                 for _ in range(mc):
                     _, p = _u30(b, p)
             out.append((self.name_of(name_i), kname, mi))
+            name_ids.append(name_i)
+        self.trait_mn[id(out)] = name_ids
         return out, p
 
     # ---------- 类 ----------
@@ -275,26 +284,44 @@ class ABC:
     # ---------- 方法体 ----------
 
     def _read_bodies(self, b, p):
+        self.bodies_at = p
         n, p = _u30(b, p)
         self.bodies = {}
         self.body_info = {}
+        self.body_order = []
+        self.body_pack = {}
         for _ in range(n):
             mi, p = _u30(b, p)
             max_stack, p = _u30(b, p)
             local_count, p = _u30(b, p)
-            _, p = _u30(b, p)                # init_scope_depth
-            _, p = _u30(b, p)                # max_scope_depth
+            init_scope, p = _u30(b, p)
+            max_scope, p = _u30(b, p)
             clen, p = _u30(b, p)
             code = b[p:p + clen]
             p += clen
             ec, p = _u30(b, p)
-            for _ in range(ec):              # exception_info
-                for _ in range(5):           # from,to,target,exc_type,var_name
-                    _, p = _u30(b, p)
+            exc = []
+            for _ in range(ec):
+                fr, p = _u30(b, p)
+                to, p = _u30(b, p)
+                tg, p = _u30(b, p)
+                et, p = _u30(b, p)
+                vn, p = _u30(b, p)
+                exc.append((fr, to, tg, et, vn))
+            tr0 = p
             _, p = self._read_traits(b, p)
             self.bodies[mi] = code
+            self.body_order.append(mi)
             self.body_info[mi] = {"max_stack": max_stack,
                                   "local_count": local_count}
+            self.body_pack[mi] = {
+                "max_stack": max_stack,
+                "local_count": local_count,
+                "init_scope": init_scope,
+                "max_scope": max_scope,
+                "exc": exc,
+                "traits": b[tr0:p],
+            }
         return p
 
     # ---------------------------------------------------------- 名字解析

@@ -54,10 +54,10 @@ _HJDZ = os.path.normpath(os.path.join(app_dir(), "..", "hjdz-automation"))
 
 def run(qq, config: dict) -> int:
     plat = qq.platform
-    if not qq.is_valid() and not relogin_with_push(qq, config, platform=plat):
+    if not qq.is_valid() and not relogin_with_push(qq, config):
         return 1
     if not qq.is_valid() and not relogin_with_push(
-            qq, config, force_qr=True, platform=plat):
+            qq, config, force_qr=True):
         log.error("扫码之后仍进不了%s", plat)
         return 1
     ctx = get_game_context(qq)
@@ -269,9 +269,9 @@ def _swf_candidates(qq, ctx, canvas):
 
 
 def _prefetch_swf(qq, ctx, canvas, pkt_dir) -> str:
-    as_path, ffdec = _hook_as(), _find_ffdec()
-    if not as_path or not ffdec:
-        log.error("打钩子需要 tools/hook/Transport.as 和 ffdec.jar"
+    hook_dir, ffdec = _hook_dir(), _find_ffdec()
+    if not hook_dir or not ffdec:
+        log.error("打钩子需要 tools/hook/sidecap/pkt/PktHook.as 和 ffdec.jar"
                   "（环境变量 FFDEC_JAR，或 D:\\tools\\ffdec\\ffdec.jar）")
         return ""
     for name, url in _swf_candidates(qq, ctx, canvas):
@@ -289,8 +289,8 @@ def _hook_swf(pkt_dir, name, url) -> bool:
     dest = os.path.join(pkt_dir, name)
     if os.path.isfile(dest) and os.path.getsize(dest) > 1_000_000:
         return True
-    as_path, ffdec = _hook_as(), _find_ffdec()
-    if not as_path or not ffdec:
+    hook_dir, ffdec = _hook_dir(), _find_ffdec()
+    if not hook_dir or not ffdec:
         return False
     src = os.path.join(pkt_dir, "orig_" + name)
     log.info("下载原版 %s", url)
@@ -308,28 +308,21 @@ def _hook_swf(pkt_dir, name, url) -> bool:
         return False
     tmp = dest + ".tmp.swf"
     java = _find_java()
-    cmd = [java, "-jar", ffdec, "-replace", src, tmp,
-           "com.sincetimes.redwar.game.comnunicate.Transport", as_path]
     log.info("打钩子 %s", name)
-    try:
-        p = subprocess.run(cmd, capture_output=True, timeout=180)
-    except Exception as exc:
-        log.error("ffdec 失败：%s", exc)
-        return False
-    if p.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) < 1_000_000:
-        err = (p.stderr or p.stdout or b"").decode("utf-8", "replace")[:400]
-        log.error("打钩子失败：%s", err)
+    from .swf_hook import inject
+    err = inject(src, tmp, java, ffdec, hook_dir)
+    if err or not os.path.isfile(tmp) or os.path.getsize(tmp) < 1_000_000:
+        log.error("打钩子失败：%s", err or "没有写出文件")
         return False
     os.replace(tmp, dest)
     log.info("已写入 %s（%d 字节）", dest, os.path.getsize(dest))
     return True
 
 
-def _hook_as() -> str:
-    for p in (os.path.join(bundled_dir(), "tools", "hook", "Transport.as"),
-              os.path.join(_HJDZ, "swf_dump", "hook", "Transport.as")):
-        if os.path.isfile(p):
-            return p
+def _hook_dir() -> str:
+    p = os.path.join(bundled_dir(), "tools", "hook", "sidecap")
+    if os.path.isfile(os.path.join(p, "pkt", "PktHook.as")):
+        return p
     return ""
 
 

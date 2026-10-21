@@ -128,6 +128,15 @@ IMAGE_MAGICS = [
 # 这两个名单之外的 body 全部过 RC4，且连续消耗同一条密钥流。
 EXEMPT_OPCODES = crypto.EXEMPT      # 单一来源，见 tankstorm/crypto.py
 
+
+def _canon_in(op: str, body: bytes):
+    """线上 opcode 和字段号换回 schema.json 用的那套编号。换不了就原样返回。"""
+    try:
+        from . import wiremap
+        return wiremap.ACTIVE.from_wire(op, body)
+    except ValueError:
+        return op, body
+
 ENC_DIR = "enc"          # logs/enc/ 存重点加密载荷原始字节
 ENTROPY_MIN_LEN = 128    # 熵只用来交叉验证白名单，不再作为判定依据
 
@@ -408,6 +417,11 @@ class Recorder:
         # 而争霸战挑战（RceArenaOpt.uidself）这类请求必须显式带上自己的 uid。
         # 放在 live_decrypt 判断**之前**：实时解密关掉时 uid 照样是有效的。
         self.uid = str((ctx or {}).get("uid") or "")
+        try:
+            from . import wiremap
+            wiremap.ACTIVE = wiremap.for_version("2026102102")
+        except Exception as exc:
+            log.warning("2026102102 协议对照没载入，收到的包仍按旧编号解读：%s", exc)
         if not self.live_decrypt:
             return False
         rc4, why = crypto.from_ctx(ctx or {})
@@ -637,6 +651,13 @@ class Recorder:
                 # 解开了：换成明文往下走，关键词/图片检测因此对加密消息也生效
                 rec["enc"]["decrypted"] = True
                 body = plain
+                if not outgoing:
+                    op, body = _canon_in(op, body)
+                    plain = body
+                    if SCH:
+                        nm = SCH.name_of(op)
+                        if nm != op:
+                            rec["msg"] = nm
                 if SCH:
                     data = SCH.decode(plain, op)
                     if data is not None:

@@ -1,11 +1,13 @@
 <script setup>
-import { ref } from "vue";
+import { onMounted, ref } from "vue";
 
 const props = defineProps({
   me: { type: Object, required: true },
   err: { type: String, default: "" },
   errAt: { type: String, default: "" },
   savePassword: { type: Function, required: true },
+  loadFailLibrary: { type: Function, required: true },
+  resetFailLibrary: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
 
@@ -13,6 +15,42 @@ const currentPwd = ref("");
 const nextPwd = ref("");
 const againPwd = ref("");
 const pwdNote = ref("");
+const failCount = ref(0);
+const failQq = ref("");
+const failNote = ref("");
+const failBusy = ref(false);
+const failReady = ref(false);
+
+async function loadFail() {
+  const data = await props.loadFailLibrary();
+  failCount.value = Number(data.count) || 0;
+  failQq.value = data.qq || "";
+  failReady.value = true;
+}
+
+async function resetFail() {
+  failNote.value = "";
+  props.showErr("", "fail");
+  if (!failQq.value) {
+    props.showErr("还没有攻打 QQ，没有战败库", "fail");
+    return;
+  }
+  const who = failCount.value ? `目前记了 ${failCount.value} 人。` : "";
+  if (!window.confirm(`清空这个攻打号的战败库？${who}以前打不过的人会重新可以打。`)) return;
+  failBusy.value = true;
+  try {
+    const data = await props.resetFailLibrary();
+    const n = Number(data.removed) || 0;
+    failNote.value = n ? `已清空 ${n} 人` : "战败库已经是空的";
+    await loadFail();
+  } finally {
+    failBusy.value = false;
+  }
+}
+
+onMounted(() => {
+  loadFail().catch((e) => props.showErr(e.message, "fail"));
+});
 
 async function submitPwd() {
   pwdNote.value = "";
@@ -54,5 +92,15 @@ async function submitPwd() {
       <span v-if="err && errAt === 'pwd'" class="err">{{ err }}</span>
     </form>
     <p class="muted">改完之后这次登录还在。别处登录的要重新登录。</p>
+    <h3>战败库</h3>
+    <p class="muted">打不过的人记在这个攻打号上。清城和绕路都会避开他们。实力涨上来之后清空，就可以再打一遍。同一个攻打 QQ 绑了几个登录账号，用的是同一份。</p>
+    <p v-if="!failReady" class="muted">正在看战败库。</p>
+    <p v-else-if="failQq">目前记了 {{ failCount }} 人。</p>
+    <p v-else class="muted">还没有攻打 QQ，没有战败库。</p>
+    <p>
+      <button type="button" :disabled="!failQq || failBusy" @click="resetFail().catch((e) => showErr(e.message, 'fail'))">重置战败库</button>
+      <span v-if="failNote" class="muted">{{ failNote }}</span>
+      <span v-if="err && errAt === 'fail'" class="err">{{ err }}</span>
+    </p>
   </section>
 </template>

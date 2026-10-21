@@ -6149,6 +6149,40 @@ def _fail_op_mine(op) -> bool:
     return len(op) >= 2 and op[1] == _fail_acct()
 
 
+def _fail_wipe_name(acct: str) -> str:
+    acct = str(acct or "").strip()
+    if not acct.isdigit():
+        return ""
+    return f"failwipe:{acct}"
+
+
+def _fail_cut(acct: str, conn=None) -> str:
+    """这个攻打 QQ 的战败库在这个时间点被清空。空字符串表示没清过。"""
+    name = _fail_wipe_name(acct)
+    if not name:
+        return ""
+    return _signal_value(name, conn=conn)
+
+
+def _op_ts(op) -> str:
+    if not op:
+        return ""
+    ts = op[-1]
+    if isinstance(ts, str) and len(ts) == 20 and ts.endswith("Z"):
+        return ts
+    return ""
+
+
+def _op_live(op, cut: str) -> bool:
+    """清空时间点之前的内存记录丢掉，避免断开时又写回库里。"""
+    if not cut:
+        return True
+    ts = _op_ts(op)
+    if not ts:
+        return False
+    return ts > cut
+
+
 def failed_uids() -> set:
     return set(failed_names())
 
@@ -6180,8 +6214,9 @@ def failed_names_in(city_id) -> list:
         for uid, name in rows:
             if uid:
                 names[uid] = name
+    cut = _fail_cut(acct)
     for op in _atk_q:
-        if not _fail_op_mine(op):
+        if not _fail_op_mine(op) or not _op_live(op, cut):
             continue
         if op[0] == "wipe":
             names.clear()
@@ -6222,8 +6257,9 @@ def failed_names() -> dict:
             conn.close()
     got = _run_timeout(_read, default={})
     names = dict(got) if isinstance(got, dict) else {}
+    cut = _fail_cut(acct)
     for op in _atk_q:
-        if not _fail_op_mine(op):
+        if not _fail_op_mine(op) or not _op_live(op, cut):
             continue
         if op[0] == "wipe":
             names.clear()
@@ -6260,8 +6296,9 @@ def in_atk_fail(uid) -> bool:
         return False
     acct = _fail_acct()
     pending = None
+    cut = _fail_cut(acct)
     for op in _atk_q:
-        if not _fail_op_mine(op):
+        if not _fail_op_mine(op) or not _op_live(op, cut):
             continue
         if op[0] == "wipe":
             pending = False
@@ -6296,17 +6333,64 @@ def record_atk_fail(uid, city_id=0, ret=None, reason="", name=""):
     uid = str(uid or "").strip()
     if uid:
         _atk_q.append(("record", _fail_acct(), uid, name or "", int(city_id or 0),
-                       ret, reason or ""))
+                       ret, reason or "", now_ts()))
 
 
 def clear_atk_fail(uid=None):
     acct = _fail_acct()
     if uid is None:
-        _atk_q.append(("wipe", acct))
+        _atk_q.append(("wipe", acct, now_ts()))
         return
     uid = str(uid or "").strip()
     if uid:
-        _atk_q.append(("clear", acct, uid))
+        _atk_q.append(("clear", acct, uid, now_ts()))
+
+
+def atk_fail_count(user_id: int) -> tuple:
+    """这个登录账号的攻打 QQ 上，现在算打不过的有几人。返回 (人数, 攻打 QQ)。"""
+    acct = attack_qq_of(int(user_id or 0))
+    if not acct:
+        return 0, ""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM atk_fail WHERE acct=? AND IFNULL(ret,0) NOT IN (21)",
+            (acct,)).fetchone()
+    finally:
+        conn.close()
+    return (int(row[0] or 0) if row else 0), acct
+
+
+def reset_atk_fail(user_id: int) -> tuple:
+    """清空这个登录账号攻打 QQ 的战败库。返回 (清掉的人数, 错误)。
+
+    网页和攻打进程不是同一个进程。库立刻删。攻打进程内存里还没落盘、
+    时间早于这一下的记录丢掉，避免断开时又写回来。这一下之后新打不过的人仍会记下。
+    同一个攻打 QQ 绑了几个登录账号，清的是同一份。
+    """
+    user_id = int(user_id or 0)
+    acct = attack_qq_of(user_id)
+    if not acct:
+        return 0, "还没有攻打 QQ，没有战败库"
+    stamp = now_ts()
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT COUNT(*) FROM atk_fail WHERE acct=? AND IFNULL(ret,0) NOT IN (21)",
+            (acct,)).fetchone()
+        removed = int(row[0] or 0) if row else 0
+        conn.execute("DELETE FROM atk_fail WHERE acct=?", (acct,))
+        conn.execute(
+            "INSERT INTO atk_signal(name, value, at) VALUES (?,?,?) "
+            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
+            (f"failwipe:{acct}", stamp, stamp))
+        conn.commit()
+    finally:
+        conn.close()
+    log.info("登录账号 %s 清空攻打 QQ %s 的战败库，%d 人",
+             username_of(user_id), acct, removed)
+    return removed, ""
 
 
 def flush_atk_fail():
@@ -6319,15 +6403,23 @@ def flush_atk_fail():
     def _write():
         conn = connect(timeout=DB_OP_TIMEOUT)
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            cuts = {}
             for op in batch:
+                acct = str(op[1] if len(op) > 1 else "")
+                if acct not in cuts:
+                    cuts[acct] = _fail_cut(acct, conn)
+                if not _op_live(op, cuts[acct]):
+                    continue
                 if op[0] == "wipe":
                     conn.execute("DELETE FROM atk_fail WHERE acct=?", (op[1],))
                 elif op[0] == "clear":
                     conn.execute(
                         "DELETE FROM atk_fail WHERE acct=? AND uid=?",
                         (op[1], op[2]))
-                else:
-                    _, acct, uid, name, city_id, ret, reason = op
+                elif op[0] == "record":
+                    acct, uid, name, city_id, ret, reason = (
+                        op[1], op[2], op[3], op[4], op[5], op[6])
                     conn.execute(
                         "INSERT INTO atk_fail(acct, uid, name, city_id, ret, reason, at) "
                         "VALUES (?,?,?,?,?,?,?) "

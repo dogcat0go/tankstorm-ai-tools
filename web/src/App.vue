@@ -921,9 +921,11 @@ async function loadFailLibrary() {
   return await api("/api/atk-fail");
 }
 
-async function resetFailLibrary() {
+async function resetFailLibrary(uid) {
   showErr("", "fail");
-  return await api("/api/atk-fail/reset", {});
+  const body = {};
+  if (uid) body.uid = String(uid);
+  return await api("/api/atk-fail/reset", body);
 }
 
 async function logout() {

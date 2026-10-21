@@ -262,8 +262,8 @@ def _handler(config: dict):
                 if not user:
                     _json(self, 401, {"error": "请先登录"})
                     return
-                count, qq = citydb.atk_fail_count(user["id"])
-                _json(self, 200, {"count": count, "qq": qq})
+                items, qq = citydb.list_atk_fails(user["id"])
+                _json(self, 200, {"count": len(items), "qq": qq, "items": items})
                 return
             if path == "/api/cities":
                 user = self._user()
@@ -746,10 +746,20 @@ def _handler(config: dict):
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "members": _member_views()})
                 elif path == "/api/atk-fail/reset":
-                    removed, why = citydb.reset_atk_fail(user["id"])
-                    if why:
-                        raise ValueError(why)
-                    _json(self, 200, {"ok": True, "removed": removed})
+                    uid = str(data.get("uid") or "").strip()
+                    if uid:
+                        had, name, why = citydb.reset_atk_fail_uid(user["id"], uid)
+                        if why:
+                            raise ValueError(why)
+                        _json(self, 200, {
+                            "ok": True, "removed": 1 if had else 0,
+                            "uid": uid, "name": name,
+                        })
+                    else:
+                        removed, why = citydb.reset_atk_fail(user["id"])
+                        if why:
+                            raise ValueError(why)
+                        _json(self, 200, {"ok": True, "removed": removed})
                 elif path == "/api/password":
                     why = citydb.change_password(
                         user["id"], data.get("current"), data.get("password"),

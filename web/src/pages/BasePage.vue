@@ -1,4 +1,6 @@
 <script setup>
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+
 const count = defineModel("count", { type: String, required: true });
 const army = defineModel("army", { type: String, required: true });
 const factoryCount = defineModel("factoryCount", { type: String, required: true });
@@ -13,7 +15,7 @@ const autoCount = defineModel("autoCount", { type: String, required: true });
 const lab50Count = defineModel("lab50Count", { type: String, required: true });
 const auto50Count = defineModel("auto50Count", { type: String, required: true });
 
-defineProps({
+const props = defineProps({
   dailyQq: { type: String, default: "" },
   jobs: { type: Array, required: true },
   blast: { default: null },
@@ -36,6 +38,58 @@ defineProps({
   showErr: { type: Function, required: true },
 });
 
+const page = ref(null);
+const recentScroller = ref(null);
+let recentObserver;
+let recentSeen;
+
+function fitRecent() {
+  const root = page.value;
+  if (!root) return;
+  const dock = root.querySelector(".recent-dock");
+  const scroller = recentScroller.value;
+  const mobile = window.matchMedia("(max-width: 720px)").matches && getComputedStyle(root).display !== "none";
+  if (!mobile || !dock) {
+    if (scroller) scroller.style.maxHeight = "";
+    root.style.paddingBottom = "";
+    return;
+  }
+  if (scroller) {
+    const rows = [...scroller.querySelectorAll("tbody tr")].slice(0, 2);
+    let h = rows.reduce((sum, row) => sum + row.offsetHeight, 0);
+    const head = scroller.querySelector("thead");
+    if (head) h += head.offsetHeight;
+    const next = h > 0 ? `${Math.ceil(h)}px` : "";
+    if (scroller.style.maxHeight !== next) scroller.style.maxHeight = next;
+  }
+  const pad = `${dock.offsetHeight}px`;
+  if (root.style.paddingBottom !== pad) root.style.paddingBottom = pad;
+}
+
+function bindRecent() {
+  recentObserver?.disconnect();
+  const table = recentScroller.value?.querySelector("table");
+  if (table && recentObserver) recentObserver.observe(table);
+  fitRecent();
+}
+
+onMounted(() => {
+  recentObserver = new ResizeObserver(() => fitRecent());
+  recentSeen = new IntersectionObserver(() => fitRecent());
+  if (page.value) recentSeen.observe(page.value);
+  bindRecent();
+  window.addEventListener("resize", fitRecent);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", fitRecent);
+  recentObserver?.disconnect();
+  recentSeen?.disconnect();
+});
+
+watch(recentScroller, () => nextTick(bindRecent));
+watch(() => props.jobs, () => nextTick(fitRecent));
+
 function resText(n) {
   if (n === null || n === undefined || n === "") return "还没读到";
   const num = Number(n);
@@ -45,7 +99,7 @@ function resText(n) {
 </script>
 
 <template>
-  <section>
+  <section ref="page" class="base-page">
     <h2>基地战</h2>
     <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
     <p v-else class="muted">还没绑定攻打 QQ。按页面上方的步骤点登录并扫码。一个登录账号只绑一个攻打号，这里的制造用那个号做。</p>
@@ -125,45 +179,54 @@ function resText(n) {
         <p class="muted">实验室 50 连一次用 50 张实验卡，自动化探索 50 连一次用 50 张自动化探索卡，次数默认 1。点下去会先确认。背包不够这次要的张数时，提示数量不足，不发，也不扣勋章。</p>
       </div>
     </details>
-    <h2>兵营</h2>
-    <p>当前爆破兵 {{ blast === null || blast === undefined ? "还没读到" : blast }}</p>
-    <form class="lock-row" @submit.prevent="runBlast(count).catch((e) => showErr(e.message))">
-      <span class="switch">爆破兵制造</span>
-      <label>数量<input v-model="count" class="mins" inputmode="numeric" required /></label>
-      <button type="submit" :disabled="!dailyQq">开始制造</button>
-    </form>
-    <p class="muted">按这个数量循环。每次先生产一个，剩余时间算出 0 勋章才快速制造，credit 固定写 0。要花勋章就停在这一只，不发。大厅蓝钻大约要等剩余降到 600 秒，一只一分多钟。消耗金属和石油。数量 1 到 399。兵营里已经在造的那一只算进数量。</p>
-    <h2>战车工厂</h2>
-    <form class="lock-row" @submit.prevent="runFactory('12', aaCount).catch((e) => showErr(e.message))">
-      <span class="switch">防空车制造</span>
-      <label>数量<input v-model="aaCount" class="mins" inputmode="numeric" required /></label>
-      <button type="submit" :disabled="!dailyQq">开始制造</button>
-    </form>
-    <form class="lock-row" @submit.prevent="runFactory(army, factoryCount).catch((e) => showErr(e.message))">
-      <span class="switch">其他战车</span>
-      <label>兵种<input v-model="army" class="mins" inputmode="numeric" required /></label>
-      <label>数量<input v-model="factoryCount" class="mins" inputmode="numeric" required /></label>
-      <button type="submit" :disabled="!dailyQq">开始制造</button>
-    </form>
-    <p class="muted">防空车是兵种 12，只在建筑类型 30 的战车工厂造。和兵营同一套：先生产，剩余时间算出 0 勋章才加速，credit 固定写 0。要花勋章就停在这一辆，不发。其他战车填兵种号，例如猛犸 45、T99 90。数量 1 到 399。</p>
+    <details class="campaign-box">
+      <summary>兵种制造</summary>
+      <div class="item-part">
+        <h3>兵营</h3>
+        <p>当前爆破兵 {{ blast === null || blast === undefined ? "还没读到" : blast }}</p>
+        <form class="lock-row" @submit.prevent="runBlast(count).catch((e) => showErr(e.message))">
+          <span class="switch">爆破兵制造</span>
+          <label>数量<input v-model="count" class="mins" inputmode="numeric" required /></label>
+          <button type="submit" :disabled="!dailyQq">开始制造</button>
+        </form>
+        <p class="muted">按这个数量循环。每次先生产一个，剩余时间算出 0 勋章才快速制造，credit 固定写 0。要花勋章就停在这一只，不发。大厅蓝钻大约要等剩余降到 600 秒，一只一分多钟。消耗金属和石油。数量 1 到 399。兵营里已经在造的那一只算进数量。</p>
+      </div>
+      <div class="item-part">
+        <h3>战车工厂</h3>
+        <form class="lock-row" @submit.prevent="runFactory('12', aaCount).catch((e) => showErr(e.message))">
+          <span class="switch">防空车制造</span>
+          <label>数量<input v-model="aaCount" class="mins" inputmode="numeric" required /></label>
+          <button type="submit" :disabled="!dailyQq">开始制造</button>
+        </form>
+        <form class="lock-row" @submit.prevent="runFactory(army, factoryCount).catch((e) => showErr(e.message))">
+          <span class="switch">其他战车</span>
+          <label>兵种<input v-model="army" class="mins" inputmode="numeric" required /></label>
+          <label>数量<input v-model="factoryCount" class="mins" inputmode="numeric" required /></label>
+          <button type="submit" :disabled="!dailyQq">开始制造</button>
+        </form>
+        <p class="muted">防空车是兵种 12，只在建筑类型 30 的战车工厂造。和兵营同一套：先生产，剩余时间算出 0 勋章才加速，credit 固定写 0。要花勋章就停在这一辆，不发。其他战车填兵种号，例如猛犸 45、T99 90。数量 1 到 399。</p>
+      </div>
+    </details>
     <p v-if="note" class="muted">{{ note }}</p>
     <p v-if="err && errAt === 'base'" class="err">{{ err }}</p>
-    <h2>最近执行</h2>
-    <p v-if="!jobs.length" class="muted">还没有执行记录。</p>
-    <div v-else class="wide">
-      <table class="daily-jobs">
-        <thead>
-          <tr><th>项目</th><th>状态</th><th>说明</th><th>北京时间</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="it in jobs" :key="it.id">
-            <td>{{ it.label }}</td>
-            <td>{{ it.status }}<button v-if="it.status === '排队' || it.status === '正在做'" type="button" class="ghost" @click="cancelJob(it).catch((e) => showErr(e.message))">关停</button></td>
-            <td class="reason">{{ it.detail || "—" }}</td>
-            <td>{{ it.created_at || "—" }}</td>
-          </tr>
-        </tbody>
-      </table>
+    <div class="recent-dock">
+      <h2>最近执行</h2>
+      <p v-if="!jobs.length" class="muted">还没有执行记录。</p>
+      <div v-else ref="recentScroller" class="wide recent-scroll">
+        <table class="daily-jobs">
+          <thead>
+            <tr><th>项目</th><th>状态</th><th>说明</th><th>北京时间</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="it in jobs" :key="it.id">
+              <td>{{ it.label }}</td>
+              <td>{{ it.status }}<button v-if="it.status === '排队' || it.status === '正在做'" type="button" class="ghost" @click="cancelJob(it).catch((e) => showErr(e.message))">关停</button></td>
+              <td class="reason">{{ it.detail || "—" }}</td>
+              <td>{{ it.created_at || "—" }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </section>
 </template>

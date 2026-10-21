@@ -52,6 +52,7 @@ COST_ATTACK = 5      # type:14 普通攻击
 MORALE_CAP = 1030    # 士气上限。2026-09-24 满士气、2026-10-09 补满都停在这里
 MORALE_PER_AP = 25   # type:9，1 点行动力补 25 士气
 SUPPLY_AP = 70       # 行动力大于这个数，才用行动力把士气补满
+AWAY_CARD_MORALE = 100  # 不在本国首都及相邻城时，低于这个数开一张恢复卡
 WAIT_ATK = 3.0       # 扫荡/攻击回包超时，超时打下一次
 WAIT_BTL = 2.0       # 战报超时，超时打下一次
 
@@ -240,7 +241,7 @@ def _find_bag_item(rec, item_id):
     return None, 0
 
 
-def _use_recovery_card(sock, rec, item_id):
+def _use_recovery_card(sock, rec, item_id, lock_meter=True):
     """用一张国战恢复卡。返回 (是否发出, 说明)。
 
     ⚠️ 这是全项目**唯一**主动发送 count 非零的地方。count 命中危险字段正则，
@@ -248,10 +249,11 @@ def _use_recovery_card(sock, rec, item_id):
     道具、不花勋章，而且必须在 config 里显式打开开关才会走到。
     仍然守着铁律：先从背包读到数量 > 0 才发，读不到就不发。
     自动锁敌这一单里，最近 1 小时用满上限就不再开。
+    lock_meter 为假时，这张卡不算进锁敌的每小时上限，也不受那个上限拦住。
     """
     from . import citydb
 
-    if citydb.lock_cards_active():
+    if lock_meter and citydb.lock_cards_active():
         why = citydb.lock_card_block()
         if why:
             return False, why
@@ -266,7 +268,7 @@ def _use_recovery_card(sock, rec, item_id):
                            5: ("int32", item_id), 7: ("int32", 0)},
                           omit_zero=False)
     sender.send_frame(sock, BAG_USE_OPCODE, body, rec.rc4_c2s)
-    if citydb.lock_cards_active():
+    if lock_meter and citydb.lock_cards_active():
         citydb.note_lock_card()
     return True, f"已用掉 1 张国战恢复卡（用前背包有 {count} 张）"
 
@@ -2415,6 +2417,60 @@ def _halt_for_home(sock, rec, config, loc, my, uid, allow_leave=False) -> str:
             log.info("[移动] %s", home)
             return home
     return _ready_to_leave(sock, rec, config, loc, my)
+
+
+def guard_low_morale(sock, rec, config) -> None:
+    """国战订单开始时看一次当前士气和所在城市，决定要不要开一张恢复卡。
+
+    人不在本国首都，也不在和这座首都相邻的城里，士气低于 100，就开一张。
+    首都和相邻城里用行动力补士气是另一条策略，这里不补，也不开卡。
+    读不到城市或士气就跳过。背包没有卡也不拦这一单。
+    """
+    from . import citydb
+
+    conf = (config or {}).get("国战") or {}
+    my = int(conf.get("自己国家ID") or 0) or _daily.read_my_country(rec)
+    if not my:
+        log.info("[国战] 读不到自己的国家，这次不开恢复卡")
+        return
+    _power, loc, _times, panel = _panel(sock, rec, my)
+    if not isinstance(panel, dict):
+        log.info("[国战] 没读到面板，这次不开恢复卡")
+        return
+    try:
+        spot = int(loc or 0)
+    except (TypeError, ValueError):
+        spot = 0
+    if not spot:
+        log.info("[国战] 没读到所在城市，这次不开恢复卡")
+        return
+    morale = _read_path(panel, F_MORALE)
+    if isinstance(morale, bool) or not isinstance(morale, int):
+        log.info("[国战] 人在 %s，没读到士气，这次不开恢复卡", spot)
+        return
+    cap = int(my) * 1000 + 101
+    if spot == cap:
+        home = True
+    else:
+        try:
+            home = cap > 101 and spot in citydb.neighbors(cap)
+        except OSError:
+            raise
+        except Exception:
+            log.info("[国战] 看不清首都旁边的城，这次不开恢复卡", exc_info=True)
+            return
+    if home or morale >= AWAY_CARD_MORALE:
+        where = "本国首都或相邻城" if home else "城外"
+        log.info("[国战] 人在 %s（%s），士气 %s，不开恢复卡", spot, where, morale)
+        return
+    item = int(conf.get("国战恢复卡物品ID") or CARD_ITEM_ID)
+    sent, msg = _use_recovery_card(sock, rec, item, lock_meter=False)
+    log.info("[国战] 人在 %s，不在本国首都及相邻城，士气 %s < %d，%s",
+             spot, morale, AWAY_CARD_MORALE, msg)
+    if not sent:
+        return
+    _nap(2.0)
+    _panel(sock, rec, my)
 
 
 def _supply_city(my, loc) -> bool:

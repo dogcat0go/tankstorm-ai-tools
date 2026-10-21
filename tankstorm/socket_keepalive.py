@@ -1433,6 +1433,7 @@ def _fight_modo(rec, sock, config, beater, job) -> None:
     citydb.note_attack_beats(job["id"], start_beats)
     try:
         try:
+            country_war.guard_low_morale(sock, rec, config)
             out = country_war.farm_modo_order(
                 rec, sock, config, int(job.get("cards") or 0),
                 beat=beater, tally=tally)
@@ -1643,6 +1644,7 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
                     rec, sock, config, beater, job, tally.get("n") or 0):
                 skipped = True
             else:
+                country_war.guard_low_morale(sock, rec, fight_config)
                 if uid:
                     info = citydb.find_player(uid) or {}
                     citydb.note_lock_morale(info.get("morale"))

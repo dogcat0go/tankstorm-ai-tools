@@ -75,13 +75,27 @@ def _varint(b, i):
 
 _ZIGZAG = {"sint32", "sint64"}
 
+# 嵌套消息没有自己的 opcode。CountryBackCaptial 挂在国战回包的 ememyBack 上，
+# 自己被打回首都时带进攻方名字。
+_NESTED = {
+    "ememyBack": {
+        "1": ("atkID", "string"),
+        "2": ("atkName", "string"),
+        "3": ("atkCountry", "int32"),
+        "4": ("defID", "string"),
+        "5": ("defName", "string"),
+        "6": ("defCountry", "int32"),
+    },
+}
 
-def decode(body: bytes, op: str = None, depth: int = 0):
+
+def decode(body: bytes, op: str = None, depth: int = 0, fields=None):
     """解析 protobuf，按 schema 给字段命名。返回 dict，解析失败返回 None。
 
     同一字段出现多次（repeated）会收成 list。
     """
-    fields = (SCHEMA.get(op or "", {}) or {}).get("fields", {})
+    if fields is None:
+        fields = (SCHEMA.get(op or "", {}) or {}).get("fields", {})
     out, i, n = {}, 0, len(body)
     while i < n:
         key, i = _varint(body, i)
@@ -118,7 +132,8 @@ def decode(body: bytes, op: str = None, depth: int = 0):
             else:
                 v = None
                 if ftype in ("message", "group", None) and depth < 6:
-                    v = decode(raw, None, depth + 1)
+                    child = _NESTED.get(fname) if ftype == "message" else None
+                    v = decode(raw, None, depth + 1, child)
                 if v is None:              # 不是嵌套消息就试当文本，再不行才给 hex
                     try:
                         t = raw.decode("utf-8")

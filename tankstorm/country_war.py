@@ -1376,8 +1376,14 @@ def attack_player(rec, sock, config: dict, uid, times: int = 1,
 
 
 def _lost_city_reason(loc, city, start=None) -> str:
-    """人和目标城不再挨着。分不清是对方离开，还是自己被打回去。"""
+    """人和目标城不再挨着。
+
+    已经收到自己被击败的协议时，原因就是被谁打回去的。
+    否则分不清是对方离开，还是自己被打回去。
+    """
     from . import citydb
+    if citydb.self_defeater():
+        return _defeated_text(loc)
     here = citydb.city_name(loc) or loc
     there = citydb.city_name(city) or city
     tail = "可能是对方离开了这座城，也可能是自己被打回去了。"
@@ -2390,7 +2396,7 @@ def _is_capital(city, country=0) -> bool:
 
 
 def _defeated_text(loc) -> str:
-    """自己被打败。人已经在首都时写明首都。"""
+    """自己被打败。人已经在首都时写明首都。知道是谁时补上进攻方。"""
     from . import citydb
 
     try:
@@ -2399,11 +2405,16 @@ def _defeated_text(loc) -> str:
         loc = 0
     if _is_capital(loc):
         name = citydb.city_name(loc) or ""
-        return f"被别人打败，已回到首都 {loc} {name}".strip()
-    if loc > 0:
+        text = f"被别人打败，已回到首都 {loc} {name}".strip()
+    elif loc > 0:
         name = citydb.city_name(loc) or ""
-        return f"被别人打败，人到了 {loc} {name}".strip()
-    return "被别人打败，已回到首都"
+        text = f"被别人打败，人到了 {loc} {name}".strip()
+    else:
+        text = "被别人打败，已回到首都"
+    clause = citydb.defeat_clause()
+    if clause and clause not in text:
+        text = f"{text}，{clause}"
+    return text
 
 
 def _clear_sent_home(sock, rec, loc, my) -> str:

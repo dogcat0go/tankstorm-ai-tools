@@ -212,6 +212,27 @@ def _readable_text(body: bytes) -> str:
     return " ".join("".join(out).split())
 
 
+def _note_self_defeat(data) -> None:
+    """国战自己被打回首都。ememyBack.atkName 是进攻方，写进订单说明。"""
+    if not isinstance(data, dict):
+        return
+    back = data.get("ememyBack")
+    if isinstance(back, list):
+        back = next((b for b in reversed(back) if isinstance(b, dict)), None)
+    if not isinstance(back, dict):
+        return
+    name = back.get("atkName")
+    if not isinstance(name, str) or not name.strip():
+        name = back.get("field2")
+    if not isinstance(name, str) or not name.strip():
+        return
+    try:
+        from . import citydb
+        citydb.note_self_defeated(name.strip())
+    except Exception:
+        log.debug("记下国战击败者失败", exc_info=True)
+
+
 class FrameReader:
     """把 TCP 字节流按 [2字节长度] 切成协议帧。TCP 会粘包/拆包，必须缓冲重组。"""
 
@@ -679,6 +700,7 @@ class Recorder:
                             cap = 256 if nm in ("RseCountryUserLst", "RseGet") else 8
                             if len(hist) > cap:
                                 del hist[:-cap]
+                            _note_self_defeat(data)
             elif not outgoing:
                 op, body = _canon_in(wire_op, body)
                 if SCH:

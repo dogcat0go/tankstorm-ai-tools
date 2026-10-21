@@ -3201,14 +3201,11 @@ def _await_role(sock, rec, spec, ctx, config=None, timeout=12) -> bool:
     if filled or daily.read_my_country(rec):
         return True
     try:
-        from . import wiremap
         from .proto_encode import encode_message
         flag = encode_message({2: ("int32", 100), 4: ("int32", 9)},
                               omit_zero=False)
-        wop, body = wiremap.ACTIVE.to_wire("0481", flag)
-        sender.send_frame(sock, wop, body, getattr(rec, "rc4_c2s", None))
-        wop, body = wiremap.ACTIVE.to_wire("0462", b"")
-        sender.send_frame(sock, wop, body, getattr(rec, "rc4_c2s", None))
+        sender.send_frame(sock, "0481", flag, getattr(rec, "rc4_c2s", None))
+        sender.send_frame(sock, "0462", b"", getattr(rec, "rc4_c2s", None))
         log.info("已请求国家面板")
     except Exception as exc:
         log.warning("请求国家面板失败：%s", exc)

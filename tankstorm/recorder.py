@@ -134,7 +134,7 @@ def _canon_in(op: str, body: bytes):
     try:
         from . import wiremap
         return wiremap.ACTIVE.from_wire(op, body)
-    except ValueError:
+    except (ValueError, KeyError):
         return op, body
 
 ENC_DIR = "enc"          # logs/enc/ 存重点加密载荷原始字节
@@ -587,19 +587,20 @@ class Recorder:
         counts = self.counts_out if outgoing else self.counts
 
         for op, seq, body, off in reader.feed(data):
-            counts[op] = counts.get(op, 0) + 1
+            wire_op = op
+            counts[wire_op] = counts.get(wire_op, 0) + 1
 
             # 登录行 a,{uid},{secret} 和 TGW 头是 Transport 之外的裸写，
             # 不经过 Send()，绝不能算进密钥流。上行真帧的 opcode 都是 04xx。
-            real_frame = op.startswith("04") if outgoing else True
+            real_frame = wire_op.startswith("04") if outgoing else True
             # 加密判定：按 SWF 里的 opcode 白名单，不再猜。空 body 不消耗密钥流。
             encrypted = (real_frame and bool(body)
-                         and op not in EXEMPT_OPCODES[direction])
+                         and wire_op not in EXEMPT_OPCODES[direction])
             # 必须无条件解，且每条只解一次 —— 漏一条密钥流就永久错位
-            plain = self._decrypt(direction, op, body) if encrypted else None
+            plain = self._decrypt(direction, wire_op, body) if encrypted else None
             ent = _entropy(body) if len(body) >= ENTROPY_MIN_LEN else None
             if encrypted:
-                self.enc_ops[op] = self.enc_ops.get(op, 0) + 1
+                self.enc_ops[wire_op] = self.enc_ops.get(wire_op, 0) + 1
             elif ent is not None and ent >= 7.5 and not _pb_ok(body):
                 # 豁免名单说该明文，实测却是高熵密文 —— 游戏改版了，名单要更新
                 self._warn_once(f"exempt-mismatch-{op}",
@@ -608,7 +609,7 @@ class Recorder:
 
             rec = {
                 "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "op": op, "seq": seq, "len": len(body),
+                "op": wire_op, "seq": seq, "len": len(body),
             }
             if SCH:
                 nm = SCH.name_of(op)
@@ -618,7 +619,7 @@ class Recorder:
                 rec["dir"] = "c2s"
                 # 登录行 a,{uid},{secret} 是「2字节长度 + 纯文本」，没有 opcode/seq，
                 # 会被当成 op=612c('a,') 解析。长度前缀是对的所以不会失步，只是名字没意义。
-                if not op.startswith("04"):
+                if not wire_op.startswith("04"):
                     rec["note"] = "非标准帧（多半是登录行 a,uid,secret）"
 
             data = None
@@ -637,22 +638,22 @@ class Recorder:
                     if self.persist:
                         rec["sha256"] = hashlib.sha256(body).hexdigest()
                         rec["hex"] = body.hex()
-                        if op in EVENT_SIGNATURES or (
-                                not outgoing and op not in KNOWN_OPCODES
-                                and op not in self.learned):
-                            blob = self._dump_enc(op, body, direction, idx, off)
+                        if wire_op in EVENT_SIGNATURES or (
+                                not outgoing and wire_op not in KNOWN_OPCODES
+                                and wire_op not in self.learned):
+                            blob = self._dump_enc(wire_op, body, direction, idx, off)
                             if blob:
                                 rec["blob"] = blob
                         self._write(rec)
                     if not outgoing:
-                        self._maybe_flag(op, seq, body, "", rec)
+                        self._maybe_flag(wire_op, seq, body, "", rec)
                     continue
 
                 # 解开了：换成明文往下走，关键词/图片检测因此对加密消息也生效
                 rec["enc"]["decrypted"] = True
                 body = plain
                 if not outgoing:
-                    op, body = _canon_in(op, body)
+                    op, body = _canon_in(wire_op, body)
                     plain = body
                     if SCH:
                         nm = SCH.name_of(op)
@@ -711,8 +712,8 @@ class Recorder:
 
             # 高频大包只记摘要；其余（尤其未知/命中关键词/带图片的）记完整 body
             important = unknown or hit_kw or image or signature
-            if op in BULK_OPCODES and not important:
-                if counts[op] % 50 != 1:      # 每 50 条留 1 条摘要即可
+            if wire_op in BULK_OPCODES and not important:
+                if counts[wire_op] % 50 != 1:      # 每 50 条留 1 条摘要即可
                     continue
                 if self.persist:
                     rec["note"] = "bulk-sampled"

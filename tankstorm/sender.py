@@ -73,9 +73,13 @@ def encrypt_body(opcode_hex: str, body: bytes, rc4_c2s) -> bytes:
 def send_frame(sock, opcode_hex: str, body: bytes, rc4_c2s=None) -> None:
     """加密 body → 组帧 → sendall。
 
-    对豁免 opcode（043e/044a/0451/04ee）不加密；其余必须提供 rc4_c2s。
+    opcode 用本项目的旧编号。这里按 2026102102 的对照表换成线上编号，
+    再决定豁免与否。豁免的是线上编号 043e/044a/0451/04ee。
     非豁免包从加密到 sendall 占同一把锁，拒绝强攻的线程和打城线程不会把密钥流写乱。
     """
+    from . import wiremap
+    if not wiremap.ACTIVE.identity:
+        opcode_hex, body = wiremap.ACTIVE.to_wire(opcode_hex, body)
     if opcode_hex in crypto.EXEMPT["c2s"]:
         frame = build_frame(opcode_hex, body)
         sock.sendall(frame)

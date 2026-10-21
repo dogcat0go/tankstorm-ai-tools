@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 
 const props = defineProps({
   me: { type: Object, required: true },
@@ -19,9 +19,36 @@ const failCount = ref(0);
 const failQq = ref("");
 const failItems = ref([]);
 const failUid = ref("");
+const failName = ref("");
+const failPage = ref(1);
 const failNote = ref("");
 const failBusy = ref(false);
 const failReady = ref(false);
+const FAIL_PAGE = 20;
+
+const failQuery = computed(() => failName.value.trim().toLowerCase());
+const failShown = computed(() => {
+  const q = failQuery.value;
+  if (!q) return failItems.value;
+  return failItems.value.filter((it) => String(it.name || "").toLowerCase().includes(q));
+});
+const failView = computed(() => {
+  const rows = failShown.value;
+  const pages = Math.max(1, Math.ceil(rows.length / FAIL_PAGE));
+  const page = Math.min(Math.max(1, failPage.value), pages);
+  const start = (page - 1) * FAIL_PAGE;
+  return {
+    page,
+    pages,
+    rows: rows.slice(start, start + FAIL_PAGE),
+    from: rows.length ? start + 1 : 0,
+    to: Math.min(start + FAIL_PAGE, rows.length),
+  };
+});
+
+watch(failQuery, () => {
+  failPage.value = 1;
+});
 
 async function loadFail() {
   const data = await props.loadFailLibrary();
@@ -137,13 +164,28 @@ async function submitPwd() {
       </label>
       <button type="submit" :disabled="!failUid.trim() || failBusy">重置这个人</button>
     </form>
-    <div v-if="failItems.length" class="wide">
+    <form v-if="failItems.length" class="filters" @submit.prevent>
+      <label>名称
+        <input v-model="failName" placeholder="筛选名称" :disabled="failBusy" />
+      </label>
+      <button v-if="failQuery" type="button" class="ghost" @click="failName = ''">清除</button>
+    </form>
+    <p v-if="failItems.length && !failShown.length" class="muted">没有这个名称。</p>
+    <p v-if="failShown.length && (failView.pages > 1 || failQuery)" class="muted pager">
+      显示 {{ failView.from }}–{{ failView.to }} / {{ failShown.length }} 人<template v-if="failShown.length !== failItems.length">，共 {{ failCount }} 人</template>
+      <template v-if="failView.pages > 1">
+        <button type="button" class="ghost" :disabled="failView.page <= 1 || failBusy" @click="failPage = failView.page - 1">上一页</button>
+        第 {{ failView.page }} / {{ failView.pages }} 页
+        <button type="button" class="ghost" :disabled="failView.page >= failView.pages || failBusy" @click="failPage = failView.page + 1">下一页</button>
+      </template>
+    </p>
+    <div v-if="failView.rows.length" class="wide">
       <table class="fail-list">
         <thead>
           <tr><th>名称</th><th>UID</th><th>记下时间</th><th></th></tr>
         </thead>
         <tbody>
-          <tr v-for="it in failItems" :key="it.uid">
+          <tr v-for="it in failView.rows" :key="it.uid">
             <td>{{ it.name || "—" }}</td>
             <td>{{ it.uid }}</td>
             <td>{{ it.at || "—" }}</td>
@@ -152,6 +194,11 @@ async function submitPwd() {
         </tbody>
       </table>
     </div>
+    <p v-if="failView.pages > 1" class="muted pager">
+      <button type="button" class="ghost" :disabled="failView.page <= 1 || failBusy" @click="failPage = failView.page - 1">上一页</button>
+      第 {{ failView.page }} / {{ failView.pages }} 页
+      <button type="button" class="ghost" :disabled="failView.page >= failView.pages || failBusy" @click="failPage = failView.page + 1">下一页</button>
+    </p>
     <p>
       <button type="button" class="ghost" :disabled="!failQq || failBusy" @click="resetFail().catch((e) => showErr(e.message, 'fail'))">清空全部</button>
       <span v-if="failNote" class="muted">{{ failNote }}</span>

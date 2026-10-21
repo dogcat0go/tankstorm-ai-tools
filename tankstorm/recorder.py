@@ -659,6 +659,8 @@ class Recorder:
                         nm = SCH.name_of(op)
                         if nm != op:
                             rec["msg"] = nm
+                        else:
+                            rec.pop("msg", None)
                 if SCH:
                     data = SCH.decode(plain, op)
                     if data is not None:
@@ -677,6 +679,14 @@ class Recorder:
                             cap = 256 if nm in ("RseCountryUserLst", "RseGet") else 8
                             if len(hist) > cap:
                                 del hist[:-cap]
+            elif not outgoing:
+                op, body = _canon_in(wire_op, body)
+                if SCH:
+                    nm = SCH.name_of(op)
+                    if nm != op:
+                        rec["msg"] = nm
+                    else:
+                        rec.pop("msg", None)
 
             # ---- 以下为明文消息的原有逻辑，行为保持不变 ----
             text = _readable_text(body) if len(body) <= 65536 else ""
@@ -712,7 +722,7 @@ class Recorder:
 
             # 高频大包只记摘要；其余（尤其未知/命中关键词/带图片的）记完整 body
             important = unknown or hit_kw or image or signature
-            if wire_op in BULK_OPCODES and not important:
+            if op in BULK_OPCODES and not important:
                 if counts[wire_op] % 50 != 1:      # 每 50 条留 1 条摘要即可
                     continue
                 if self.persist:

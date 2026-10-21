@@ -41,8 +41,10 @@ from .proto_encode import encode_message
 log = get_logger()
 
 OPCODE = "0463"
+REGION_OP = "0403"          # 2026102102 城里玩家翻页走这条，不再附在 type:3 里
 RSE = "RseCountryOpt"
 USER_LST = "RseCountryUserLst"
+REGION_LST = "RseRegionCountryUserLst"
 BTL = "RseCountryBtlResult"
 
 # 抓包实测的开销，用来在**发之前**就判断够不够，而不是发出去等服务端拒绝。
@@ -291,6 +293,19 @@ def _fields(type_, country=0, city=0, atk=None, check=False, page=0):
     if atk:
         f[5] = ("string", str(atk))
     return f
+
+
+def _send_region_page(sock, rec, country, city, page):
+    """向跨区国战要这一页玩家。字段号按 RceRegionCountryOpt，发出去再译成线上编号。"""
+    body = encode_message({
+        1: ("int32", 3),
+        2: ("int32", int(country)),
+        3: ("int32", int(city)),
+        4: ("int32", 0),
+        5: ("int32", 0),
+        8: ("int32", int(page)),
+    }, omit_zero=False)
+    sender.send_frame(sock, REGION_OP, body, rec.rc4_c2s if rec else None)
 
 
 def _send(sock, rec, type_, **kw):
@@ -1002,12 +1017,18 @@ def _users_in(data):
 
 
 def _collect_city_users(rec, since, city_id):
-    """从 rec.recent 里捞 since 之后、属于这座城的 RseCountryUserLst。"""
-    hist = (getattr(rec, "recent", {}) or {}).get(USER_LST) or []
-    latest = (rec.latest.get(USER_LST) if rec else None) or (None, None)
-    rows = list(hist)
-    if latest[0] is not None and all(seq != latest[0] for seq, _ in rows):
-        rows.append(latest)
+    """从 rec.recent 里捞 since 之后、属于这座城的玩家列表。
+
+    旧包是 RseCountryUserLst。2026102102 起翻页改走 RseRegionCountryUserLst，
+    两条结构一样，都收。
+    """
+    hist = []
+    for name in (USER_LST, REGION_LST):
+        hist.extend((getattr(rec, "recent", {}) or {}).get(name) or [])
+        latest = (rec.latest.get(name) if rec else None) or (None, None)
+        if latest[0] is not None and all(seq != latest[0] for seq, _ in hist):
+            hist.append(latest)
+    rows = hist
     got, seen = [], set()
     for seq, data in rows:
         if seq is None or seq <= since or not isinstance(data, dict):
@@ -1123,8 +1144,10 @@ def _list_city_players(rec, sock, city_id, country, out, on_page=None,
     last_ok = start_page - 1
 
     for page in range(start_page, max_pages):
-        since = _send(sock, rec, 3, country=used_country, city=city_id, page=page)
-        cd = _wait(sock, rec, since, 3)
+        req_type = 3 if page == 0 else 7
+        since = _send(sock, rec, req_type, country=used_country, city=city_id, page=page)
+        _send_region_page(sock, rec, used_country, city_id, page)
+        cd = _wait(sock, rec, since, req_type)
         if not isinstance(cd, dict):
             out["原因"] = (f"翻到第 {page} 页时没有回包（连接断开或超时），"
                           f"下次用 --city-page {page} 从这里继续")
@@ -1151,9 +1174,10 @@ def _list_city_players(rec, sock, city_id, country, out, on_page=None,
                 log.info("[城市玩家] 面板回的城市是 %s、归属国 %s，"
                          "改用归属国重开", got_city, owner)
                 used_country = owner
-                since = _send(sock, rec, 3, country=used_country,
+                since = _send(sock, rec, req_type, country=used_country,
                               city=city_id, page=page)
-                cd = _wait(sock, rec, since, 3)
+                _send_region_page(sock, rec, used_country, city_id, page)
+                cd = _wait(sock, rec, since, req_type)
                 if not isinstance(cd, dict):
                     out["原因"] = "用归属国重开城市面板没有回包"
                     break
@@ -1191,6 +1215,10 @@ def _list_city_players(rec, sock, city_id, country, out, on_page=None,
             on_page(batch, page)
         if new == 0:
             break
+        if len(batch) < page_size:
+            log.info("[城市玩家] 第 %d 页只有 %d 人，不满 %d 人，后面不再翻",
+                     page, len(batch), page_size)
+            break
         if end_page is not None and page >= end_page:
             log.info("[城市玩家] 已到指定结束页 %d，本轮停", end_page)
             break
@@ -1203,7 +1231,7 @@ def _list_city_players(rec, sock, city_id, country, out, on_page=None,
             # 续拉时 len(players) 只是本轮人数，用页码判断是否到末
             if (page + 1) * page_size >= int(total):
                 break
-        _nap(0.4)
+        _nap(0.5)
 
     out["owner"] = owner
     out["userCnt"] = total
@@ -1262,8 +1290,9 @@ def lock_target_here(rec, sock, config: dict, city_id: int, uid,
         log.info("[索敌] 开战前看 UID %s 还在不在城 %s，从第 %d 页起共看 %d 页",
                  uid, city_id, page, len(pages))
         for i, pg in enumerate(pages):
-            since = _send(sock, rec, 3, country=owner, city=city_id, page=pg)
-            cd = _wait(sock, rec, since, 3, timeout=WAIT_ATK)
+            req_type = 3 if pg == 0 else 7
+            since = _send(sock, rec, req_type, country=owner, city=city_id, page=pg)
+            cd = _wait(sock, rec, since, req_type, timeout=WAIT_ATK)
             if not isinstance(cd, dict):
                 out["原因"] = f"翻到第 {pg} 页没有回包"
                 return out
@@ -1473,8 +1502,9 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
         if power < cost:
             out["停止原因"] = f"行动力只剩 {power}，{name}要 {cost}"
             break
-        since = _send(sock, rec, 3, country=owner, city=city, page=page)
-        cd = _wait(sock, rec, since, 3, timeout=WAIT_ATK)
+        req_type = 3 if page == 0 else 7
+        since = _send(sock, rec, req_type, country=owner, city=city, page=page)
+        cd = _wait(sock, rec, since, req_type, timeout=WAIT_ATK)
         if not isinstance(cd, dict):
             log.info("[打人] 第 %d 次打开目标城市面板超时，打下一次", i)
             continue
@@ -1885,9 +1915,10 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 out["停止原因"] = _lost_city_reason(loc, city_id, start_loc)
                 log.info("[打人] %s", out["停止原因"])
                 return "stop", None
-            since = _send(sock, rec, 3, country=used_country, city=city_id,
+            req_type = 3 if page == 0 else 7
+            since = _send(sock, rec, req_type, country=used_country, city=city_id,
                           page=page)
-            cd = _wait(sock, rec, since, 3)
+            cd = _wait(sock, rec, since, req_type)
             if not isinstance(cd, dict):
                 if strict:
                     out["停止原因"] = f"翻到第 {page} 页时没有回包"
@@ -1909,9 +1940,9 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
             if page == start_page and got_city not in (None, city_id):
                 if isinstance(owner, int) and owner and owner != used_country:
                     used_country = owner
-                    since = _send(sock, rec, 3, country=used_country,
+                    since = _send(sock, rec, req_type, country=used_country,
                                   city=city_id, page=page)
-                    cd = _wait(sock, rec, since, 3)
+                    cd = _wait(sock, rec, since, req_type)
                     if not isinstance(cd, dict):
                         if strict:
                             out["停止原因"] = "用归属国重开城市面板没有回包"
@@ -1980,8 +2011,12 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                     found.append((page, p))
                 if total is not None and len(found) >= int(total):
                     break
+                if len(batch) < 15:
+                    log.info("[打人] 第 %d 页只有 %d 人，不满 15 人，后面不再翻",
+                             page, len(batch))
+                    break
                 if page < end_page:
-                    _nap(0.4)
+                    _nap(0.5)
             scanned = found
             return True
 

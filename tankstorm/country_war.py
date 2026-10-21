@@ -41,10 +41,8 @@ from .proto_encode import encode_message
 log = get_logger()
 
 OPCODE = "0463"
-REGION_OP = "0403"          # 2026102102 城里玩家翻页走这条，不再附在 type:3 里
 RSE = "RseCountryOpt"
 USER_LST = "RseCountryUserLst"
-REGION_LST = "RseRegionCountryUserLst"
 BTL = "RseCountryBtlResult"
 
 # 抓包实测的开销，用来在**发之前**就判断够不够，而不是发出去等服务端拒绝。
@@ -262,10 +260,9 @@ def _use_recovery_card(sock, rec, item_id):
         return False, f"背包里没读到物品 {item_id}（读不到就不用）"
     if count <= 0:
         return False, f"国战恢复卡已用完（背包剩 {count} 张）"
-    # 字段照抓包逐个对齐：真客户端**不发 selectID(1)**，只发 3/4/5/7。
-    # proto2 里"写了 0"和"没写"是两回事，多发一个 selectID=0 就不是同一个包了。
-    body = encode_message({3: ("int32", 1), 4: ("int32", slot),
-                           5: ("int32", item_id), 7: ("int32", 0)},
+    # 2026-10-22 抓包：国战界面点恢复卡发 {count:1, itemID:40004, optType:7}，不发 id(4) 和 selectID(1)。
+    body = encode_message({3: ("int32", 1),
+                           5: ("int32", item_id), 7: ("int32", 7)},
                           omit_zero=False)
     sender.send_frame(sock, BAG_USE_OPCODE, body, rec.rc4_c2s)
     if citydb.lock_cards_active():
@@ -293,19 +290,6 @@ def _fields(type_, country=0, city=0, atk=None, check=False, page=0):
     if atk:
         f[5] = ("string", str(atk))
     return f
-
-
-def _send_region_page(sock, rec, country, city, page):
-    """向跨区国战要这一页玩家。字段号按 RceRegionCountryOpt，发出去再译成线上编号。"""
-    body = encode_message({
-        1: ("int32", 3),
-        2: ("int32", int(country)),
-        3: ("int32", int(city)),
-        4: ("int32", 0),
-        5: ("int32", 0),
-        8: ("int32", int(page)),
-    }, omit_zero=False)
-    sender.send_frame(sock, REGION_OP, body, rec.rc4_c2s if rec else None)
 
 
 def _send(sock, rec, type_, **kw):
@@ -1017,18 +1001,12 @@ def _users_in(data):
 
 
 def _collect_city_users(rec, since, city_id):
-    """从 rec.recent 里捞 since 之后、属于这座城的玩家列表。
-
-    旧包是 RseCountryUserLst。2026102102 起翻页改走 RseRegionCountryUserLst，
-    两条结构一样，都收。
-    """
-    hist = []
-    for name in (USER_LST, REGION_LST):
-        hist.extend((getattr(rec, "recent", {}) or {}).get(name) or [])
-        latest = (rec.latest.get(name) if rec else None) or (None, None)
-        if latest[0] is not None and all(seq != latest[0] for seq, _ in hist):
-            hist.append(latest)
-    rows = hist
+    """从 rec.recent 里捞 since 之后、属于这座城的 RseCountryUserLst。"""
+    hist = (getattr(rec, "recent", {}) or {}).get(USER_LST) or []
+    latest = (rec.latest.get(USER_LST) if rec else None) or (None, None)
+    rows = list(hist)
+    if latest[0] is not None and all(seq != latest[0] for seq, _ in rows):
+        rows.append(latest)
     got, seen = [], set()
     for seq, data in rows:
         if seq is None or seq <= since or not isinstance(data, dict):
@@ -1146,7 +1124,6 @@ def _list_city_players(rec, sock, city_id, country, out, on_page=None,
     for page in range(start_page, max_pages):
         req_type = 3 if page == 0 else 7
         since = _send(sock, rec, req_type, country=used_country, city=city_id, page=page)
-        _send_region_page(sock, rec, used_country, city_id, page)
         cd = _wait(sock, rec, since, req_type)
         if not isinstance(cd, dict):
             out["原因"] = (f"翻到第 {page} 页时没有回包（连接断开或超时），"
@@ -1176,7 +1153,6 @@ def _list_city_players(rec, sock, city_id, country, out, on_page=None,
                 used_country = owner
                 since = _send(sock, rec, req_type, country=used_country,
                               city=city_id, page=page)
-                _send_region_page(sock, rec, used_country, city_id, page)
                 cd = _wait(sock, rec, since, req_type)
                 if not isinstance(cd, dict):
                     out["原因"] = "用归属国重开城市面板没有回包"

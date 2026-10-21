@@ -788,8 +788,6 @@ def plan_route(here, target, my_country, avoid=None, avoid_why=None) -> dict:
                 continue
             if cid in skip:
                 who = why.get(cid) or ""
-                if not who:
-                    who = "、".join(failed_names_in(cid))
                 if who:
                     parts.append(f"{label(cid)} 有 {who} 挡路")
                 else:
@@ -6149,18 +6147,93 @@ def _fail_op_mine(op) -> bool:
     return len(op) >= 2 and op[1] == _fail_acct()
 
 
+def _fail_wipe_name(acct: str) -> str:
+    acct = str(acct or "").strip()
+    if not acct.isdigit():
+        return ""
+    return f"failwipe:{acct}"
+
+
+def _fail_cut(acct: str, conn=None) -> str:
+    """这个攻打 QQ 的战败库在这个时间点被清空。空字符串表示没清过。"""
+    name = _fail_wipe_name(acct)
+    if not name:
+        return ""
+    return _signal_value(name, conn=conn)
+
+
+def _op_ts(op) -> str:
+    if not op:
+        return ""
+    ts = op[-1]
+    if isinstance(ts, str) and len(ts) == 20 and ts.endswith("Z"):
+        return ts
+    return ""
+
+
+def _op_live(op, cut: str) -> bool:
+    """清空时间点之前的内存记录丢掉，避免断开时又写回库里。"""
+    if not cut:
+        return True
+    ts = _op_ts(op)
+    if not ts:
+        return False
+    return ts > cut
+
+
+def _fail_uid_cuts(acct: str, conn=None) -> dict:
+    """这个攻打 QQ 上，按人去掉的时间。uid → 清空时间。"""
+    acct = str(acct or "").strip()
+    if not acct.isdigit():
+        return {}
+    prefix = f"failone:{acct}:"
+    own = conn is None
+    if own:
+        conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT name, IFNULL(value,'') FROM atk_signal WHERE name LIKE ?",
+            (prefix + "%",)).fetchall()
+    finally:
+        if own:
+            conn.close()
+    out = {}
+    width = len(prefix)
+    for name, value in rows:
+        uid = str(name or "")[width:]
+        if uid:
+            out[uid] = str(value or "")
+    return out
+
+
+def _op_live_uid(op, uid_cuts: dict) -> bool:
+    """这个人被单独去掉之后，更早的失败不再写回。"""
+    if not uid_cuts or not op or op[0] != "record":
+        return True
+    uid = str(op[2] if len(op) > 2 else "").strip()
+    cut = uid_cuts.get(uid) or ""
+    if not cut:
+        return True
+    ts = _op_ts(op)
+    if not ts:
+        return False
+    return ts > cut
+
+
+def _op_kept(op, cut: str, uid_cuts: dict) -> bool:
+    return _op_live(op, cut) and _op_live_uid(op, uid_cuts)
+
+
 def failed_uids() -> set:
     return set(failed_names())
 
 
-def failed_names_in(city_id) -> list:
-    """这座城里、当前攻打号战败表记下的名字。含还没落盘的队列。没有名字时用 uid。"""
-    try:
-        city_id = int(city_id or 0)
-    except (TypeError, ValueError):
-        return []
-    if city_id <= 0:
-        return []
+def failed_names_in(city_id=None) -> list:
+    """当前攻打号战败表里的名字。按 UID 认人，不看城市。
+
+    city_id 不再参与判断。含还没落盘的队列。没有名字时用 uid。
+    """
+    del city_id
     acct = _fail_acct()
 
     def _read():
@@ -6168,8 +6241,8 @@ def failed_names_in(city_id) -> list:
         try:
             rows = conn.execute(
                 "SELECT uid, IFNULL(name,'') FROM atk_fail "
-                "WHERE acct=? AND city_id=? AND IFNULL(ret,0) NOT IN (21)",
-                (acct, city_id)).fetchall()
+                "WHERE acct=? AND IFNULL(ret,0) NOT IN (21)",
+                (acct,)).fetchall()
             return [(str(u).strip(), str(n or "").strip()) for u, n in rows if u]
         finally:
             conn.close()
@@ -6180,8 +6253,9 @@ def failed_names_in(city_id) -> list:
         for uid, name in rows:
             if uid:
                 names[uid] = name
+    cut, uid_cuts = _fail_cut(acct), _fail_uid_cuts(acct)
     for op in _atk_q:
-        if not _fail_op_mine(op):
+        if not _fail_op_mine(op) or not _op_kept(op, cut, uid_cuts):
             continue
         if op[0] == "wipe":
             names.clear()
@@ -6194,10 +6268,7 @@ def failed_names_in(city_id) -> list:
             if op[5] in (21,):
                 names.pop(uid, None)
                 continue
-            if int(op[4] or 0) == city_id:
-                names[uid] = str(op[3] or "").strip()
-            else:
-                names.pop(uid, None)
+            names[uid] = str(op[3] or "").strip()
     out = []
     for uid, name in names.items():
         text = name or uid
@@ -6222,8 +6293,9 @@ def failed_names() -> dict:
             conn.close()
     got = _run_timeout(_read, default={})
     names = dict(got) if isinstance(got, dict) else {}
+    cut, uid_cuts = _fail_cut(acct), _fail_uid_cuts(acct)
     for op in _atk_q:
-        if not _fail_op_mine(op):
+        if not _fail_op_mine(op) or not _op_kept(op, cut, uid_cuts):
             continue
         if op[0] == "wipe":
             names.clear()
@@ -6260,8 +6332,9 @@ def in_atk_fail(uid) -> bool:
         return False
     acct = _fail_acct()
     pending = None
+    cut, uid_cuts = _fail_cut(acct), _fail_uid_cuts(acct)
     for op in _atk_q:
-        if not _fail_op_mine(op):
+        if not _fail_op_mine(op) or not _op_kept(op, cut, uid_cuts):
             continue
         if op[0] == "wipe":
             pending = False
@@ -6296,17 +6369,125 @@ def record_atk_fail(uid, city_id=0, ret=None, reason="", name=""):
     uid = str(uid or "").strip()
     if uid:
         _atk_q.append(("record", _fail_acct(), uid, name or "", int(city_id or 0),
-                       ret, reason or ""))
+                       ret, reason or "", now_ts()))
 
 
 def clear_atk_fail(uid=None):
     acct = _fail_acct()
     if uid is None:
-        _atk_q.append(("wipe", acct))
+        _atk_q.append(("wipe", acct, now_ts()))
         return
     uid = str(uid or "").strip()
     if uid:
-        _atk_q.append(("clear", acct, uid))
+        _atk_q.append(("clear", acct, uid, now_ts()))
+
+
+def atk_fail_count(user_id: int) -> tuple:
+    """这个登录账号的攻打 QQ 上，现在算打不过的有几人。返回 (人数, 攻打 QQ)。"""
+    acct = attack_qq_of(int(user_id or 0))
+    if not acct:
+        return 0, ""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM atk_fail WHERE acct=? AND IFNULL(ret,0) NOT IN (21)",
+            (acct,)).fetchone()
+    finally:
+        conn.close()
+    return (int(row[0] or 0) if row else 0), acct
+
+
+def reset_atk_fail(user_id: int) -> tuple:
+    """清空这个登录账号攻打 QQ 的战败库。返回 (清掉的人数, 错误)。
+
+    网页和攻打进程不是同一个进程。库立刻删。攻打进程内存里还没落盘、
+    时间早于这一下的记录丢掉，避免断开时又写回来。这一下之后新打不过的人仍会记下。
+    同一个攻打 QQ 绑了几个登录账号，清的是同一份。
+    """
+    user_id = int(user_id or 0)
+    acct = attack_qq_of(user_id)
+    if not acct:
+        return 0, "还没有攻打 QQ，没有战败库"
+    stamp = now_ts()
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT COUNT(*) FROM atk_fail WHERE acct=? AND IFNULL(ret,0) NOT IN (21)",
+            (acct,)).fetchone()
+        removed = int(row[0] or 0) if row else 0
+        conn.execute("DELETE FROM atk_fail WHERE acct=?", (acct,))
+        conn.execute(
+            "INSERT INTO atk_signal(name, value, at) VALUES (?,?,?) "
+            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
+            (f"failwipe:{acct}", stamp, stamp))
+        conn.commit()
+    finally:
+        conn.close()
+    log.info("登录账号 %s 清空攻打 QQ %s 的战败库，%d 人",
+             username_of(user_id), acct, removed)
+    return removed, ""
+
+
+def list_atk_fails(user_id: int) -> tuple:
+    """这个登录账号的攻打 QQ 上，算打不过的人。按 UID 认人。返回 (列表, 攻打 QQ)。"""
+    acct = attack_qq_of(int(user_id or 0))
+    if not acct:
+        return [], ""
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT uid, IFNULL(name,''), IFNULL(at,'') FROM atk_fail "
+            "WHERE acct=? AND IFNULL(ret,0) NOT IN (21) "
+            "ORDER BY at DESC, uid",
+            (acct,)).fetchall()
+    finally:
+        conn.close()
+    items = []
+    for uid, name, at in rows:
+        items.append({
+            "uid": str(uid or ""),
+            "name": str(name or ""),
+            "at": beijing_ts(at) if at else "",
+        })
+    return items, acct
+
+
+def reset_atk_fail_uid(user_id: int, uid: str) -> tuple:
+    """从战败库去掉一个人。返回 (本来有没有, 名字, 错误)。
+
+    库立刻删。攻打进程里还没落盘、早于这一下的同一人不再写回。
+    之后再打不过，仍会重新记下。同一个攻打 QQ 上的账号共用这一份。
+    """
+    user_id = int(user_id or 0)
+    uid = str(uid or "").strip()
+    if not uid.isdigit() or len(uid) > 32:
+        return False, "", "UID 要是数字"
+    acct = attack_qq_of(user_id)
+    if not acct:
+        return False, "", "还没有攻打 QQ，没有战败库"
+    stamp = now_ts()
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT IFNULL(name,'') FROM atk_fail WHERE acct=? AND uid=? "
+            "AND IFNULL(ret,0) NOT IN (21)",
+            (acct, uid)).fetchone()
+        name = str(row[0] or "").strip() if row else ""
+        had = row is not None
+        conn.execute("DELETE FROM atk_fail WHERE acct=? AND uid=?", (acct, uid))
+        conn.execute(
+            "INSERT INTO atk_signal(name, value, at) VALUES (?,?,?) "
+            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
+            (f"failone:{acct}:{uid}", stamp, stamp))
+        conn.commit()
+    finally:
+        conn.close()
+    who = name or uid
+    log.info("登录账号 %s 从攻打 QQ %s 的战败库去掉 %s",
+             username_of(user_id), acct, who)
+    return had, name, ""
 
 
 def flush_atk_fail():
@@ -6319,15 +6500,25 @@ def flush_atk_fail():
     def _write():
         conn = connect(timeout=DB_OP_TIMEOUT)
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            cuts = {}
+            ones = {}
             for op in batch:
+                acct = str(op[1] if len(op) > 1 else "")
+                if acct not in cuts:
+                    cuts[acct] = _fail_cut(acct, conn)
+                    ones[acct] = _fail_uid_cuts(acct, conn)
+                if not _op_kept(op, cuts[acct], ones.get(acct) or {}):
+                    continue
                 if op[0] == "wipe":
                     conn.execute("DELETE FROM atk_fail WHERE acct=?", (op[1],))
                 elif op[0] == "clear":
                     conn.execute(
                         "DELETE FROM atk_fail WHERE acct=? AND uid=?",
                         (op[1], op[2]))
-                else:
-                    _, acct, uid, name, city_id, ret, reason = op
+                elif op[0] == "record":
+                    acct, uid, name, city_id, ret, reason = (
+                        op[1], op[2], op[3], op[4], op[5], op[6])
                     conn.execute(
                         "INSERT INTO atk_fail(acct, uid, name, city_id, ret, reason, at) "
                         "VALUES (?,?,?,?,?,?,?) "

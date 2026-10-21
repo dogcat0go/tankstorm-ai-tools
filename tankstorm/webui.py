@@ -257,6 +257,14 @@ def _handler(config: dict):
                 who["storm_day"] = citydb.storm_rejects_day(user["id"])
                 _json(self, 200, {"user": who, "invite": bool(invite)})
                 return
+            if path == "/api/atk-fail":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                items, qq = citydb.list_atk_fails(user["id"])
+                _json(self, 200, {"count": len(items), "qq": qq, "items": items})
+                return
             if path == "/api/cities":
                 user = self._user()
                 if not user:
@@ -737,6 +745,21 @@ def _handler(config: dict):
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "members": _member_views()})
+                elif path == "/api/atk-fail/reset":
+                    uid = str(data.get("uid") or "").strip()
+                    if uid:
+                        had, name, why = citydb.reset_atk_fail_uid(user["id"], uid)
+                        if why:
+                            raise ValueError(why)
+                        _json(self, 200, {
+                            "ok": True, "removed": 1 if had else 0,
+                            "uid": uid, "name": name,
+                        })
+                    else:
+                        removed, why = citydb.reset_atk_fail(user["id"])
+                        if why:
+                            raise ValueError(why)
+                        _json(self, 200, {"ok": True, "removed": removed})
                 elif path == "/api/password":
                     why = citydb.change_password(
                         user["id"], data.get("current"), data.get("password"),

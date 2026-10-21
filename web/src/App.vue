@@ -917,6 +917,17 @@ async function savePassword(current, password) {
   await api("/api/password", { current, password });
 }
 
+async function loadFailLibrary() {
+  return await api("/api/atk-fail");
+}
+
+async function resetFailLibrary(uid) {
+  showErr("", "fail");
+  const body = {};
+  if (uid) body.uid = String(uid);
+  return await api("/api/atk-fail/reset", body);
+}
+
 async function logout() {
   await api("/api/logout", {});
   me.value = null;
@@ -1090,6 +1101,8 @@ onUnmounted(() => {
         :err="err"
         :err-at="errAt"
         :save-password="savePassword"
+        :load-fail-library="loadFailLibrary"
+        :reset-fail-library="resetFailLibrary"
         :show-err="showErr"
       />
       <DailyPage

@@ -22,14 +22,14 @@
 
 帧格式（抓包确认）：[2字节大端长度 N][2字节 opcode][4字节 seq][body]，整帧 = 2 + N。
 
-关于加密（2026-08-03，已由 RedWar_2026073102.swf 字节码定案）
+关于加密（2026-10-21，已按 RedWar_2026102102.swf 改过豁免名单）
 ------------------------------------------------------------
 **绝大多数消息都是 RC4 加密的**，只有少数 opcode 走白名单豁免：
-  接收豁免 0215 0228 0229 0230 0283   （Transport._-29U 里按 opcode 判断）
-  发送豁免 040e 041c 041d 0455        （Transport.Send 里按 opcode 判断）
+  接收豁免 0237 032a 0200 0246 0298   （心跳和四类广播）
+  发送豁免 043e 044a 0451 04ee        （心跳、认证、加载、调试）
 protocol.json 的心跳/认证/build 三个包恰好都在发送豁免名单里 —— 这就是静态
-重放能工作的原因；0283 世界广播在接收豁免名单里 —— 这就是关键词能读到中文
-昵称的原因。两者都推不出"协议没加密"。
+重放能工作的原因。广播在接收豁免名单里，所以关键词能读到明文。两者都推不出
+"协议没加密"。
 
 密钥流范围（关键）：
   · 包头永远明文，只有 body 过 RC4
@@ -122,9 +122,9 @@ IMAGE_MAGICS = [
     (b"GIF87a", "GIF"), (b"GIF89a", "GIF"),
 ]
 
-# 豁免 RC4 的 opcode。来自 RedWar_2026073102.swf 反汇编：
-#   接收 Transport._-29U 偏移 761~1055 的比较链（533/552/553/560/643）
-#   发送 Transport.Send  偏移 271~504 的比较链（1038/1052/1053/1109）
+# 豁免 RC4 的 opcode。来自 RedWar_2026102102.swf：
+#   接收 0237 / 032a / 0200 / 0246 / 0298
+#   发送 043e / 044a / 0451 / 04ee
 # 这两个名单之外的 body 全部过 RC4，且连续消耗同一条密钥流。
 EXEMPT_OPCODES = crypto.EXEMPT      # 单一来源，见 tankstorm/crypto.py
 
@@ -652,7 +652,7 @@ class Recorder:
                             hist.append((self._latest_seq, data))
                             # 城市玩家列表（RseCountryUserLst）一条城可能推很多人，
                             # 每人一条时 8 条会把前面的冲掉。其它消息仍只留近 8 条。
-                            cap = 256 if nm == "RseCountryUserLst" else 8
+                            cap = 256 if nm in ("RseCountryUserLst", "RseGet") else 8
                             if len(hist) > cap:
                                 del hist[:-cap]
 

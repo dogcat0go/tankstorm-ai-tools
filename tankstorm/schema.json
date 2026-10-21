@@ -12016,7 +12016,7 @@
 }
 },
 "040e": {
-"name": "RceHeartbeat",
+"name": "RceHeartbeat_prev",
 "cls": "RceHeartbeat",
 "fields": {}
 },
@@ -12547,7 +12547,7 @@
 "fields": {}
 },
 "041c": {
-"name": "RceInit",
+"name": "RceInit_prev",
 "cls": "_-5Vr",
 "fields": {
 "3": [
@@ -12557,7 +12557,7 @@
 }
 },
 "041d": {
-"name": "RceLoad",
+"name": "RceLoad_prev",
 "cls": "_-6G6",
 "fields": {
 "2": [
@@ -13361,14 +13361,9 @@
 }
 },
 "043e": {
-"name": "RceWallChgCloth",
-"cls": "_-1JF",
-"fields": {
-"1": [
-"type",
-"int32"
-]
-}
+"name": "RceHeartbeat",
+"cls": "RceHeartbeat",
+"fields": {}
 },
 "043f": {
 "name": "RceClientNumStat",
@@ -13510,16 +13505,12 @@
 }
 },
 "044a": {
-"name": "RceInviteFriend",
-"cls": "_-qB",
+"name": "RceInit",
+"cls": "_-5dV",
 "fields": {
-"1": [
-"friendcount",
-"int32"
-],
-"2": [
-"giftGain",
-"bool"
+"7": [
+"versionKey",
+"string"
 ]
 }
 },
@@ -13664,24 +13655,28 @@
 }
 },
 "0451": {
-"name": "RceNPCActive",
-"cls": "_-00F",
+"name": "RceLoad",
+"cls": "_-bY",
 "fields": {
-"1": [
-"type",
-"int32"
-],
 "2": [
-"npcID",
-"int32"
+"h",
+"string"
 ],
 "3": [
-"armyGroup",
+"enterType",
 "int32"
 ],
 "4": [
-"armyStep",
-"int32"
+"hn",
+"string"
+],
+"5": [
+"baseid",
+"string"
+],
+"6": [
+"type",
+"string"
 ]
 }
 },

@@ -7,7 +7,7 @@
 # 详见随附的 LICENSE 文件，或 <https://www.gnu.org/licenses/>。
 """构造加密帧并通过 socket 发送 —— 用于主动发出 C→S 协议消息。
 
-保活进程原来只发三种豁免包（心跳 040e / 认证 041c / build 041d），全在 RC4
+保活进程原来只发三种豁免包（心跳 043e / 认证 044a / build 0451），全在 RC4
 发送豁免名单里，body 不用加密，可以静态重放。
 
 但"拒绝超级强攻"(RceSuperStormOpt, opcode 04ab) **不在豁免名单里**，body 必须
@@ -73,7 +73,7 @@ def encrypt_body(opcode_hex: str, body: bytes, rc4_c2s) -> bytes:
 def send_frame(sock, opcode_hex: str, body: bytes, rc4_c2s=None) -> None:
     """加密 body → 组帧 → sendall。
 
-    对豁免 opcode（040e/041c/041d/0455）不加密；其余必须提供 rc4_c2s。
+    对豁免 opcode（043e/044a/0451/04ee）不加密；其余必须提供 rc4_c2s。
     非豁免包从加密到 sendall 占同一把锁，拒绝强攻的线程和打城线程不会把密钥流写乱。
     """
     if opcode_hex in crypto.EXEMPT["c2s"]:

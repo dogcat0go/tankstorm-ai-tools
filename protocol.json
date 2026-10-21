@@ -20,19 +20,19 @@
       "delay": 0.1
     },
     {
-      "_step": "认证包 opcode 041c，protobuf field3 = 固定密钥 Redwarhq2018HoneyHoneyHoney",
-      "raw_hex": "0023041c000000001a1b526564776172687132303138486f6e6579486f6e6579486f6e6579"
+      "_step": "认证包 opcode 044a（RedWar_2026102102）。RceInit.versionKey 字段号从 3 改为 7，密钥仍是 Redwarhq2018HoneyHoneyHoney",
+      "raw_hex": "0023044a000000003a1b526564776172687132303138486f6e6579486f6e6579486f6e6579"
     },
     {
-      "_step": "build 信息包 opcode 041d",
-      "raw_hex": "0028041d000000001201301a056275696c642209756e646566696e65642a09756e646566696e65643000",
+      "_step": "build 信息包 opcode 0451。字段号已重排：2=h 3=enterType 4=hn 5=baseid 6=type，取值仍是登录时那一组",
+      "raw_hex": "00280451000000002a013032056275696c641209756e646566696e65642209756e646566696e65641800",
       "delay": 0.2
     }
   ],
 
   "heartbeat": {
-    "_说明": "opcode 040e，每 10 秒一次，抓包里重复 181 次，服务器回 0215 pong。完全静态。",
+    "_说明": "opcode 043e（原 040e），每 10 秒一次。服务器 pong 现为 0237。包体仍是空的。",
     "interval_sec": 10,
-    "raw_hex": "0006040e00000000"
+    "raw_hex": "0006043e00000000"
   }
 }

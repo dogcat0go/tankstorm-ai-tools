@@ -6,7 +6,7 @@
 # （第 3 版，或你选择的任何更新版本）之条款，再分发和/或修改它。
 # 本程序希望能有用，但不提供任何担保；甚至不含适销性或特定用途适用性的默示担保。
 # 详见随附的 LICENSE 文件，或 <https://www.gnu.org/licenses/>。
-"""坦克风暴 RC4 解密 —— 规则全部来自 RedWar_2026073102.swf 的字节码实测。
+"""坦克风暴 RC4 解密 —— 豁免名单来自 RedWar_2026102102.swf 的协议常量。
 
     python tools/redwar_rc4.py logs/streams/<会话>/s2c.bin --sid <sid> --uid <uid>
     python tools/redwar_rc4.py logs/streams/<会话>/s2c.bin --sid <sid> --uid <uid> --write
@@ -15,14 +15,14 @@
 -------------------------------------------
 Transport.Send(msg)：
     op = _-5sY._-7CF(msg);  ba = new ByteArray(BIG_ENDIAN);  msg.writeExternal(ba)
-    if (op != 0x040E && op != 0x041C && op != 0x041D && op != 0x0455)
+    if (op != 0x043E && op != 0x044A && op != 0x0451 && op != 0x04EE)
         _-4I4.encrypt(ba)                       ← 白名单之外才加密
     header.length = ba.length + 6;  header.type = op
     socket.writeHeader(header); socket.writeBytes(ba); socket.flush()
 
 Transport._-29U()（socket 数据处理，接收）：
     socket.readBytes(ba, 0, _-55i)               ← 按包头长度读 body
-    if (op != 0x0215 && op != 0x0228 && op != 0x0229 && op != 0x0230 && op != 0x0283) {
+    if (op != 0x0237 && op != 0x032A && op != 0x0200 && op != 0x0246 && op != 0x0298) {
         decode(ba);                              ← decode() 里 _-1yo._-2Sm(ba)
         ba.position = 0
     }

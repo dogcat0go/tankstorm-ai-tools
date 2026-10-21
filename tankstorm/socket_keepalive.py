@@ -2135,6 +2135,10 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 class _QQ:
                     uin = citydb.attack_context_qq()
                 _arm_super_storm(rec, sock, config, _QQ())
+            if kind in citydb.LOCKED_DAILY_KINDS:
+                _show(citydb.RECOVERING_TEXT)
+                citydb.finish_daily_job(job["id"], "failed", citydb.RECOVERING_TEXT)
+                return
             if kind == "daily":
                 cfg = copy.deepcopy(config)
                 block = cfg.setdefault("每日任务", {})

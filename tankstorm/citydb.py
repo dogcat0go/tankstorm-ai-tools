@@ -1564,6 +1564,8 @@ def add_modo_order(user_id: int, cards, scheduled: bool = False) -> str:
 
     scheduled 是到点自动排的。不要求当时已经在保活，并在这一单结束后续领国家宝箱。
     """
+    if "modo" in LOCKED_DAILY_KINDS:
+        return RECOVERING_TEXT
     try:
         n = int(str(cards).strip())
     except (TypeError, ValueError, AttributeError):
@@ -4529,6 +4531,14 @@ _DAILY_STATUS = {
     "failed": "没做成",
     "ended": "已关停",
 }
+RECOVERING_TEXT = "功能尚在恢复中..."
+LOCKED_DAILY_KINDS = frozenset({
+    "daily", "pve", "fund", "chest", "modo",
+    "blast", "factory", "cards",
+    "haoyin", "admiral", "admiral10",
+    "pick_general", "pick_staff", "pick_lab", "pick_auto",
+    "lab50", "auto50",
+})
 
 
 def users_with_daily_jobs() -> list:
@@ -4711,6 +4721,8 @@ def daily_switches(user_id: int, defaults: dict) -> dict:
 
 def set_daily_switch(user_id: int, key: str, on, known, defaults: dict) -> str:
     """记下一项开关。第一次保存时把当前看到的开关整份记下。"""
+    if "daily" in LOCKED_DAILY_KINDS:
+        return RECOVERING_TEXT
     key = str(key or "").strip()
     allowed = []
     for item in known or []:
@@ -4802,6 +4814,8 @@ def set_modo_schedule(user_id: int, raw, cards=None) -> str:
     改到已经过去的时刻则把新时刻记成做过，避免马上再跑一轮。
     带了恢复卡数量就一起记下，到点按这个数量刷。
     """
+    if "modo" in LOCKED_DAILY_KINDS:
+        return RECOVERING_TEXT
     try:
         at = _clock(raw)
     except ValueError as exc:
@@ -4850,6 +4864,8 @@ def set_daily_schedule(user_id: int, raw) -> str:
     今天这一档已经排过，又改到还没到的时刻，就清掉标记，让新时刻再排一次。
     改到已经过去的时刻则把新时刻记成做过，避免马上再跑一轮。
     """
+    if "daily" in LOCKED_DAILY_KINDS:
+        return RECOVERING_TEXT
     try:
         at = _clock(raw)
     except ValueError as exc:
@@ -4881,6 +4897,8 @@ def set_daily_schedule(user_id: int, raw) -> str:
 
 def enqueue_due_daily_jobs() -> list:
     """到点且这一档今天还没排过的账号，排一轮日常。返回刚排上的 user_id。"""
+    if "daily" in LOCKED_DAILY_KINDS:
+        return []
     clock = beijing_clock()
     day = beijing_day()
     conn = connect()
@@ -4959,6 +4977,8 @@ def enqueue_due_modo_orders() -> list:
 
     这一单结束后续领一次国家宝箱。两条攻打订单都占着时先不记已做，下一轮再试。
     """
+    if "modo" in LOCKED_DAILY_KINDS:
+        return []
     clock = beijing_clock()
     day = beijing_day()
     conn = connect(readonly=True)
@@ -5034,6 +5054,8 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
     kind = str(kind or "").strip()
     if kind not in DAILY_KIND_LABEL or kind == "chest":
         return "没有这项日常"
+    if kind in LOCKED_DAILY_KINDS:
+        return RECOVERING_TEXT
     if shutdown_due(user_id):
         return "已定时关闭，不再执行任务"
     if not attack_qq_of(user_id):

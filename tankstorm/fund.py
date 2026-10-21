@@ -174,6 +174,9 @@ def open_resource_cards(rec, sock, bag=None, on_progress=None, label="开卡"):
 
 def open_base_cards(rec, sock, on_progress=None):
     """基地战开资源卡。各开最多 4 张，规则和拨款前开卡一样。"""
+    from . import citydb
+    if "cards" in citydb.LOCKED_DAILY_KINDS:
+        return False, citydb.RECOVERING_TEXT
     _bag, rows = open_resource_cards(rec, sock, on_progress=on_progress, label="开卡")
     if any(why == "没有背包" for _name, _opened, why in rows):
         return False, "登录包里没有背包，没有开卡"

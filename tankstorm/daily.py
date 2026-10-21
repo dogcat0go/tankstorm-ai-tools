@@ -2566,6 +2566,9 @@ def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):
 
     成功看回包 ret=0。
     """
+    from . import citydb
+    if mode in citydb.LOCKED_DAILY_KINDS:
+        return False, citydb.RECOVERING_TEXT
     try:
         count = int(count)
     except (TypeError, ValueError):
@@ -2713,6 +2716,9 @@ def _medal_short(name, before, after, done):
 
 def pick_pack(rec, sock, kind, count=1, on_progress=None):
     """用一张自选包换成指定物品。count 是要换出的张数，也是消耗的包数。"""
+    from . import citydb
+    if f"pick_{kind}" in citydb.LOCKED_DAILY_KINDS:
+        return False, citydb.RECOVERING_TEXT
     spec = _PACKS.get(kind)
     if spec is None:
         return False, "自选包种类不对"
@@ -2766,6 +2772,9 @@ def pick_pack(rec, sock, kind, count=1, on_progress=None):
 
 def lab50_probe(rec, sock, times=1, on_progress=None):
     """实验室探索 50 连。一次请求用 50 张实验室探索卡，credit 固定 0。"""
+    from . import citydb
+    if "lab50" in citydb.LOCKED_DAILY_KINDS:
+        return False, citydb.RECOVERING_TEXT
     try:
         times = int(times)
     except (TypeError, ValueError):
@@ -2843,6 +2852,9 @@ _AUTO_BATCH = 50
 
 def auto50_probe(rec, sock, times=1, on_progress=None):
     """军备自动化探索 50 连。一次用 50 张自动化探索卡。不够就提示数量不足，不发，也不扣勋章。"""
+    from . import citydb
+    if "auto50" in citydb.LOCKED_DAILY_KINDS:
+        return False, citydb.RECOVERING_TEXT
     try:
         times = int(times)
     except (TypeError, ValueError):
@@ -3882,6 +3894,12 @@ def _run_campaign_task(rec, sock, config):
 
 
 def _run(rec, sock, config, schema, on_fail=None):
+    from . import citydb
+    if "daily" in citydb.LOCKED_DAILY_KINDS:
+        log.info("每日任务已加锁：%s", citydb.RECOVERING_TEXT)
+        if on_fail:
+            on_fail(citydb.RECOVERING_TEXT)
+        return {}, {}
     _state_local.campaign_pushing = False
     if hasattr(_state_local, "campaign_round"):
         del _state_local.campaign_round

@@ -101,6 +101,7 @@ function resText(n) {
 <template>
   <section ref="page" class="base-page">
     <h2>基地战</h2>
+    <p class="recovering-tip">功能尚在恢复中...</p>
     <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
     <p v-else class="muted">还没绑定攻打 QQ。按页面上方的步骤点登录并扫码。一个登录账号只绑一个攻打号，这里的制造用那个号做。</p>
     <p class="muted">由这个账号的攻打线程执行，不另开连接。基地战、国战助手和日常任务同时做。兵营、战车工厂和开资源卡也同时做，不等另一边做完。</p>
@@ -110,112 +111,116 @@ function resText(n) {
     <p>高级将领卡 {{ resText(cards.general) }} · 参谋卡 {{ resText(cards.staff) }} · 实验卡 {{ resText(cards.lab) }} · 自动化探索卡 {{ resText(cards.auto) }} · 豪饮卡 {{ resText(cards.drink) }}</p>
     <p>招募卡自选 {{ resText(cards.recruit) }} · 探索卡自选 {{ resText(cards.explore) }}</p>
     <p class="muted">进入这一页就读攻打号背包里的这几种卡。开卡、换自选包或抽卡之后，剩余张数会跟着背包更新。还没收到就显示还没读到。</p>
-    <details class="campaign-box">
-      <summary>使用物品</summary>
-      <div class="item-part">
-        <h3>使用背包物品</h3>
-        <form class="lock-row" @submit.prevent="runCards().catch((e) => showErr(e.message))">
-          <span class="switch">开资源卡</span>
-          <button type="submit" :disabled="!dailyQq">开卡</button>
-        </form>
-        <p class="muted">和成就拨款前开卡一样。各开 4 张 1000 万金属卡和石油卡，一次只开 1 张。背包没有，或者这一张没开成，这种就停，另一种接着开。</p>
-      </div>
-      <div class="item-part">
-        <h3>抽卡</h3>
-        <form class="lock-row" @submit.prevent="runDraw('haoyin', drinkCount).catch((e) => showErr(e.message))">
-          <span class="switch">英雄豪饮</span>
-          <span class="card-have">豪饮卡 {{ resText(cards.drink) }}</span>
-          <label>卡数量<input v-model="drinkCount" class="mins" inputmode="numeric" required /></label>
-          <button type="submit" :disabled="!dailyQq">抽取</button>
-        </form>
-        <form class="lock-row" @submit.prevent="runDraw('admiral', admiralCount).catch((e) => showErr(e.message))">
-          <span class="switch">高级将领单抽</span>
-          <span class="card-have">高级将领卡 {{ resText(cards.general) }}</span>
-          <label>卡数量<input v-model="admiralCount" class="mins" inputmode="numeric" required /></label>
-          <button type="submit" :disabled="!dailyQq">抽取</button>
-        </form>
-        <form class="lock-row" @submit.prevent="runDraw('admiral10', admiral10Count).catch((e) => showErr(e.message))">
-          <span class="switch">高级将领十连</span>
-          <span class="card-have">高级将领卡 {{ resText(cards.general) }}</span>
-          <label>卡数量<input v-model="admiral10Count" class="mins" inputmode="numeric" required /></label>
-          <button type="submit" :disabled="!dailyQq">抽取</button>
-        </form>
-        <p class="muted">数量是要消耗的卡。豪饮用物品 10061，一张抽一次。高级将领用物品 10020，单抽一张一次。十连按卡数除以 10 向下取整，例如 25 张抽 2 次、用 20 张。不够就停，并写出剩余张数。1 到 99999，十连至少 10 张。点下去会先确认卡和张数。</p>
-      </div>
-      <div class="item-part">
-        <h3>换卡</h3>
-        <form class="lock-row" @submit.prevent="runPick('pick_general', generalCount).catch((e) => showErr(e.message))">
-          <span class="switch">换高级将领卡</span>
-          <span class="card-have">招募卡自选 {{ resText(cards.recruit) }} · 高级将领卡 {{ resText(cards.general) }}</span>
-          <label>数量<input v-model="generalCount" class="mins" inputmode="numeric" required /></label>
-          <button type="submit" :disabled="!dailyQq">兑换</button>
-        </form>
-        <form class="lock-row" @submit.prevent="runPick('pick_staff', staffCount).catch((e) => showErr(e.message))">
-          <span class="switch">换参谋卡</span>
-          <span class="card-have">招募卡自选 {{ resText(cards.recruit) }} · 参谋卡 {{ resText(cards.staff) }}</span>
-          <label>数量<input v-model="staffCount" class="mins" inputmode="numeric" required /></label>
-          <button type="submit" :disabled="!dailyQq">兑换</button>
-        </form>
-        <form class="lock-row" @submit.prevent="runPick('pick_lab', labPickCount).catch((e) => showErr(e.message))">
-          <span class="switch">换实验卡</span>
-          <span class="card-have">探索卡自选 {{ resText(cards.explore) }} · 实验卡 {{ resText(cards.lab) }}</span>
-          <label>数量<input v-model="labPickCount" class="mins" inputmode="numeric" required /></label>
-          <button type="submit" :disabled="!dailyQq">兑换</button>
-        </form>
-        <form class="lock-row" @submit.prevent="runPick('pick_auto', autoCount).catch((e) => showErr(e.message))">
-          <span class="switch">换自动化探索卡</span>
-          <span class="card-have">探索卡自选 {{ resText(cards.explore) }} · 自动化探索卡 {{ resText(cards.auto) }}</span>
-          <label>数量<input v-model="autoCount" class="mins" inputmode="numeric" required /></label>
-          <button type="submit" :disabled="!dailyQq">兑换</button>
-        </form>
-        <p class="muted">招募自选包换成高级将领卡或参谋卡，探索自选包换成实验卡或自动化探索卡。数量是要换出的张数，也是消耗的包数。点下去会先确认。</p>
-      </div>
-      <div class="item-part">
-        <h3>探索</h3>
-        <form class="lock-row" @submit.prevent="runLab50(lab50Count).catch((e) => showErr(e.message))">
-          <span class="switch">实验室探索50连</span>
-          <span class="card-have">实验卡 {{ resText(cards.lab) }}</span>
-          <label>次数<input v-model="lab50Count" class="mins" inputmode="numeric" required /></label>
-          <button type="submit" :disabled="!dailyQq">探索</button>
-        </form>
-        <form class="lock-row" @submit.prevent="runAuto50(auto50Count).catch((e) => showErr(e.message))">
-          <span class="switch">自动化探索50连</span>
-          <span class="card-have">自动化探索卡 {{ resText(cards.auto) }}</span>
-          <label>次数<input v-model="auto50Count" class="mins" inputmode="numeric" required /></label>
-          <button type="submit" :disabled="!dailyQq">探索</button>
-        </form>
-        <p v-if="err && errAt === 'base' && err.includes('数量不足')" class="err">{{ err }}</p>
-        <p class="muted">实验室 50 连一次用 50 张实验卡，自动化探索 50 连一次用 50 张自动化探索卡，次数默认 1。点下去会先确认。背包不够这次要的张数时，提示数量不足，不发，也不扣勋章。</p>
-      </div>
-    </details>
-    <details class="campaign-box">
-      <summary>兵种制造</summary>
-      <div class="item-part">
-        <h3>兵营</h3>
-        <p>当前爆破兵 {{ blast === null || blast === undefined ? "还没读到" : blast }}</p>
-        <form class="lock-row" @submit.prevent="runBlast(count).catch((e) => showErr(e.message))">
-          <span class="switch">爆破兵制造</span>
-          <label>数量<input v-model="count" class="mins" inputmode="numeric" required /></label>
-          <button type="submit" :disabled="!dailyQq">开始制造</button>
-        </form>
-        <p class="muted">按这个数量循环。每次先生产一个，剩余时间算出 0 勋章才快速制造，credit 固定写 0。要花勋章就停在这一只，不发。大厅蓝钻大约要等剩余降到 600 秒，一只一分多钟。消耗金属和石油。数量 1 到 399。兵营里已经在造的那一只算进数量。</p>
-      </div>
-      <div class="item-part">
-        <h3>战车工厂</h3>
-        <form class="lock-row" @submit.prevent="runFactory('12', aaCount).catch((e) => showErr(e.message))">
-          <span class="switch">防空车制造</span>
-          <label>数量<input v-model="aaCount" class="mins" inputmode="numeric" required /></label>
-          <button type="submit" :disabled="!dailyQq">开始制造</button>
-        </form>
-        <form class="lock-row" @submit.prevent="runFactory(army, factoryCount).catch((e) => showErr(e.message))">
-          <span class="switch">其他战车</span>
-          <label>兵种<input v-model="army" class="mins" inputmode="numeric" required /></label>
-          <label>数量<input v-model="factoryCount" class="mins" inputmode="numeric" required /></label>
-          <button type="submit" :disabled="!dailyQq">开始制造</button>
-        </form>
-        <p class="muted">防空车是兵种 12，只在建筑类型 30 的战车工厂造。和兵营同一套：先生产，剩余时间算出 0 勋章才加速，credit 固定写 0。要花勋章就停在这一辆，不发。其他战车填兵种号，例如猛犸 45、T99 90。数量 1 到 399。</p>
-      </div>
-    </details>
+    <fieldset class="locked-area" disabled>
+      <details class="campaign-box">
+        <summary>使用物品</summary>
+        <p class="recovering-tip">功能尚在恢复中...</p>
+        <div class="item-part">
+          <h3>使用背包物品</h3>
+          <form class="lock-row" @submit.prevent="runCards().catch((e) => showErr(e.message))">
+            <span class="switch">开资源卡</span>
+            <button type="submit" disabled>开卡</button>
+          </form>
+          <p class="muted">和成就拨款前开卡一样。各开 4 张 1000 万金属卡和石油卡，一次只开 1 张。背包没有，或者这一张没开成，这种就停，另一种接着开。</p>
+        </div>
+        <div class="item-part">
+          <h3>抽卡</h3>
+          <form class="lock-row" @submit.prevent="runDraw('haoyin', drinkCount).catch((e) => showErr(e.message))">
+            <span class="switch">英雄豪饮</span>
+            <span class="card-have">豪饮卡 {{ resText(cards.drink) }}</span>
+            <label>卡数量<input v-model="drinkCount" class="mins" inputmode="numeric" required disabled /></label>
+            <button type="submit" disabled>抽取</button>
+          </form>
+          <form class="lock-row" @submit.prevent="runDraw('admiral', admiralCount).catch((e) => showErr(e.message))">
+            <span class="switch">高级将领单抽</span>
+            <span class="card-have">高级将领卡 {{ resText(cards.general) }}</span>
+            <label>卡数量<input v-model="admiralCount" class="mins" inputmode="numeric" required disabled /></label>
+            <button type="submit" disabled>抽取</button>
+          </form>
+          <form class="lock-row" @submit.prevent="runDraw('admiral10', admiral10Count).catch((e) => showErr(e.message))">
+            <span class="switch">高级将领十连</span>
+            <span class="card-have">高级将领卡 {{ resText(cards.general) }}</span>
+            <label>卡数量<input v-model="admiral10Count" class="mins" inputmode="numeric" required disabled /></label>
+            <button type="submit" disabled>抽取</button>
+          </form>
+          <p class="muted">数量是要消耗的卡。豪饮用物品 10061，一张抽一次。高级将领用物品 10020，单抽一张一次。十连按卡数除以 10 向下取整，例如 25 张抽 2 次、用 20 张。不够就停，并写出剩余张数。1 到 99999，十连至少 10 张。点下去会先确认卡和张数。</p>
+        </div>
+        <div class="item-part">
+          <h3>换卡</h3>
+          <form class="lock-row" @submit.prevent="runPick('pick_general', generalCount).catch((e) => showErr(e.message))">
+            <span class="switch">换高级将领卡</span>
+            <span class="card-have">招募卡自选 {{ resText(cards.recruit) }} · 高级将领卡 {{ resText(cards.general) }}</span>
+            <label>数量<input v-model="generalCount" class="mins" inputmode="numeric" required disabled /></label>
+            <button type="submit" disabled>兑换</button>
+          </form>
+          <form class="lock-row" @submit.prevent="runPick('pick_staff', staffCount).catch((e) => showErr(e.message))">
+            <span class="switch">换参谋卡</span>
+            <span class="card-have">招募卡自选 {{ resText(cards.recruit) }} · 参谋卡 {{ resText(cards.staff) }}</span>
+            <label>数量<input v-model="staffCount" class="mins" inputmode="numeric" required disabled /></label>
+            <button type="submit" disabled>兑换</button>
+          </form>
+          <form class="lock-row" @submit.prevent="runPick('pick_lab', labPickCount).catch((e) => showErr(e.message))">
+            <span class="switch">换实验卡</span>
+            <span class="card-have">探索卡自选 {{ resText(cards.explore) }} · 实验卡 {{ resText(cards.lab) }}</span>
+            <label>数量<input v-model="labPickCount" class="mins" inputmode="numeric" required disabled /></label>
+            <button type="submit" disabled>兑换</button>
+          </form>
+          <form class="lock-row" @submit.prevent="runPick('pick_auto', autoCount).catch((e) => showErr(e.message))">
+            <span class="switch">换自动化探索卡</span>
+            <span class="card-have">探索卡自选 {{ resText(cards.explore) }} · 自动化探索卡 {{ resText(cards.auto) }}</span>
+            <label>数量<input v-model="autoCount" class="mins" inputmode="numeric" required disabled /></label>
+            <button type="submit" disabled>兑换</button>
+          </form>
+          <p class="muted">招募自选包换成高级将领卡或参谋卡，探索自选包换成实验卡或自动化探索卡。数量是要换出的张数，也是消耗的包数。点下去会先确认。</p>
+        </div>
+        <div class="item-part">
+          <h3>探索</h3>
+          <form class="lock-row" @submit.prevent="runLab50(lab50Count).catch((e) => showErr(e.message))">
+            <span class="switch">实验室探索50连</span>
+            <span class="card-have">实验卡 {{ resText(cards.lab) }}</span>
+            <label>次数<input v-model="lab50Count" class="mins" inputmode="numeric" required disabled /></label>
+            <button type="submit" disabled>探索</button>
+          </form>
+          <form class="lock-row" @submit.prevent="runAuto50(auto50Count).catch((e) => showErr(e.message))">
+            <span class="switch">自动化探索50连</span>
+            <span class="card-have">自动化探索卡 {{ resText(cards.auto) }}</span>
+            <label>次数<input v-model="auto50Count" class="mins" inputmode="numeric" required disabled /></label>
+            <button type="submit" disabled>探索</button>
+          </form>
+          <p v-if="err && errAt === 'base' && err.includes('数量不足')" class="err">{{ err }}</p>
+          <p class="muted">实验室 50 连一次用 50 张实验卡，自动化探索 50 连一次用 50 张自动化探索卡，次数默认 1。点下去会先确认。背包不够这次要的张数时，提示数量不足，不发，也不扣勋章。</p>
+        </div>
+      </details>
+      <details class="campaign-box">
+        <summary>兵种制造</summary>
+        <p class="recovering-tip">功能尚在恢复中...</p>
+        <div class="item-part">
+          <h3>兵营</h3>
+          <p>当前爆破兵 {{ blast === null || blast === undefined ? "还没读到" : blast }}</p>
+          <form class="lock-row" @submit.prevent="runBlast(count).catch((e) => showErr(e.message))">
+            <span class="switch">爆破兵制造</span>
+            <label>数量<input v-model="count" class="mins" inputmode="numeric" required disabled /></label>
+            <button type="submit" disabled>开始制造</button>
+          </form>
+          <p class="muted">按这个数量循环。每次先生产一个，剩余时间算出 0 勋章才快速制造，credit 固定写 0。要花勋章就停在这一只，不发。大厅蓝钻大约要等剩余降到 600 秒，一只一分多钟。消耗金属和石油。数量 1 到 399。兵营里已经在造的那一只算进数量。</p>
+        </div>
+        <div class="item-part">
+          <h3>战车工厂</h3>
+          <form class="lock-row" @submit.prevent="runFactory('12', aaCount).catch((e) => showErr(e.message))">
+            <span class="switch">防空车制造</span>
+            <label>数量<input v-model="aaCount" class="mins" inputmode="numeric" required disabled /></label>
+            <button type="submit" disabled>开始制造</button>
+          </form>
+          <form class="lock-row" @submit.prevent="runFactory(army, factoryCount).catch((e) => showErr(e.message))">
+            <span class="switch">其他战车</span>
+            <label>兵种<input v-model="army" class="mins" inputmode="numeric" required disabled /></label>
+            <label>数量<input v-model="factoryCount" class="mins" inputmode="numeric" required disabled /></label>
+            <button type="submit" disabled>开始制造</button>
+          </form>
+          <p class="muted">防空车是兵种 12，只在建筑类型 30 的战车工厂造。和兵营同一套：先生产，剩余时间算出 0 勋章才加速，credit 固定写 0。要花勋章就停在这一辆，不发。其他战车填兵种号，例如猛犸 45、T99 90。数量 1 到 399。</p>
+        </div>
+      </details>
+    </fieldset>
     <p v-if="note" class="muted">{{ note }}</p>
     <p v-if="err && errAt === 'base'" class="err">{{ err }}</p>
     <div class="recent-dock">

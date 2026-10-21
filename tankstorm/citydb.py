@@ -3362,7 +3362,70 @@ def current_lane() -> str:
 
 def set_fighting_order(order_id: int) -> None:
     """这条线程正在打的订单。关停后 fighting_order_stopped 变成真。"""
-    _attack_local.order = int(order_id or 0)
+    order_id = int(order_id or 0)
+    prev = int(getattr(_attack_local, "order", 0) or 0)
+    # 上一单结束就忘掉击败者。挂机时先收到协议、还没领单，名字留着，
+    # 下一单因不相邻停下时还能写上是谁。
+    if prev and order_id != prev:
+        _attack_local.defeater = ""
+    _attack_local.order = order_id
+
+
+def self_defeater() -> str:
+    """这一单里，国战被打回首都协议记下的进攻方。没有就是空字符串。"""
+    return str(getattr(_attack_local, "defeater", "") or "").strip()
+
+
+def defeat_clause(name: str = "") -> str:
+    """说明里用的那半句。没有名字就是空字符串。"""
+    name = str(name or self_defeater() or "").strip()
+    if not name:
+        return ""
+    return f"自己被 {name} 击败"
+
+
+def _with_defeater(text: str) -> str:
+    clause = defeat_clause()
+    text = str(text or "").strip()
+    if not clause or clause in text:
+        return text
+    return f"{text}，{clause}" if text else clause
+
+
+def note_self_defeated(name: str) -> None:
+    """收到国战自己被击败的协议。记下进攻方，并写进正在打的订单说明。"""
+    name = " ".join(str(name or "").split()).strip()
+    if not name:
+        return
+    _attack_local.defeater = name
+    clause = defeat_clause(name)
+    order_id = fighting_order_id()
+    if not order_id:
+        log.info("国战%s", clause)
+        return
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(reason,'') FROM atk_order WHERE id=?",
+            (order_id,)).fetchone()
+        if not row:
+            return
+        prev = str(row[0] or "").strip()
+        if clause in prev:
+            return
+        text = clause if not prev else f"{prev}，{clause}"
+        conn.execute(
+            "UPDATE atk_order SET reason=?, updated_at=? WHERE id=?",
+            (text, now_ts(), order_id))
+        conn.commit()
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
+    log.info("订单 %s %s", order_id, clause)
 
 
 def fighting_order_stopped() -> bool:
@@ -5596,12 +5659,12 @@ def note_lock_morale(morale, confirmed=False) -> None:
             prev = str(row[0] or "") if row else ""
             head = "敌方士气 "
             if prev.startswith(head):
-                tail = prev[len(head):].strip()
+                tail = prev[len(head):].split("，", 1)[0].strip()
                 if tail.isdigit() and int(tail) > 0:
                     return
         conn.execute(
             "UPDATE atk_order SET reason=? WHERE id=? AND status='running'",
-            (f"敌方士气 {morale}", order_id))
+            (_with_defeater(f"敌方士气 {morale}"), order_id))
         conn.commit()
     except sqlite3.Error:
         return
@@ -5649,7 +5712,7 @@ def note_attack_beats(order_id: int, n: int, name: str = "") -> None:
         if who:
             conn.execute(
                 "UPDATE atk_order SET beats=?, reason=? WHERE id=? AND status='running'",
-                (int(n), who, int(order_id)))
+                (int(n), _with_defeater(who), int(order_id)))
         else:
             conn.execute(
                 "UPDATE atk_order SET beats=? WHERE id=? AND status='running'",

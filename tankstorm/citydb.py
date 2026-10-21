@@ -788,8 +788,6 @@ def plan_route(here, target, my_country, avoid=None, avoid_why=None) -> dict:
                 continue
             if cid in skip:
                 who = why.get(cid) or ""
-                if not who:
-                    who = "、".join(failed_names_in(cid))
                 if who:
                     parts.append(f"{label(cid)} 有 {who} 挡路")
                 else:
@@ -6230,14 +6228,12 @@ def failed_uids() -> set:
     return set(failed_names())
 
 
-def failed_names_in(city_id) -> list:
-    """这座城里、当前攻打号战败表记下的名字。含还没落盘的队列。没有名字时用 uid。"""
-    try:
-        city_id = int(city_id or 0)
-    except (TypeError, ValueError):
-        return []
-    if city_id <= 0:
-        return []
+def failed_names_in(city_id=None) -> list:
+    """当前攻打号战败表里的名字。按 UID 认人，不看城市。
+
+    city_id 不再参与判断。含还没落盘的队列。没有名字时用 uid。
+    """
+    del city_id
     acct = _fail_acct()
 
     def _read():
@@ -6245,8 +6241,8 @@ def failed_names_in(city_id) -> list:
         try:
             rows = conn.execute(
                 "SELECT uid, IFNULL(name,'') FROM atk_fail "
-                "WHERE acct=? AND city_id=? AND IFNULL(ret,0) NOT IN (21)",
-                (acct, city_id)).fetchall()
+                "WHERE acct=? AND IFNULL(ret,0) NOT IN (21)",
+                (acct,)).fetchall()
             return [(str(u).strip(), str(n or "").strip()) for u, n in rows if u]
         finally:
             conn.close()
@@ -6272,10 +6268,7 @@ def failed_names_in(city_id) -> list:
             if op[5] in (21,):
                 names.pop(uid, None)
                 continue
-            if int(op[4] or 0) == city_id:
-                names[uid] = str(op[3] or "").strip()
-            else:
-                names.pop(uid, None)
+            names[uid] = str(op[3] or "").strip()
     out = []
     for uid, name in names.items():
         text = name or uid
@@ -6437,28 +6430,24 @@ def reset_atk_fail(user_id: int) -> tuple:
 
 
 def list_atk_fails(user_id: int) -> tuple:
-    """这个登录账号的攻打 QQ 上，算打不过的人。返回 (列表, 攻打 QQ)。"""
+    """这个登录账号的攻打 QQ 上，算打不过的人。按 UID 认人。返回 (列表, 攻打 QQ)。"""
     acct = attack_qq_of(int(user_id or 0))
     if not acct:
         return [], ""
     conn = connect(readonly=True)
     try:
         rows = conn.execute(
-            "SELECT f.uid, IFNULL(f.name,''), IFNULL(f.city_id,0), "
-            "IFNULL(c.name,''), IFNULL(f.at,'') "
-            "FROM atk_fail f LEFT JOIN city c ON c.id=f.city_id "
-            "WHERE f.acct=? AND IFNULL(f.ret,0) NOT IN (21) "
-            "ORDER BY f.at DESC, f.uid",
+            "SELECT uid, IFNULL(name,''), IFNULL(at,'') FROM atk_fail "
+            "WHERE acct=? AND IFNULL(ret,0) NOT IN (21) "
+            "ORDER BY at DESC, uid",
             (acct,)).fetchall()
     finally:
         conn.close()
     items = []
-    for uid, name, city_id, city_name, at in rows:
+    for uid, name, at in rows:
         items.append({
             "uid": str(uid or ""),
             "name": str(name or ""),
-            "city_id": int(city_id or 0),
-            "city_name": str(city_name or ""),
             "at": beijing_ts(at) if at else "",
         })
     return items, acct

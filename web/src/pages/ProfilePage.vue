@@ -37,15 +37,6 @@ function failLabel(it) {
   return name ? `${name} ${uid}` : uid;
 }
 
-function failWhere(it) {
-  const name = String(it.city_name || "").trim();
-  const id = Number(it.city_id) || 0;
-  if (name && id) return `${name} ${id}`;
-  if (name) return name;
-  if (id) return String(id);
-  return "—";
-}
-
 async function resetOne(it) {
   failNote.value = "";
   props.showErr("", "fail");
@@ -136,7 +127,7 @@ async function submitPwd() {
     </form>
     <p class="muted">改完之后这次登录还在。别处登录的要重新登录。</p>
     <h3>战败库</h3>
-    <p class="muted">打不过的人记在这个攻打号上。清城和绕路都会避开他们。去掉一个人，或者整库清空，就可以再打。同一个攻打 QQ 绑了几个登录账号，用的是同一份。</p>
+    <p class="muted">打不过的人按 UID 记在这个攻打号上，换一座城也还是这个人。清城和绕路都会避开他们。去掉这个 UID，或者整库清空，就可以再打。同一个攻打 QQ 绑了几个登录账号，用的是同一份。</p>
     <p v-if="!failReady" class="muted">正在看战败库。</p>
     <p v-else-if="failQq">目前记了 {{ failCount }} 人。</p>
     <p v-else class="muted">还没有攻打 QQ，没有战败库。</p>
@@ -149,13 +140,12 @@ async function submitPwd() {
     <div v-if="failItems.length" class="wide">
       <table class="fail-list">
         <thead>
-          <tr><th>名称</th><th>UID</th><th>城市</th><th>记下时间</th><th></th></tr>
+          <tr><th>名称</th><th>UID</th><th>记下时间</th><th></th></tr>
         </thead>
         <tbody>
           <tr v-for="it in failItems" :key="it.uid">
             <td>{{ it.name || "—" }}</td>
             <td>{{ it.uid }}</td>
-            <td>{{ failWhere(it) }}</td>
             <td>{{ it.at || "—" }}</td>
             <td><button type="button" class="ghost" :disabled="failBusy" @click="resetOne(it).catch((e) => showErr(e.message, 'fail'))">重置</button></td>
           </tr>

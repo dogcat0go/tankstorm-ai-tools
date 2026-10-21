@@ -3200,10 +3200,19 @@ def _await_role(sock, rec, spec, ctx, config=None, timeout=12) -> bool:
     filled = int(((config or {}).get("国战") or {}).get("自己国家ID") or 0)
     if filled or daily.read_my_country(rec):
         return True
+    try:
+        from . import wiremap
+        wop, body = wiremap.ACTIVE.to_wire("0462", b"")
+        sender.send_frame(sock, wop, body, getattr(rec, "rc4_c2s", None))
+        log.info("已请求国家面板")
+    except Exception as exc:
+        log.warning("请求国家面板失败：%s", exc)
     sock.settimeout(1.0)
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if daily.read_my_country(rec):
+        cid = daily.read_my_country(rec)
+        if cid:
+            log.info("国家ID=%s", cid)
             return True
         try:
             chunk = sock.recv(8192)
@@ -3215,7 +3224,10 @@ def _await_role(sock, rec, spec, ctx, config=None, timeout=12) -> bool:
         if reply:
             sock.sendall(reply)
             log.info("收到在线探测，已回应")
-    return bool(daily.read_my_country(rec))
+    cid = daily.read_my_country(rec)
+    if cid:
+        log.info("国家ID=%s", cid)
+    return bool(cid)
 
 
 def _connect_and(qq, config: dict, work) -> int:

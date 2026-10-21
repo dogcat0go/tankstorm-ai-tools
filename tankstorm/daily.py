@@ -1877,10 +1877,12 @@ def read_my_country(rec):
     国战和争霸战的请求都要带这个值（争霸战的名次还是**本国内部**排名），
     以前写死在 config 里是 3 —— 那只是这个号是英国而已，换个号就错。
 
-    两个来源都由服务端在**登录时主动推来**，不用额外发请求：
+    三个来源，读到一个大于 0 的整数即可：
 
-      · `RseFightSimpInfo.countryid` —— schema 解出了真名，首选
-      · `RseLoad.countryData.field5` —— 登录响应里的同一份 countryData，兜底
+      · `RseFightSimpInfo.countryid`
+      · `RseCountryOpen.countryData.field5` —— 2026102102 起登录不推角色包，
+        要先发 RceCountryOpen 才会回这份
+      · `RseLoad.countryData.field5`
 
     可信度的旁证：`RseLoad.countryData` 和国战面板 `RseCountryOpt.countryData`
     是同一个结构，country_war 早就验过的 field6(当前城市 3201)、field13(行动力)、
@@ -1898,13 +1900,9 @@ def read_my_country(rec):
         return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
 
     named = _pick("RseFightSimpInfo", "countryid")
+    panel = _pick("RseCountryOpen", "countryData.field5")
     backup = _pick("RseLoad", "countryData.field5")
-    if named and backup and named != backup:
-        # 两个来源打架就以带名字的那个为准，但一定要吼出来 —— 说明其中一个
-        # 字段的含义理解错了，不该悄悄用下去。
-        log.warning("国家ID 两个来源不一致：RseFightSimpInfo.countryid=%s，"
-                    "RseLoad.countryData.field5=%s，取前者", named, backup)
-    return named or backup
+    return named or panel or backup
 
 
 def _read_counts(data, path):

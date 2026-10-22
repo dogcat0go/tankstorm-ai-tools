@@ -40,6 +40,18 @@ F_ZHUZI_ALL = 27
 ITEM_METAL = 20817          # 1000 万金属卡
 ITEM_OIL = 20818            # 1000 万石油卡
 CARD_GAIN = 10_000_000
+# 2026-10-22 23:59 从资源卡包开出后用掉的卡。面额来自回包 medal/oil。
+# 1000 万的 20817、20818 先不开。旧的 30 万 20012、20019 不是这一批。
+BASE_CARDS = (
+    (20008, "10万金属"),
+    (20015, "10万石油"),
+    (20117, "500万石油"),
+    (20116, "500万金属"),
+    (20051, "50万金属"),
+    (20050, "50万石油"),
+    (20025, "200万石油"),
+    (20030, "200万金属"),
+)
 
 HARD_MAX_TIMES = 999
 # 空仓库每种资源最多吃下 4 张 1000 万卡。一次只开 1 张，开满或被拒就停。
@@ -128,30 +140,41 @@ def _fund_value(got):
     return None
 
 
-def open_resource_cards(rec, sock, bag=None, on_progress=None, label="开卡"):
-    """各开最多 4 张 1000 万金属卡和石油卡。一次一张。
+def open_resource_cards(rec, sock, bag=None, on_progress=None, label="开卡",
+                        cards=None):
+    """按顺序开资源卡。一次一张。某种没有或没开成就停这种，换下一种。
 
+    cards 不传时仍是拨款前的 1000 万金属卡和石油卡，每种最多 4 张。
+    传了就按这个顺序，背包里有多少开多少。
     bag 不传就用最近的背包。返回 (背包, [(资源, 开了几张, 原因)])。
-    没有背包时不发请求。某一张没开成就停这种，另一种接着开。
+    没有背包时不发请求。
     """
     if bag is None:
         got_bag = rec.latest.get(RSE_BAG) if rec else None
         bag = got_bag[1] if got_bag and isinstance(got_bag[1], dict) else None
-    names = ((ITEM_METAL, "金属"), (ITEM_OIL, "石油"))
+    default = cards is None
+    names = ((ITEM_METAL, "金属"), (ITEM_OIL, "石油")) if default else cards
     if not isinstance(bag, dict):
         return None, [(name, 0, "没有背包") for _item, name in names]
-    log.info("[%s] 先各开 %d 张金属卡和石油卡", label, MAX_OPEN)
+    if default:
+        log.info("[%s] 先各开 %d 张金属卡和石油卡", label, MAX_OPEN)
+    else:
+        log.info("[%s] 按顺序开资源卡", label)
     rows = []
     for item_id, name in names:
         raise_if_stopped()
         slot, count = _find_card(bag, item_id)
         if not count:
-            log.info("[%s] 背包没有 1000 万%s卡", label, name)
+            if default:
+                log.info("[%s] 背包没有 1000 万%s卡", label, name)
+            else:
+                log.info("[%s] 背包没有%s卡", label, name)
             rows.append((name, 0, "背包没有"))
             continue
         opened = 0
         why = ""
-        while opened < MAX_OPEN and slot is not None and count > 0:
+        cap = MAX_OPEN if default else count
+        while opened < cap and slot is not None and count > 0:
             ok, reason = use_card(rec, sock, slot, item_id, 1)
             if not ok:
                 tail = "，接着拨款" if "拨款" in label else ""
@@ -161,10 +184,14 @@ def open_resource_cards(rec, sock, bag=None, on_progress=None, label="开卡"):
                 break
             opened += 1
             metal, oil = _wallet(_pick_recent(rec, RSE_USER, 0))
-            log.info("[%s] 开了 1 张 1000 万%s卡（%d/%d），基地金属 %s 石油 %s",
-                     label, name, opened, MAX_OPEN, _wan(metal), _wan(oil))
+            if default:
+                log.info("[%s] 开了 1 张 1000 万%s卡（%d/%d），基地金属 %s 石油 %s",
+                         label, name, opened, cap, _wan(metal), _wan(oil))
+            else:
+                log.info("[%s] 开了 1 张%s卡（%d/%d），基地金属 %s 石油 %s",
+                         label, name, opened, cap, _wan(metal), _wan(oil))
             if on_progress:
-                on_progress(f"{name} {opened}/{MAX_OPEN}")
+                on_progress(f"{name} {opened}/{cap}")
             _nap(0.4)
             bag = _pick_recent(rec, RSE_BAG, 0) or bag
             slot, count = _find_card(bag, item_id)
@@ -173,17 +200,18 @@ def open_resource_cards(rec, sock, bag=None, on_progress=None, label="开卡"):
 
 
 def open_base_cards(rec, sock, on_progress=None):
-    """基地战开资源卡。各开最多 4 张，规则和拨款前开卡一样。"""
+    """基地战开资源卡。先用光这次抓到的卡，一次一张。1000 万的先不开。"""
     from . import citydb
     if "cards" in citydb.LOCKED_DAILY_KINDS:
         return False, citydb.RECOVERING_TEXT
-    _bag, rows = open_resource_cards(rec, sock, on_progress=on_progress, label="开卡")
+    _bag, rows = open_resource_cards(
+        rec, sock, on_progress=on_progress, label="开卡", cards=BASE_CARDS)
     if any(why == "没有背包" for _name, _opened, why in rows):
         return False, "登录包里没有背包，没有开卡"
     bits = []
     for name, opened, why in rows:
         if why == "背包没有":
-            bits.append(f"没有 1000 万{name}卡")
+            bits.append(f"没有{name}卡")
         elif why:
             bits.append(f"{name}开了 {opened} 张，下一张没开成（{why}）")
         else:

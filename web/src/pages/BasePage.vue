@@ -119,7 +119,7 @@ function resText(n) {
             <span class="switch">开资源卡</span>
             <button type="submit">开卡</button>
           </form>
-          <p class="muted">和成就拨款前开卡一样。各开 4 张 1000 万金属卡和石油卡，一次只开 1 张。背包没有，或者这一张没开成，这种就停，另一种接着开。</p>
+          <p class="muted">一次只开 1 张。先开这次抓到的：10 万金属、10 万石油、500 万石油、500 万金属、50 万金属、50 万石油、200 万石油、200 万金属。1000 万的先不开。某种没有，或者这一张没开成，这种就停，换下一种。</p>
         </div>
         <div class="item-part">
           <h3>抽卡</h3>

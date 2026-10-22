@@ -3403,23 +3403,17 @@ def run_pve_once(qq, config: dict, stages=None) -> int:
     """连一次、打征战世界、退出。
 
     stages 留空只打当前关。一个数字是终点关，从当前关打到这一关。
-    写成 1-10 或 3,5,8 时，当前关必须在名单里。
-    config「征战.第4次」仍会先做 VIP 重开。
+    到了或超过终点关时，按免费重开次数重置并从第 1 关打到终点。
     """
-    from . import pve
-
     def _work(rec, sock, spec, ctx, beater):
         cfg = config.get("征战") or {}
-        if cfg.get("第4次"):
-            ok, why = pve.vip_restart(rec, sock)
-            log.info("[征战] %s", why)
-            if not ok:
-                return 1
+        raw_gap = cfg.get("间隔秒", 1)
+        interval = float(1 if raw_gap is None or raw_gap == "" else raw_gap)
         raw = stages if stages else None
+        path = daily.state_path_for_qq(getattr(qq, "uin", "") or "")
         try:
-            ok, why = pve.campaign(
-                rec, sock, raw, interval,
-                third=bool(cfg.get("第3次")), fourth=bool(cfg.get("第4次")))
+            with daily.using_state(path):
+                ok, why = daily.campaign_round(rec, sock, raw, interval)
         except ValueError as exc:
             log.error("[征战] %s", exc)
             return 1

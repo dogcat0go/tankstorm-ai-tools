@@ -2194,7 +2194,7 @@ def bind_attack_account(user_id: int, account: str) -> str:
     return ""
 
 
-_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "pageqr", "qrpath", "resume")
+_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "hereask", "pageqr", "qrpath", "resume")
 
 
 def clear_attack_binding(user_id: int) -> str:
@@ -4036,6 +4036,39 @@ def take_attack_move() -> int:
         return 0
     _delete_signal(_mark_name("move", user_id))
     return cid
+
+
+def request_attack_here(user_id: int) -> str:
+    """让这条攻打线程读一次当前城市、士气和体力。成功返回空字符串。"""
+    user_id = int(user_id or 0)
+    if shutdown_due(user_id):
+        return "已定时关闭，不再执行任务"
+    if not attack_qq_of(user_id):
+        return "还没绑定攻打 QQ"
+    status = attack_status(user_id)
+    if not status.get("online"):
+        return "攻打没在跑"
+    if status.get("phase") == "login" or status.get("need_login"):
+        return "还在登录，连上后再看所在城市"
+    _upsert_signal(_mark_name("hereask", user_id), "1")
+    return ""
+
+
+def attack_here_pending(user_id: int = 0) -> bool:
+    """页面刚打开国战助手，还没读这一次所在城市。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id or (shutdown_due(user_id) and shutdown_covers_context()):
+        return False
+    return _signal_value(_mark_name("hereask", user_id)).strip() == "1"
+
+
+def take_attack_here() -> bool:
+    """领走这一次查看。领过就不再读第二次。"""
+    user_id = attack_context_user()
+    if not attack_here_pending(user_id):
+        return False
+    _delete_signal(_mark_name("hereask", user_id))
+    return True
 
 
 def note_attack_link(interval: float) -> None:

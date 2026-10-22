@@ -416,18 +416,34 @@ async function runDaily(kind, extra) {
   await refreshAttacks();
 }
 
+let attackHereOn = false;
+
+function askAttackHere() {
+  api("/api/attack-here", {}).catch(() => {});
+}
+
+function markAttackHere() {
+  const on = !!(toolsOn.value && tab.value === "attack");
+  if (on && !attackHereOn) askAttackHere();
+  attackHereOn = on;
+}
+
 function pickTab(key) {
   tab.value = key;
   if (key === "daily") refreshDaily().catch((e) => showErr(e.message, "daily"));
   if (key === "base") refreshBase().catch((e) => showErr(e.message, "base"));
+  if (key === "attack") attackHereOn = false;
+  markAttackHere();
 }
 
 function openProfile() {
   tab.value = tab.value === "profile" && !toolsOn.value ? "attack" : "profile";
+  markAttackHere();
 }
 
 function openQq() {
   tab.value = tab.value === "qq" && !toolsOn.value ? "attack" : "qq";
+  markAttackHere();
 }
 
 const sideOn = computed(() => tab.value === "profile" || tab.value === "qq");
@@ -443,6 +459,7 @@ async function refreshAttacks() {
     orders.value = [];
     storms.value = [];
     proc.value = null;
+    attackHereOn = false;
     return;
   }
   const atk = await api("/api/attacks");
@@ -462,6 +479,7 @@ async function refreshAttacks() {
     if (qrSrc.value !== next) qrSrc.value = next;
   } else if (!qrSrc.value) qrSrc.value = "/api/attack-qr?t=" + Date.now();
   if (wantQr) qrWait = 0;
+  markAttackHere();
 }
 
 let qrWait = 0;

@@ -1980,6 +1980,35 @@ def _watch_blocked_path(rec, sock, config, beater, path_at: float) -> float:
     return time.time()
 
 
+def _refresh_asked_here(rec, sock, config) -> bool:
+    """页面刚进入国战助手。读一次当前城市、士气和体力。没有请求返回 False。"""
+    from . import citydb, country_war
+
+    if not citydb.take_attack_here():
+        return False
+    country = _my_country(rec, config)
+    if not country:
+        log.info("页面要看所在城市，还没有自己的国家")
+        return True
+    try:
+        with daily.lane_hold():
+            power, loc, _times, panel = country_war._panel(sock, rec, country)
+    except OSError:
+        raise
+    if panel is None:
+        log.info("页面要看所在城市，没读到面板")
+        return True
+    try:
+        loc = int(loc or 0)
+    except (TypeError, ValueError):
+        loc = 0
+    name = citydb.city_name(loc) or ""
+    where = f"{loc} {name}".strip() if loc else "未知"
+    morale = country_war._read_path(panel, country_war.F_MORALE)
+    log.info("页面刷新所在城市 %s，士气 %s，体力 %s", where, morale, power)
+    return True
+
+
 def _run_requested_move(rec, sock, config, beater) -> bool:
     """页面点了移动到指定城。走进那座城，不打它。没有请求返回 False。"""
     from . import citydb, country_war
@@ -2340,7 +2369,8 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
 
     def _jobs_open():
         return (citydb.daily_job_open() or citydb.attack_order_open()
-                or citydb.attack_move_pending() > 0)
+                or citydb.attack_move_pending() > 0
+                or citydb.attack_here_pending())
 
     def _pump():
         """冷却空档。到点的空城改回排队；剩下的时间还够，就先打一单国战。"""
@@ -2402,6 +2432,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                             log.info("点了推送登录，游戏没挂上，准备重连")
                             return 0
                     citydb.set_attack_status("paused")
+                    _refresh_asked_here(rec, sock, config)
                     if not _wait_socket(sock, spec, ctx):
                         raise OSError("服务器关闭连接")
                     continue
@@ -2413,6 +2444,8 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                     return 0
                 if _run_requested_move(rec, sock, config, beater):
                     stated = False
+                    continue
+                if _refresh_asked_here(rec, sock, config):
                     continue
                 for uid in citydb.attack_context_users():
                     citydb.skip_unfinished_auto(uid)
@@ -2465,7 +2498,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 if not stated:
                     path_box[0] = 0.0
                 stated = True
-                # 空挂只心跳、等订单。所在城市在打国战订单和移动时记，扫描号自己翻城。
+                # 空挂只心跳、等订单。打开国战助手时另读一次所在城市。扫描号自己翻城。
                 path_box[0] = _watch_blocked_path(
                     rec, sock, config, beater, path_box[0])
                 if not _wait_socket(sock, spec, ctx):
@@ -2597,8 +2630,11 @@ def run_remote_orders(qq, config: dict) -> int:
             left = citydb.attack_hold_left()
             moving = citydb.attack_move_pending() > 0
             daily_wait = citydb.daily_job_open()
+            locating = citydb.attack_here_pending()
             # 新订单本身不登录。服务器停前正在打的那一单要接着做。
-            need = asked or resumed or moving or daily_wait or citydb.attack_hold_on()
+            # 打开国战助手要读一次所在城市，没挂着也先连上读完再断开。
+            need = (asked or resumed or moving or daily_wait or locating
+                    or citydb.attack_hold_on())
             if need and not qq.is_valid():
                 citydb.set_attack_status("login")
                 relogin_with_push(qq, config)
@@ -2607,8 +2643,10 @@ def run_remote_orders(qq, config: dict) -> int:
                 left = citydb.attack_hold_left()
                 moving = citydb.attack_move_pending() > 0
                 daily_wait = citydb.daily_job_open()
+                locating = citydb.attack_here_pending()
                 resumed = citydb.attack_resume_marked()
-                need = asked or resumed or moving or daily_wait or citydb.attack_hold_on()
+                need = (asked or resumed or moving or daily_wait or locating
+                        or citydb.attack_hold_on())
             if not need:
                 citydb.fail_blocked_orders()
                 if left is not None:
@@ -3070,7 +3108,8 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                     else:
                         citydb.set_attack_status("login")
                 holding = citydb.attack_hold_on()
-                if not (asked or resumed or holding or citydb.daily_job_open()):
+                if not (asked or resumed or holding or citydb.daily_job_open()
+                        or citydb.attack_here_pending()):
                     break
                 if just_scanned:
                     just_scanned = False

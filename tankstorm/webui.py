@@ -600,6 +600,11 @@ def _handler(config: dict):
                     if was_off:
                         out["off_at"] = citydb.shutdown_at(user["id"])
                     _json(self, 200, out)
+                elif path == "/api/attack-here":
+                    why = citydb.request_attack_here(user["id"])
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True})
                 elif path == "/api/attack-move":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "移动到指定城市需要中级或高级订阅"})

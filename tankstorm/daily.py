@@ -1779,6 +1779,7 @@ def _save_state(st, path=None):
 
 def task_board(uin: str, switches: dict) -> list:
     """页面上的今日进度。不连游戏。没绑攻打号时次数显示 0。"""
+    from . import citydb
     switches = switches if isinstance(switches, dict) else {}
     if str(uin or "").strip():
         st = _load_state(state_path_for_qq(uin))
@@ -1794,25 +1795,29 @@ def task_board(uin: str, switches: dict) -> list:
         name = task.name
         if task.key in HELD_TASKS:
             name = name + "（暂不执行）"
+        locked = task.key in citydb.LOCKED_DAILY_TASKS
         rows.append({
             "key": task.key,
             "name": name,
-            "on": False if task.key in HELD_TASKS else bool(switches.get(task.key)),
+            "on": False if task.key in HELD_TASKS or locked else bool(switches.get(task.key)),
             "done": count,
             "max": int(task.max_per_day or 1),
+            "locked": locked,
         })
     for key, name in CAMPAIGN_EXTRAS:
         try:
             count = int(done.get(key) or 0)
         except (TypeError, ValueError):
             count = 0
+        locked = key in citydb.LOCKED_DAILY_TASKS
         rows.append({
             "key": key,
             "name": name,
-            "on": bool(switches.get(key)),
+            "on": False if locked else bool(switches.get(key)),
             "done": count,
             "max": 1,
             "extra": True,
+            "locked": locked,
         })
     return rows
 
@@ -3895,11 +3900,6 @@ def _run_campaign_task(rec, sock, config):
 
 def _run(rec, sock, config, schema, on_fail=None):
     from . import citydb
-    if "daily" in citydb.LOCKED_DAILY_KINDS:
-        log.info("每日任务已加锁：%s", citydb.RECOVERING_TEXT)
-        if on_fail:
-            on_fail(citydb.RECOVERING_TEXT)
-        return {}, {}
     _state_local.campaign_pushing = False
     if hasattr(_state_local, "campaign_round"):
         del _state_local.campaign_round
@@ -3932,12 +3932,12 @@ def _run(rec, sock, config, schema, on_fail=None):
             continue
         try:
             raise_if_stopped()
-            if task.key in HELD_TASKS:
-                results[task.key] = HELD_STATUS
-                log.info("[%s] %s", task.key, results[task.key])
-                continue
             if not switches.get(task.key, False):
                 results[task.key] = "未开启"
+                continue
+            if task.key in HELD_TASKS or task.key in citydb.LOCKED_DAILY_TASKS:
+                results[task.key] = HELD_STATUS
+                log.info("[%s] %s", task.key, results[task.key])
                 continue
 
             done = 0 if ignore_done else st["done"].get(task.key, 0)
@@ -4096,9 +4096,13 @@ def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1
         except (TypeError, ValueError):
             return False
 
+    from . import citydb
     third_open = bool((switches or {}).get("征战第三次"))
     third_done = (not third_open) or _done_of("征战第三次")
     for key, kind in (("征战第三次", 3), ("征战第4次", 4)):
+        if key in citydb.LOCKED_DAILY_TASKS:
+            results[key] = HELD_STATUS
+            continue
         if not (switches or {}).get(key):
             continue
         if key == "征战第4次" and not third_done:

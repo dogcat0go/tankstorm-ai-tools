@@ -4680,12 +4680,17 @@ _DAILY_STATUS = {
     "ended": "已关停",
 }
 RECOVERING_TEXT = "功能尚在恢复中..."
+# 还没对上抓包的入口。基地战、征战、刷摩多、国家宝箱和整轮日常已经放开。
 LOCKED_DAILY_KINDS = frozenset({
-    "daily", "pve", "fund", "chest", "modo",
-    "blast", "factory", "cards",
-    "haoyin", "admiral", "admiral10",
-    "pick_general", "pick_staff", "pick_lab", "pick_auto",
-    "lab50", "auto50",
+    "fund",
+})
+# 整轮日常里仍跳过这些开关。页面上也不能打开。
+LOCKED_DAILY_TASKS = frozenset({
+    "七天乐", "每日资源", "修复坦克", "战功排名", "实景树每日奖励",
+    "英雄开采", "将领冶炼", "英雄培养", "技能书将领", "技能书参谋",
+    "参谋操作", "锦鲤心愿", "特工派遣", "配件探索", "军备制造",
+    "军事演习", "矿区争夺", "世界废墟挂机奖励",
+    "公会战参加", "公会战", "公会捐献", "周任务",
 })
 
 
@@ -4869,9 +4874,9 @@ def daily_switches(user_id: int, defaults: dict) -> dict:
 
 def set_daily_switch(user_id: int, key: str, on, known, defaults: dict) -> str:
     """记下一项开关。第一次保存时把当前看到的开关整份记下。"""
-    if "daily" in LOCKED_DAILY_KINDS:
-        return RECOVERING_TEXT
     key = str(key or "").strip()
+    if key in LOCKED_DAILY_TASKS:
+        return RECOVERING_TEXT
     allowed = []
     for item in known or []:
         name = str(item or "").strip()

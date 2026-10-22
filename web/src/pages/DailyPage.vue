@@ -32,62 +32,58 @@ defineProps({
 <template>
   <section>
     <h2>日常任务</h2>
-    <p class="recovering-tip">功能尚在恢复中...</p>
     <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
     <p v-else class="muted">还没绑定攻打 QQ。按页面上方的步骤点登录并扫码。一个登录账号只绑一个攻打号，这里的每一项都用那个号做。</p>
     <p class="muted">由这个账号的攻打线程执行，不另开连接。正在打的那一单会先打完，然后做这项。后面的攻打单排在它后面。</p>
-    <fieldset class="locked-area" disabled>
-      <form class="lock-row" @submit.prevent="runDaily('daily', { stages: pveStages }).catch((e) => showErr(e.message))">
-        <span class="switch">每日任务</span>
-        <button type="submit" disabled>跑一轮</button>
+    <form class="lock-row" @submit.prevent="runDaily('daily', { stages: pveStages }).catch((e) => showErr(e.message))">
+      <span class="switch">每日任务</span>
+      <button type="submit">跑一轮</button>
+    </form>
+    <form class="lock-row" @submit.prevent="saveDailyAt().catch((e) => showErr(e.message))">
+      <span class="switch">定时执行</span>
+      <label>北京时间<input v-model="dailyAt" type="time" class="clock" /></label>
+      <button type="submit">保存</button>
+      <span class="muted">{{ dailyAtNote }}</span>
+    </form>
+    <p class="muted">按下面今日进度里打开的项做。开关记在这个登录账号上。今日次数记在这个攻打号上，换一个号单独算。填了时间就每天到点再跑一轮，留空不定时。标着恢复中的项不会执行。</p>
+    <details class="campaign-box">
+      <summary>征战世界</summary>
+      <form class="campaign-line" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => showErr(e.message))">
+        <span class="campaign-ops">
+          <input v-model="pveStages" aria-label="关卡" placeholder="终点，例如 150" />
+          <button type="submit">开始征战</button>
+        </span>
       </form>
-      <form class="lock-row" @submit.prevent="saveDailyAt().catch((e) => showErr(e.message))">
-        <span class="switch">定时执行</span>
-        <label>北京时间<input v-model="dailyAt" type="time" class="clock" disabled /></label>
-        <button type="submit" disabled>保存</button>
-        <span class="muted">{{ dailyAtNote }}</span>
-      </form>
-      <p class="muted">按下面今日进度里打开的项做。开关记在这个登录账号上。今日次数记在这个攻打号上，换一个号单独算。填了时间就每天到点再跑一轮，留空不定时。</p>
-      <details class="campaign-box">
-        <summary>征战世界</summary>
-        <p class="recovering-tip">功能尚在恢复中...</p>
-        <form class="campaign-line" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => showErr(e.message))">
-          <span class="campaign-ops">
-            <input v-model="pveStages" aria-label="关卡" placeholder="终点，例如 150" disabled />
-            <button type="submit" disabled>开始征战</button>
-          </span>
-        </form>
-        <div v-for="it in campaignTasks" :key="it.key" class="campaign-line">
-          <span class="switch">{{ it.name }}</span>
-          <span class="campaign-ops">
-            <el-switch
-              class="daily-switch"
-              size="large"
-              inline-prompt
-              active-text="开"
-              inactive-text="关"
-              :model-value="it.on"
-              :loading="dailySwitching === it.key"
-              disabled
-              @change="saveDailySwitch(it, $event)"
-            />
-            <span class="muted">今日 {{ it.done }}/{{ it.max }}</span>
-          </span>
-        </div>
-        <p class="muted">征战和命令行 --pve 同一套。填一个终点，就从当前关打到这一关。还没到就接着打，不重开。已经到了或超过，免费重开一次，再从第 1 关打到终点；打到了还有免费次数，再重开一次，再从第 1 关打。这一轮没打过就停，不再重开。一天最多 2 次。留空只打当前这一关。第三次、第4次排在每日领奖之后，将领授勋和加强授勋再排在这两次后面；还在往终点打的这一轮先不做。第三次重开之后要从第 1 关打到终点，打完才发第4次；第4次也是重开后再打到终点。只重开没打完不算完成。第4次扣 100 勋章。第三次是付费重征。默认关。</p>
-      </details>
-      <form class="lock-row" @submit.prevent="addModo().catch((e) => showErr(e.message))">
-        <span class="switch">刷摩多军团</span>
-        <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required disabled /></label>
-        <button type="submit" disabled>提交</button>
-      </form>
-      <form class="lock-row" @submit.prevent="saveModoAt().catch((e) => showErr(e.message))">
-        <span class="switch">定时刷摩多</span>
-        <label>北京时间<input v-model="modoAt" type="time" class="clock" disabled /></label>
-        <button type="submit" disabled>保存</button>
-        <span class="muted">{{ modoAtNote }}</span>
-      </form>
-    </fieldset>
+      <div v-for="it in campaignTasks" :key="it.key" class="campaign-line">
+        <span class="switch">{{ it.name }}</span>
+        <span class="campaign-ops">
+          <el-switch
+            class="daily-switch"
+            size="large"
+            inline-prompt
+            active-text="开"
+            inactive-text="关"
+            :model-value="it.on"
+            :loading="dailySwitching === it.key"
+            :disabled="it.locked"
+            @change="saveDailySwitch(it, $event)"
+          />
+          <span class="muted">今日 {{ it.done }}/{{ it.max }}</span>
+        </span>
+      </div>
+      <p class="muted">征战和命令行 --pve 同一套。填一个终点，就从当前关打到这一关。还没到就接着打，不重开。已经到了或超过，免费重开一次，再从第 1 关打到终点；打到了还有免费次数，再重开一次，再从第 1 关打。这一轮没打过就停，不再重开。一天最多 2 次。留空只打当前这一关。第三次、第4次排在每日领奖之后，将领授勋和加强授勋再排在这两次后面；还在往终点打的这一轮先不做。第三次重开之后要从第 1 关打到终点，打完才发第4次；第4次也是重开后再打到终点。只重开没打完不算完成。第4次扣 100 勋章。第三次是付费重征。默认关。</p>
+    </details>
+    <form class="lock-row" @submit.prevent="addModo().catch((e) => showErr(e.message))">
+      <span class="switch">刷摩多军团</span>
+      <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>
+      <button type="submit">提交</button>
+    </form>
+    <form class="lock-row" @submit.prevent="saveModoAt().catch((e) => showErr(e.message))">
+      <span class="switch">定时刷摩多</span>
+      <label>北京时间<input v-model="modoAt" type="time" class="clock" /></label>
+      <button type="submit">保存</button>
+      <span class="muted">{{ modoAtNote }}</span>
+    </form>
     <p class="muted">按攻打号的国家，去离自己最近的一座摩多军团。先走进那座城，召唤支援兵，再打。召唤失败时用功勋补一轮支援兵，再召唤一次；紧接着还失败就停。恢复卡都在这一座用完。0 表示不用卡，行动力不够就停。提交后跳到国战助手，订单和进度都在那里。击退数量按 4 次扫荡算 1 个。要这个号已经挂机保活。填了时间就每天到点按这里的恢复卡数量再刷一轮，刷完再领一次国家宝箱。正在打的那一单会先打完。留空不定时。</p>
     <p v-if="dailyNote" class="muted">{{ dailyNote }}</p>
     <p v-if="err && errAt === 'daily'" class="err">{{ err }}</p>
@@ -109,8 +105,7 @@ defineProps({
       </table>
     </div>
     <h2>今日进度</h2>
-    <p class="recovering-tip">功能尚在恢复中...</p>
-    <p class="muted">点开关就保存。跑一轮时按这里的开和关做。</p>
+    <p class="muted">点开关就保存。跑一轮时按这里的开和关做。标着恢复中的项先不能开。</p>
     <p v-if="!progressTasks.length" class="muted">还没有任务表。</p>
     <div v-else class="wide">
       <table>
@@ -129,9 +124,10 @@ defineProps({
                 inactive-text="关"
                 :model-value="it.on"
                 :loading="dailySwitching === it.key"
-                disabled
+                :disabled="it.locked"
                 @change="saveDailySwitch(it, $event)"
               />
+              <span v-if="it.locked" class="muted">功能尚在恢复中...</span>
             </td>
             <td>{{ it.done }}/{{ it.max }}</td>
           </tr>

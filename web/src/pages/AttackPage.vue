@@ -175,7 +175,7 @@ function fightingLine(it) {
         <label class="choice">移动到
           <select v-model="moveCity">
             <option value="" disabled>选择城市</option>
-            <option v-for="c in cities.filter((c) => !/魔多|摩多/.test(c.name || ''))" :key="'mv' + c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
+            <option v-for="c in attackCities" :key="'mv' + c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
           </select>
         </label>
         <button type="button" @click="moveToCity().catch((e) => showErr(e.message))">移动</button>

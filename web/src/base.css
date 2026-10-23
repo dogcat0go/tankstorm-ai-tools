@@ -137,12 +137,23 @@ button.sort {
 }
 button.sort:hover, button.sort.on { color: #1a1a1a; text-decoration: underline; }
 table.members { min-width: 860px; }
+table.members td.member-ops { white-space: nowrap; }
 table.members button.ghost { padding: 4px 10px; }
 table.members button.ghost + button.ghost { margin-left: 8px; }
 table.members td.member-cfg { background: #fafaf7; }
 table.members td.member-cfg p { margin: 4px 0; }
 table.members td.member-cfg form.storm-cap { margin-top: 8px; }
 table.members td.member-cfg form.storm-cap input { width: 7em; }
+table.members button.ghost.here { background: #e7e7e3; border-color: #1a1a1a; }
+table.members td.member-expiry .expiry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+}
+table.members td.member-expiry form { margin: 0; }
+table.members td.member-expiry input[type="date"] { width: 11em; }
+table.members td.member-expiry .err { margin: 8px 0 0; }
 th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e6e6e6; vertical-align: top; }
 th { font-size: 13px; color: #555; }
 .on { color: #0b6b2f; font-weight: 700; }

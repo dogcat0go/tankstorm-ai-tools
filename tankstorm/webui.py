@@ -751,6 +751,19 @@ def _handler(config: dict):
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "members": _member_views()})
+                elif path == "/api/admin/members/expiry":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能改成员有效期"})
+                        return
+                    try:
+                        user_id = int(str(data.get("user_id", "")).strip())
+                    except (TypeError, ValueError):
+                        raise ValueError("账号编号不对") from None
+                    why = citydb.apply_member_expiry(
+                        user_id, data.get("action"), data.get("expires_at"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "members": _member_views()})
                 elif path == "/api/atk-fail/reset":
                     uid = str(data.get("uid") or "").strip()
                     if uid:

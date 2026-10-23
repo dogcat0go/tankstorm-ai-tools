@@ -465,7 +465,10 @@ function markAttackHere() {
 function pickTab(key) {
   tab.value = key;
   if (key === "daily") refreshDaily().catch((e) => showErr(e.message, "daily"));
-  if (key === "base") refreshBase().catch((e) => showErr(e.message, "base"));
+  if (key === "base") {
+    refreshBase().catch((e) => showErr(e.message, "base"));
+    api("/api/base-equip", {}).catch(() => {});
+  }
   if (key === "attack") attackHereOn = false;
   markAttackHere();
 }

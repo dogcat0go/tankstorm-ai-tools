@@ -153,7 +153,7 @@ function resText(n) {
             <label>数量<input v-model="boxHighCount" class="mins" inputmode="numeric" required /></label>
             <button type="submit">开启</button>
           </form>
-          <p class="muted">数量是要开的箱子个数。中级箱 60002 配钥匙 10038，高级箱 60003 配钥匙 10039。一次各扣 10。箱子或钥匙不够 10 就停。25 个开 2 次、用 20 个箱子和 20 把钥匙。点下去会先确认。</p>
+          <p class="muted">数量是要开的箱子个数。中级箱 60002 配钥匙 10038，高级箱 60003 配钥匙 10039。这两样在装备栏，进这一页时读一次。开完之后数量会跟着变。一次各扣 10。箱子或钥匙不够 10 就停。25 个开 2 次、用 20 个箱子和 20 把钥匙。点下去会先确认。</p>
         </FoldPart>
         <FoldPart title="换卡">
           <form class="lock-row" @submit.prevent="runPick('pick_general', generalCount).catch((e) => showErr(e.message))">

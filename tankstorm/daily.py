@@ -1670,12 +1670,13 @@ TASKS = [
            "tankstorm.guild", fromlist=["daily_donate"]
        ).daily_donate(rec, sock, config)),
 
-    # 2026-10-23 23:14 抓包。刷新候选后参加，不是公会战报名。
+    # 2026-10-23 23:14 抓包。4 星、5 星参加或发布，并领公会活跃。
     _t("公会任务", "公会·参加任务", "04f3", "RceGuildBuildOpt",
        {}, "实测",
-       "2026-10-23：ntype=3 开面板，4 刷新，6 参加。"
-       "参加的 nTaskID 是候选里的 nID。协议不带星级和名字，"
-       "这次点参加的是 nTaskType=13。付费刷新次数大于 0 就停",
+       "2026-10-23：ntype=3 开面板，9 参加已发布的 4 星或 5 星，"
+       "6 发布候选里的 4 星或 5 星，7 领已完成的。一天最多 5 个。"
+       "公会活跃是 RceGuildOpt type=350 开面板、type=351 按档领取。"
+       "付费刷新不发",
        runner=lambda rec, sock, config: __import__(
            "tankstorm.guild", fromlist=["daily_guild_task"]
        ).daily_guild_task(rec, sock, config)),
@@ -2556,9 +2557,13 @@ _WATCH_CARDS = (
     (10020, "general"), (10107, "staff"), (10006, "lab"),
     (10116, "auto"), (10061, "drink"),
     (110011, "recruit"), (110015, "explore"),
+)
+# 补给箱和钥匙不在普通背包。点开装备栏才回 RseVirtualItemList。
+_VIRTUAL_CARDS = (
     (60002, "box_mid"), (60003, "box_high"),
     (10038, "box_mid_key"), (10039, "box_high_key"),
 )
+_VIRTUAL_IDS = {item_id for item_id, _key in _VIRTUAL_CARDS}
 
 
 def note_bag_cards(rec) -> None:
@@ -2591,6 +2596,88 @@ def note_bag_cards(rec) -> None:
     citydb.note_attack_cards(found)
 
 
+def _item_rows(data):
+    if not isinstance(data, dict):
+        return []
+    rows = data.get("bagItem")
+    if rows is None:
+        rows = data.get("field1")
+    if isinstance(rows, dict):
+        nested = rows.get("field1") or rows.get("field2")
+        rows = nested if isinstance(nested, list) else [rows]
+    return rows if isinstance(rows, list) else []
+
+
+def note_virtual_cards(rec) -> None:
+    """装备栏列表里的箱子和钥匙。没收到这份列表就不写，页面继续显示还没读到。"""
+    one = (getattr(rec, "latest", {}) or {}).get("RseVirtualItemList") if rec else None
+    data = one[1] if isinstance(one, tuple) and len(one) > 1 else None
+    if not isinstance(data, dict) or data.get("type") not in (0, None):
+        return
+    rows = _item_rows(data)
+    if not rows:
+        return
+    want = {item_id: key for item_id, key in _VIRTUAL_CARDS}
+    found = {key: 0 for _item_id, key in _VIRTUAL_CARDS}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        tid = row.get("field2")
+        if not isinstance(tid, int) or isinstance(tid, bool):
+            tid = row.get("itemID")
+        count = row.get("field4")
+        if not isinstance(count, int) or isinstance(count, bool):
+            count = row.get("count") or 0
+        if tid not in want or not isinstance(count, int) or isinstance(count, bool):
+            continue
+        found[want[tid]] = count
+    from . import citydb
+    citydb.note_attack_cards(found)
+
+
+def refresh_virtual_items(rec, sock):
+    """点开装备栏。2026-10-23 23:17：RceHeroEquipOpt nType=0，回 RseVirtualItemList。"""
+    mark = rec.seq_mark() if rec else 0
+    sender.send_frame(
+        sock, "04f0",
+        encode_message({1: ("int32", 0)}, omit_zero=False),
+        rec.rc4_c2s)
+    got = _await_response(
+        sock, rec, "RseVirtualItemList", mark, 6.0,
+        want=lambda d: isinstance(d, dict) and d.get("type") in (0, None))
+    if isinstance(got, dict):
+        note_virtual_cards(rec)
+    return got
+
+
+def _virtual_seq(rec):
+    one = (getattr(rec, "latest", {}) or {}).get("RseVirtualItemList") if rec else None
+    return one[0] if isinstance(one, tuple) and one else 0
+
+
+def _consume_virtual(rec, item_id, n):
+    """装备栏列表没被服务器推新时，按这次扣掉的个数改本地数量。"""
+    one = (getattr(rec, "latest", {}) or {}).get("RseVirtualItemList") if rec else None
+    data = one[1] if isinstance(one, tuple) and len(one) > 1 else None
+    for row in _item_rows(data):
+        if not isinstance(row, dict):
+            continue
+        tid = row.get("field2")
+        if not isinstance(tid, int) or isinstance(tid, bool):
+            tid = row.get("itemID")
+        if tid != item_id:
+            continue
+        cur = row.get("field4")
+        if not isinstance(cur, int) or isinstance(cur, bool):
+            cur = row.get("count") or 0
+        if not isinstance(cur, int) or isinstance(cur, bool):
+            return
+        row["field4"] = max(0, cur - n)
+        if "count" in row:
+            row["count"] = row["field4"]
+        return
+
+
 _BOXES = {
     "box_mid": (60002, 10038, "中级补给箱", "中级钥匙"),
     "box_high": (60003, 10039, "高级补给箱", "高级钥匙"),
@@ -2603,6 +2690,8 @@ def open_supply_box(rec, sock, kind, count=10, on_progress=None):
 
     中级箱 60002 配钥匙 10038，高级箱 60003 配钥匙 10039。十连各扣 10。
     请求里只写箱子，钥匙由服务端扣。箱子或钥匙不够 10 就不发。
+    数量在装备栏。进基地战助手时读一次；这里只有还没读到才再读。
+    开完若服务器没推新列表，就按扣掉的个数更新页面。
     """
     spec = _BOXES.get(kind)
     if not spec:
@@ -2615,6 +2704,10 @@ def open_supply_box(rec, sock, kind, count=10, on_progress=None):
     times = count // _BOX_BATCH
     if times < 1:
         return False, "十连至少要 10 个"
+    if latest_card(rec, item_id) is None:
+        opened = refresh_virtual_items(rec, sock)
+        if not isinstance(opened, dict):
+            return False, "失败：没打开装备栏，读不到箱子和钥匙"
     done = 0
     have = 0
     for _ in range(times):
@@ -2632,6 +2725,7 @@ def open_supply_box(rec, sock, kind, count=10, on_progress=None):
             head = f"完成 {done}/{times}。" if done else ""
             return False, f"{head}{key_name}数量不足，只有 {key_have} 把，十连要 10 把，不发"
         mark = rec.seq_mark() if rec else 0
+        seen = _virtual_seq(rec)
         sender.send_frame(sock, "0440", encode_message({
             3: ("int32", _BOX_BATCH), 4: ("int32", slot),
             5: ("int32", item_id), 7: ("int32", 5),
@@ -2647,10 +2741,15 @@ def open_supply_box(rec, sock, kind, count=10, on_progress=None):
             head = f"完成 {done}/{times}。" if done else ""
             return False, head + f"开箱被拒 ret={got.get('ret')}"
         done += 1
+        if _virtual_seq(rec) != seen:
+            note_virtual_cards(rec)
+        else:
+            _consume_virtual(rec, item_id, _BOX_BATCH)
+            _consume_virtual(rec, key_id, _BOX_BATCH)
+            note_virtual_cards(rec)
         if on_progress:
             on_progress(f"{name} {done}/{times}")
         _nap(0.4)
-    note_bag_cards(rec)
     left = latest_card(rec, item_id)
     keys = latest_card(rec, key_id)
     remain = left[0] if left else have
@@ -2773,20 +2872,17 @@ def _bag_left(rec, item_id):
 def latest_card(rec, item_id):
     """最新一份背包里的 (张数, 槽位)。没收到背包返回 None。
 
-    张数和页面是同一份：这一份里后出现的那一行算数，没有这张就是 0。
-    更早的背包不拿来凑，避免页面已经是 49 张、旧背包还记着更多时把 50 连发出去。
-    槽位只认这一行自己的。
+    箱子和钥匙只在装备栏的 RseVirtualItemList 里，槽位是 6xxx。
+    普通卡仍读 RseBagItemLst。
     """
-    one = (getattr(rec, "latest", {}) or {}).get("RseBagItemLst") if rec else None
+    msg = "RseVirtualItemList" if item_id in _VIRTUAL_IDS else "RseBagItemLst"
+    one = (getattr(rec, "latest", {}) or {}).get(msg) if rec else None
     data = one[1] if isinstance(one, tuple) and len(one) > 1 else one
     if not isinstance(data, dict):
         return None
-    rows = data.get("bagItem")
-    if isinstance(rows, dict):
-        nested = rows.get("field1") or rows.get("field2")
-        rows = nested if isinstance(nested, list) else [rows]
-    if not isinstance(rows, list):
+    if item_id in _VIRTUAL_IDS and data.get("type") not in (0, None):
         return None
+    rows = _item_rows(data)
     found = None
     slot = None
     for row in rows:

@@ -2009,6 +2009,23 @@ def _refresh_asked_here(rec, sock, config) -> bool:
     return True
 
 
+def _refresh_equip_bag(rec, sock) -> None:
+    """页面刚进入基地战助手。读一次装备栏。没有请求就什么都不做。"""
+    from . import citydb, daily
+
+    if not citydb.take_equip_bag():
+        return
+    try:
+        with daily.lane_hold():
+            got = daily.refresh_virtual_items(rec, sock)
+    except OSError:
+        raise
+    if not isinstance(got, dict):
+        log.info("页面要看补给箱，没读到装备栏")
+        return
+    log.info("页面读了一次装备栏")
+
+
 def _run_requested_move(rec, sock, config, beater) -> bool:
     """页面点了移动到指定城。走进那座城，不打它。没有请求返回 False。"""
     from . import citydb, country_war
@@ -2503,6 +2520,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                             return 0
                     citydb.set_attack_status("paused")
                     _refresh_asked_here(rec, sock, config)
+                    _refresh_equip_bag(rec, sock)
                     if not _wait_socket(sock, spec, ctx):
                         raise OSError("服务器关闭连接")
                     continue
@@ -2517,6 +2535,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                     continue
                 if _refresh_asked_here(rec, sock, config):
                     continue
+                _refresh_equip_bag(rec, sock)
                 for uid in citydb.attack_context_users():
                     citydb.skip_unfinished_auto(uid)
                 citydb.release_due_waits()

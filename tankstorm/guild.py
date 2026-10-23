@@ -50,7 +50,7 @@ RceCountryOpt，两回事。
 import time
 
 from . import sender
-from .daily import _await_response, _nap, _read_path
+from .daily import _await_response, _nap, _read_path, raise_if_stopped
 from .log import get_logger
 from .proto_encode import encode_message
 
@@ -253,16 +253,24 @@ def _spend(kind, cost, metal, oil, feats, items):
 
 
 # 2026-10-23 23:14 抓包。公会任务走 RceGuildBuildOpt，不是公会战那条 RceGuildOpt。
-# ntype=3 开面板，4 刷新候选，6 参加。参加时 nTaskID 填候选里的 nID（小编号）。
-# 星级和中文名在客户端 GuildTaskData，协议里没有。
-# 这次刷了 7 页，唯一点参加的是 nTaskType=13。同页没点的类型先不参加。
+# ntype=3 开面板，4 刷新候选，6 把候选接过来（小编号），9 参加别人已发布的（大编号），7 领完成的。
+# 星级不在协议里。4 星和 5 星的 nTaskType 来自 config/BaseGuildTask_2023071801.dat 的 LEVEL。
+# 一天最多 5 个，见 GuildTaskBase_2014121603.dat 的 completeNum。付费刷新不发。
 _BUILD_OP = "04f3"
 _BUILD_RSE = "RseGuildBuildOpt"
 _TASK_OPEN = 3
 _TASK_REFRESH = 4
-_TASK_JOIN = 6
-_TASK_WANTED = {13}
+_TASK_PUBLISH = 6
+_TASK_CLAIM = 7
+_TASK_JOIN = 9
+_STAR_IDS = frozenset({
+    4, 5, 9, 10, 14, 15, 19, 20, 24, 25, 29, 30, 34, 35,
+    39, 40, 44, 45, 49, 50, 54, 55, 59, 60, 64, 65, 69, 70,
+})
+_TASK_CAP = 5
 _TASK_REFRESH_MAX = 8
+_ACT_OPEN = 350
+_ACT_CLAIM = 351
 
 
 def _build_send(sock, rec, ntype, task_id=0):
@@ -276,41 +284,85 @@ def _build_send(sock, rec, ntype, task_id=0):
         want=lambda d: isinstance(d, dict) and d.get("ntype") == ntype)
 
 
-def _board(data):
-    """刷新回包 field23 是这一页 4 个候选。每项 field1=nID，field2=nTaskType。"""
-    raw = data.get("field23") if isinstance(data, dict) else None
+def _as_int(row, *keys):
+    if not isinstance(row, dict):
+        return None
+    for key in keys:
+        val = row.get(key)
+        if isinstance(val, bool) or not isinstance(val, int):
+            continue
+        return val
+    return None
+
+
+def _task_rows(data, key):
+    """field23 候选，field21 已发布，field22 自己的。每项 nID、nTaskType、进度、需求。"""
+    raw = data.get(key) if isinstance(data, dict) else None
     rows = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
     out = []
     for row in rows:
-        if not isinstance(row, dict):
-            continue
-        nid = row.get("nID", row.get("field1"))
-        kind = row.get("nTaskType", row.get("field2"))
-        if isinstance(nid, bool) or isinstance(kind, bool):
-            continue
-        if isinstance(nid, int) and isinstance(kind, int) and nid > 0:
-            out.append((nid, kind))
+        nid = _as_int(row, "nID", "field1")
+        kind = _as_int(row, "nTaskType", "field2")
+        proc = _as_int(row, "nProcess", "field3") or 0
+        need = _as_int(row, "nTotalNeed", "field4") or 0
+        if nid and kind and nid > 0:
+            out.append((nid, kind, proc, need))
     return out
 
 
-def daily_guild_task(rec, sock, config):
-    """参加公会任务。先开面板，没有要的类型就刷新，点到为止。
+def _finish_num(panel):
+    n = _as_int(panel, "nFinishNum")
+    return 0 if n is None else n
 
-    不发付费刷新。回包 nCreditFreshNum 大于 0 就停手。
-    """
+
+def _claim_tasks(sock, rec, panel):
+    """自己的任务进度满了就领。ntype=7，编号用大 id。"""
+    claimed = []
+    seen = set()
+    while True:
+        raise_if_stopped()
+        mine = [row for row in _task_rows(panel, "field22")
+                if row[0] not in seen and row[3] > 0 and row[2] >= row[3]]
+        if not mine:
+            return panel, claimed
+        nid, kind, _proc, _need = mine[0]
+        seen.add(nid)
+        got = _build_send(sock, rec, _TASK_CLAIM, nid)
+        if not isinstance(got, dict):
+            return None, claimed
+        ret = got.get("nRet")
+        if ret not in (0, None):
+            return None, claimed
+        claimed.append(kind)
+        panel = got
+        _nap(0.35)
+
+
+def _guild_tasks(sock, rec):
     panel = _build_send(sock, rec, _TASK_OPEN)
     if not isinstance(panel, dict):
         return False, "失败：没收到公会任务面板"
+    panel, claimed = _claim_tasks(sock, rec, panel)
+    if panel is None:
+        return False, "失败：领取已完成任务没有成功"
     joined = []
+    published = []
     refreshes = 0
-    while len(joined) < 5:
-        board = _board(panel)
-        pick = next(((nid, kind) for nid, kind in board if kind in _TASK_WANTED), None)
-        if pick is not None:
-            nid, kind = pick
+    seen = set()
+    while _finish_num(panel) < _TASK_CAP:
+        raise_if_stopped()
+        mine = {row[0] for row in _task_rows(panel, "field22")}
+        live = next((
+            row for row in _task_rows(panel, "field21")
+            if row[0] not in seen and row[1] in _STAR_IDS and row[0] not in mine
+            and row[3] > 0 and row[2] < row[3]
+        ), None)
+        if live is not None:
+            nid, kind, _proc, _need = live
+            seen.add(nid)
             got = _build_send(sock, rec, _TASK_JOIN, nid)
             if not isinstance(got, dict):
-                return False, "失败：参加类型 %d 没有回包" % kind
+                return False, "失败：参加已发布任务没有回包"
             ret = got.get("nRet")
             if ret not in (0, None):
                 return False, "失败：参加类型 %d 被拒 nRet=%s" % (kind, ret)
@@ -318,21 +370,107 @@ def daily_guild_task(rec, sock, config):
             panel = got
             _nap(0.35)
             continue
+        pick = next((
+            row for row in _task_rows(panel, "field23")
+            if row[0] not in seen and row[1] in _STAR_IDS
+        ), None)
+        if pick is not None:
+            nid, kind, _proc, _need = pick
+            seen.add(nid)
+            got = _build_send(sock, rec, _TASK_PUBLISH, nid)
+            if not isinstance(got, dict):
+                return False, "失败：发布类型 %d 没有回包" % kind
+            ret = got.get("nRet")
+            if ret not in (0, None):
+                return False, "失败：发布类型 %d 被拒 nRet=%s" % (kind, ret)
+            published.append(kind)
+            panel = got
+            _nap(0.35)
+            continue
         if refreshes >= _TASK_REFRESH_MAX:
             break
-        credit = panel.get("nCreditFreshNum")
-        if isinstance(credit, int) and not isinstance(credit, bool) and credit > 0:
+        credit = _as_int(panel, "nCreditFreshNum") or 0
+        if credit > 0:
             break
         nxt = _build_send(sock, rec, _TASK_REFRESH)
         refreshes += 1
         if not isinstance(nxt, dict):
-            return False, "失败：刷新没有回包（已参加 %d 个）" % len(joined)
+            return False, "失败：刷新没有回包"
         panel = nxt
         _nap(0.35)
-    if not joined:
-        return True, "成功：刷新 %d 次，没有可参加的目标任务" % refreshes
-    return True, "成功：参加 %d 个（类型 %s），刷新 %d 次" % (
-        len(joined), ",".join(str(k) for k in joined), refreshes)
+    bits = []
+    if claimed:
+        bits.append("领取 %d 个" % len(claimed))
+    if joined:
+        bits.append("参加 %d 个" % len(joined))
+    if published:
+        bits.append("发布 %d 个" % len(published))
+    if not bits:
+        return True, "成功：没有可领、可参加或可发布的 4 星、5 星任务，刷新 %d 次" % refreshes
+    return True, "成功：" + "，".join(bits) + "，刷新 %d 次" % refreshes
+
+
+def _flag_list(val):
+    if isinstance(val, bool) or val is None:
+        return []
+    if isinstance(val, int):
+        return [val]
+    if isinstance(val, list):
+        return [x for x in val if isinstance(x, int) and not isinstance(x, bool)]
+    return []
+
+
+def _guild_activity(sock, rec):
+    """公会活跃。2026-10-23 23:15：type=350 开面板，type=351 按 0 起的档位领。
+
+    atvQstMsg.field4 是可领标记，field3 是已领标记。0 也要写出来。
+    """
+    fields = _fields(_ACT_OPEN)
+    before = rec.seq_mark() if rec else 0
+    sender.send_frame(sock, OPCODE, encode_message(fields, omit_zero=False), rec.rc4_c2s)
+    panel = _wait(sock, rec, before, _ACT_OPEN)
+    if not isinstance(panel, dict):
+        return False, "失败：没收到公会活跃"
+    msg = panel.get("atvQstMsg")
+    if not isinstance(msg, dict):
+        return False, "失败：公会活跃面板没有奖励"
+    ready = _flag_list(msg.get("field4"))
+    got_flags = _flag_list(msg.get("field3"))
+    claimed = []
+    for i, flag in enumerate(ready):
+        raise_if_stopped()
+        if flag != 1:
+            continue
+        if i < len(got_flags) and got_flags[i] == 1:
+            continue
+        body = _fields(_ACT_CLAIM)
+        body[30] = ("int32", i)
+        before = rec.seq_mark() if rec else 0
+        sender.send_frame(
+            sock, OPCODE, encode_message(body, omit_zero=False), rec.rc4_c2s)
+        got = _wait(sock, rec, before, _ACT_CLAIM)
+        if not isinstance(got, dict):
+            return False, "失败：领取公会活跃第 %d 档没有回包" % (i + 1)
+        ret = got.get("ret")
+        if ret not in (0, None):
+            return False, "失败：领取公会活跃第 %d 档被拒 ret=%s" % (i + 1, ret)
+        claimed.append(i + 1)
+        _nap(0.35)
+    if not claimed:
+        return True, "公会活跃没有可领的"
+    return True, "公会活跃领了第 %s 档" % "、".join(str(n) for n in claimed)
+
+
+def daily_guild_task(rec, sock, config):
+    """参加或发布 4 星、5 星公会任务，并领取公会活跃。"""
+    ok, why = _guild_tasks(sock, rec)
+    act_ok, act_why = _guild_activity(sock, rec)
+    text = why + "。" + act_why
+    if not ok and not act_ok:
+        return False, text
+    if not ok or not act_ok:
+        return False, text
+    return True, text
 
 
 def _donate_total(counts):

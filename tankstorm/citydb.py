@@ -4072,6 +4072,36 @@ def take_attack_here() -> bool:
     return True
 
 
+def request_equip_bag(user_id: int) -> str:
+    """进基地战助手时读一次装备栏，用来显示补给箱和钥匙。"""
+    user_id = int(user_id or 0)
+    if shutdown_due(user_id):
+        return "已定时关闭，不再执行任务"
+    if not attack_qq_of(user_id):
+        return "还没绑定攻打 QQ"
+    status = attack_status(user_id)
+    if not status.get("online"):
+        return "攻打没在跑"
+    if status.get("phase") == "login" or status.get("need_login"):
+        return "还在登录，连上后再看装备栏"
+    _upsert_signal(_mark_name("equipask", user_id), "1")
+    return ""
+
+
+def take_equip_bag() -> bool:
+    """领走这一次查看。领过就不再读第二次。"""
+    user_id = attack_context_user()
+    if not user_id:
+        return False
+    if shutdown_due(user_id) and shutdown_covers_context():
+        return False
+    name = _mark_name("equipask", user_id)
+    if _signal_value(name).strip() != "1":
+        return False
+    _delete_signal(name)
+    return True
+
+
 def note_attack_link(interval: float) -> None:
     """这个攻打 QQ 的游戏心跳刚发出去。挂机时用这个判断连接是不是真的还在。
 

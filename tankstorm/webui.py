@@ -608,6 +608,13 @@ def _handler(config: dict):
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True})
+                elif path == "/api/base-equip":
+                    if not citydb.base_tier(user.get("tier") or ""):
+                        raise ValueError("基地战需要高级pro订阅")
+                    why = citydb.request_equip_bag(user["id"])
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True})
                 elif path == "/api/attack-move":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "移动到指定城市需要中级或高级订阅"})

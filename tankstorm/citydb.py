@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     storm_cap       INTEGER,
     storm_used      INTEGER NOT NULL DEFAULT 0,
     storm_day       TEXT NOT NULL DEFAULT '',
+    open_cards      TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -434,6 +435,10 @@ def connect(readonly=False, timeout=15):
                     "), storm_day=? "
                     "WHERE id IN (SELECT user_id FROM storm_reject WHERE at>=?)",
                     (start_utc, day, start_utc))
+                setup.commit()
+            if ucols and "open_cards" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN open_cards TEXT NOT NULL DEFAULT ''")
                 setup.commit()
             _fix_region_face(setup)
             _forget_page_names(setup)
@@ -1310,7 +1315,8 @@ def reset_member_settings(user_id: int) -> str:
             "clear_mode='head', clear_from=1, clear_to=5, clear_wait=0, clear_scan=0, "
             "clear_retreat_mode='off', clear_retreat_hops=3, clear_retreat_city=0, "
             "clear_retreat_fail=0, modo_cards=0, away_morale=100, daily_switch=NULL, "
-            "daily_at='', daily_last='', modo_at='', modo_last='', off_at='' "
+            "daily_at='', daily_last='', modo_at='', modo_last='', off_at='', "
+            "open_cards='' "
             "WHERE id=?",
             (user_id,))
         if cur.rowcount != 1:
@@ -5305,6 +5311,45 @@ def set_campaign_stages(user_id: int, raw) -> str:
         conn.close()
 
 
+def open_cards_of(user_id: int):
+    """这个账号勾选的资源卡物品号。没存过返回 None，调用方用默认全开。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(open_cards,'') FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    text = str(row[0] or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, list) else None
+
+
+def set_open_cards(user_id: int, ids) -> str:
+    """记下要开的资源卡。ids 已按面额排好。没有这个账号返回原因。"""
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return "没有这个账号"
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET open_cards=? WHERE id=?",
+            (json.dumps(list(ids), ensure_ascii=False), user_id))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "没有这个账号"
+    finally:
+        conn.close()
+    return ""
+
+
 def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
     """排一项日常。成功返回空字符串。只排给这个登录账号绑定的攻打号。"""
     user_id = int(user_id)
@@ -5360,6 +5405,20 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         elif not (1 <= count <= 99999):
             return "数量要在 1 到 99999"
         clean["count"] = count
+    elif kind == "cards":
+        from . import fund
+        raw = params.get("ids")
+        if raw is None:
+            raw = open_cards_of(user_id)
+        if raw is None:
+            raw = fund.default_resource_ids()
+        ids, why = fund.normalize_resource_ids(raw)
+        if why:
+            return why
+        why = set_open_cards(user_id, ids)
+        if why:
+            return why
+        clean["ids"] = ids
     elif kind == "factory":
         from . import repair
         try:

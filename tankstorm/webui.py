@@ -179,6 +179,17 @@ def _member_views() -> list:
     return items
 
 
+def _resource_cards_of(user_id: int) -> list:
+    """这个账号要开的资源卡。没存过就按面额从小到大全开，含 1000 万。"""
+    from . import fund
+    saved = citydb.open_cards_of(user_id)
+    raw = saved if saved is not None else fund.default_resource_ids()
+    ids, why = fund.normalize_resource_ids(raw)
+    if why:
+        return fund.default_resource_ids()
+    return ids
+
+
 def _scan_view(config: dict) -> dict:
     saved = citydb.get_scan_plan()
     stored = saved is not None
@@ -326,6 +337,7 @@ def _handler(config: dict):
                 if not citydb.base_tier(user.get("tier") or ""):
                     _json(self, 403, {"error": "基地战需要高级pro订阅"})
                     return
+                from . import fund
                 wallet = citydb.attack_wallet(user["id"])
                 _json(self, 200, {
                     "qq": citydb.attack_qq_of(user["id"]),
@@ -336,6 +348,8 @@ def _handler(config: dict):
                     "pop": citydb.attack_pop(user["id"]),
                     "cards": citydb.attack_cards(user["id"]),
                     "jobs": citydb.list_daily_jobs(user["id"], limit=6, kind="base"),
+                    "resource_catalog": fund.resource_catalog(),
+                    "resource_cards": _resource_cards_of(user["id"]),
                 })
                 return
             if path == "/api/daily":
@@ -539,6 +553,19 @@ def _handler(config: dict):
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True})
+                elif path == "/api/base/resource-cards":
+                    if citydb.account_expired(user.get("expires_at") or ""):
+                        raise ValueError("账号已过期")
+                    if not citydb.base_tier(user.get("tier") or ""):
+                        raise ValueError("基地战需要高级pro订阅")
+                    from . import fund
+                    ids, why = fund.normalize_resource_ids(data.get("ids"))
+                    if why:
+                        raise ValueError(why)
+                    why = citydb.set_open_cards(user["id"], ids)
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "resource_cards": ids})
                 elif path == "/api/base":
                     if citydb.account_expired(user.get("expires_at") or ""):
                         raise ValueError("账号已过期")
@@ -551,7 +578,7 @@ def _handler(config: dict):
                             "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50"):
                         raise ValueError("没有这项")
                     if kind == "cards":
-                        params = {}
+                        params = {"ids": data.get("ids")} if "ids" in data else {}
                     elif kind == "spread":
                         params = {k: data.get(k) for k in ("x1", "y1", "x2", "y2")}
                     elif kind == "factory":

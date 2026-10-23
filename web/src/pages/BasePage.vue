@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import FoldPart from "../components/FoldPart.vue";
 
 const count = defineModel("count", { type: String, required: true });
@@ -27,12 +27,15 @@ const props = defineProps({
   credit: { default: null },
   pop: { default: null },
   cards: { type: Object, default: () => ({}) },
+  resourceCatalog: { type: Array, default: () => [] },
+  resourceCards: { default: null },
   note: { type: String, default: "" },
   err: { type: String, default: "" },
   errAt: { type: String, default: "" },
   runBlast: { type: Function, required: true },
   runFactory: { type: Function, required: true },
   runCards: { type: Function, required: true },
+  saveResourceCards: { type: Function, required: true },
   runDraw: { type: Function, required: true },
   runBox: { type: Function, required: true },
   runPick: { type: Function, required: true },
@@ -41,6 +44,46 @@ const props = defineProps({
   cancelJob: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
+
+const picked = ref([]);
+const cardNote = ref("");
+const catalog = computed(() => props.resourceCatalog || []);
+let appliedCards = null;
+
+watch(
+  [() => (props.resourceCards == null ? null : props.resourceCards.map((id) => Number(id)).join(",")),
+    () => catalog.value.map((card) => card.id).join(",")],
+  ([sig]) => {
+    if (sig == null) {
+      if (!picked.value.length) picked.value = catalog.value.map((card) => card.id);
+      return;
+    }
+    if (sig === appliedCards) return;
+    appliedCards = sig;
+    picked.value = sig ? sig.split(",").map((id) => Number(id)) : [];
+  },
+  { immediate: true },
+);
+
+function cardOn(id) {
+  return picked.value.includes(id);
+}
+
+function toggleCard(id, on) {
+  cardNote.value = "";
+  const set = new Set(picked.value);
+  if (on) set.add(id);
+  else set.delete(id);
+  picked.value = catalog.value.filter((card) => set.has(card.id)).map((card) => card.id);
+}
+
+async function saveCards() {
+  cardNote.value = "";
+  if (!picked.value.length) throw new Error("至少选一种资源卡");
+  const saved = await props.saveResourceCards(picked.value.slice());
+  if (Array.isArray(saved)) picked.value = saved.map((id) => Number(id));
+  cardNote.value = "已保存。开卡按面额从小到大。";
+}
 
 const page = ref(null);
 const recentScroller = ref(null);
@@ -113,11 +156,21 @@ function resText(n) {
       <details class="campaign-box">
         <summary>使用物品</summary>
         <FoldPart title="使用背包物品">
-          <form class="lock-row" @submit.prevent="runCards().catch((e) => showErr(e.message))">
+          <form class="lock-row" @submit.prevent="runCards(picked.slice()).catch((e) => showErr(e.message))">
             <span class="switch">开资源卡</span>
             <button type="submit">开卡</button>
           </form>
-          <p class="muted">一次只开 1 张。先开这次抓到的：10 万金属、10 万石油、500 万石油、500 万金属、50 万金属、50 万石油、200 万石油、200 万金属。1000 万的先不开。某种没有，或者这一张没开成，这种就停，换下一种。</p>
+          <div class="card-picks">
+            <label v-for="card in catalog" :key="card.id" class="choice">
+              <input type="checkbox" :checked="cardOn(card.id)" @change="toggleCard(card.id, $event.target.checked)" />
+              {{ card.name }}
+            </label>
+          </div>
+          <form class="lock-row" @submit.prevent="saveCards().catch((e) => showErr(e.message))">
+            <button type="submit" class="ghost">保存</button>
+            <span v-if="cardNote" class="muted">{{ cardNote }}</span>
+          </form>
+          <p class="muted">一次只开 1 张，按面额从小到大。勾上的才会开，1000 万也在名单里。某种没有，或者这一张没开成，这种就停，换下一种。保存后下次进来还是这份。</p>
         </FoldPart>
         <FoldPart title="抽卡">
           <form class="lock-row" @submit.prevent="runDraw('haoyin', drinkCount).catch((e) => showErr(e.message))">

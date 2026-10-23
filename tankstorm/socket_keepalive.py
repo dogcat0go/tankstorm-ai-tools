@@ -2262,7 +2262,8 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
                     citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
                     return
-                ok, why = fund.open_base_cards(rec, sock, on_progress=_show)
+                ok, why = fund.open_base_cards(
+                    rec, sock, on_progress=_show, card_ids=params.get("ids"))
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind in ("haoyin", "admiral", "admiral10"):

@@ -1327,7 +1327,10 @@ TASKS = [
 
     _t("将领冶炼", "将领·金属冶炼", "0450", "RceAdmiralVisit",
        {3: ("int32", 1), 4: ("int32", 0)},
-       "实测", "实测顺序：RceAdmiralOpen{type:0} → RceAdmiralVisit{free:1,type:0}",
+       "实测", "2026-10-23：RceAdmiralOpen{type:0} 回 freeVisitCnt=[3,1,1]。"
+               "RceAdmiralVisit{free:1,credit:0,itemID:0}，type 依次 0、0、0、1、2。"
+               "次数收到 [0,0,0]。金属 +5000、+5000、+5000、+10000、+50000。"
+               "不花点券、不花勋章",
        max_per_day=5,
        prelude=[("044e", {3: ("int32", 0)})],
        gate=Gate("RseAdmiralOpen", "freeVisitCnt"),

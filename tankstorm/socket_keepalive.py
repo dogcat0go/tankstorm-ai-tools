@@ -2336,11 +2336,58 @@ def _shutdown_stop() -> bool:
     return True
 
 
-def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
-    """同一条游戏连接上用一个定时循环处理国战、日常、兵营、工厂和开卡。
+def _sync_build_lane(kind, user, qq, rec, sock, spec, ctx, config, beater, stop) -> None:
+    """兵营或战车工厂单独一路。发包时占着连接，空等加速窗口时放开，另一边就能造。"""
+    from . import citydb, daily
 
-    每轮先领国战订单，没有再领最早的一条其他任务。兵营、工厂要空等的冷却会把
-    连接让出来，到点的国战先打，外层到点再停手回来。心跳仍在独立线程发。
+    label = citydb.DAILY_KIND_LABEL.get(kind, kind)
+    citydb.set_attack_context(user, qq)
+    daily.bind_sock(sock)
+    daily.bind_rec(rec)
+    daily.bind_stop(stop)
+    daily.bind_on_recv(lambda data: _reply_online(sock, spec, ctx, data))
+    while not stop.is_set():
+        try:
+            if citydb.attack_paused():
+                if stop.wait(0.4):
+                    return
+                continue
+            try:
+                job = citydb.claim_daily_job((kind,))
+            except sqlite3.Error:
+                log.info("%s没领成", label, exc_info=True)
+                if stop.wait(0.5):
+                    return
+                continue
+            if not job:
+                if stop.wait(0.4):
+                    return
+                continue
+            citydb.set_lane(kind)
+            try:
+                with _order_account(int(job.get("user_id") or 0)):
+                    _run_one_daily(rec, sock, config, beater, job)
+            finally:
+                citydb.set_lane(kind)
+                try:
+                    citydb.set_attack_status("hold")
+                except sqlite3.Error:
+                    log.info("%s状态没写上", label, exc_info=True)
+        except OSError:
+            log.info("%s这一路连接中断", label)
+            stop.set()
+            return
+        except Exception:
+            log.info("%s这一轮没做成", label, exc_info=True)
+            if stop.wait(1):
+                return
+
+
+def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
+    """同一条游戏连接上处理国战、日常、兵营、工厂和开卡。
+
+    兵营和战车工厂各走一路，空等加速窗口时把连接让出来，两边一起造。
+    这条循环先领国战，没有再领其余任务。心跳仍在独立线程发。
     """
     from . import citydb
 
@@ -2353,7 +2400,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     path_box = [0.0]
     hold_closed = False
     side_kinds = (
-        "daily", "pve", "fund", "chest", "blast", "factory", "cards",
+        "daily", "pve", "fund", "chest", "cards",
         "haoyin", "admiral", "admiral10",
         "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
     )
@@ -2414,7 +2461,20 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     prev_pump = daily.bind_idle_pump(_pump)
     prev_recv = daily.bind_on_recv(
         lambda data: _reply_online(sock, spec, ctx, data))
+    lane_user = citydb.attack_context_user()
+    lane_qq = citydb.attack_context_qq()
+    build_lanes = []
     try:
+        for kind in ("blast", "factory"):
+            th = threading.Thread(
+                target=_sync_build_lane,
+                args=(kind, lane_user, lane_qq, rec, sock, spec, ctx, config, beater, stop),
+                name=f"build-{kind}",
+                daemon=True,
+            )
+            th.start()
+            build_lanes.append(th)
+        log.info("兵营和战车工厂各走一路，不等另一边做完")
         while not stop.is_set():
             try:
                 if _shutdown_stop():
@@ -2492,7 +2552,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                     if not _wait_socket(sock, spec, ctx):
                         raise OSError("服务器关闭连接")
                     continue
-                if not citydb.attack_link_alive():
+                if not _jobs_open() and not citydb.attack_link_alive():
                     log.info("挂机保活游戏心跳没了，准备重连")
                     return 0
                 if not stated:
@@ -2514,6 +2574,8 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 return 0
     finally:
         stop.set()
+        for th in build_lanes:
+            th.join(timeout=3)
         daily.bind_on_recv(prev_recv)
         daily.bind_idle_pump(prev_pump)
         daily.bind_rec(prev_rec)

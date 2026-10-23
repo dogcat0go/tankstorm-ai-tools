@@ -274,6 +274,7 @@ def _nap(seconds: float) -> None:
 
     占着连接锁时先放开。等够 1 秒时，空档里可以先打国战；外层到点后国战停手，
     这次等待仍按原来的时刻结束。短于 1 秒的是在等紧跟着的回包，不插别的任务。
+    兵营和战车工厂在旁边的路上，锁一放开就能发。
     """
     depth = _lane.yield_for_wait()
     stack = getattr(_sock_local, "deadlines", None)
@@ -2348,8 +2349,17 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
         sender.send_frame(sock, "0414",
                           encode_message(fields, omit_zero=False),
                           rec.rc4_c2s)
-        return _await_response(sock, rec, "RseBuildingModify", mark, 6,
-                               want=lambda d, kind=kind: d.get("type") == kind)
+
+        def mine(data, kind=kind):
+            if not isinstance(data, dict) or data.get("type") != kind:
+                return False
+            building = data.get("building")
+            if not isinstance(building, dict):
+                return True
+            got = _one(building.get("field4"))
+            return not got or got == bid
+
+        return _await_response(sock, rec, "RseBuildingModify", mark, 6, want=mine)
 
     if left <= 0:
         _nap(0.4)
@@ -4491,6 +4501,8 @@ def _await_response(sock, rec, rse_msg, since_seq, timeout, want=None,
     deadline = time.time() + timeout
     while time.time() < deadline:
         raise_if_stopped()
+        if _stop_set():
+            raise OSError("连接中断")
         hit = _pick_recent(rec, rse_msg, since_seq, want)
         if hit is not None:
             return hit

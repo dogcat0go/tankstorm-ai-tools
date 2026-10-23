@@ -1,5 +1,6 @@
 <script setup>
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import FoldPart from "../components/FoldPart.vue";
 
 const count = defineModel("count", { type: String, required: true });
 const army = defineModel("army", { type: String, required: true });
@@ -113,16 +114,14 @@ function resText(n) {
     <fieldset class="locked-area">
       <details class="campaign-box">
         <summary>使用物品</summary>
-        <div class="item-part">
-          <h3>使用背包物品</h3>
+        <FoldPart title="使用背包物品">
           <form class="lock-row" @submit.prevent="runCards().catch((e) => showErr(e.message))">
             <span class="switch">开资源卡</span>
             <button type="submit">开卡</button>
           </form>
           <p class="muted">一次只开 1 张。先开这次抓到的：10 万金属、10 万石油、500 万石油、500 万金属、50 万金属、50 万石油、200 万石油、200 万金属。1000 万的先不开。某种没有，或者这一张没开成，这种就停，换下一种。</p>
-        </div>
-        <div class="item-part">
-          <h3>抽卡</h3>
+        </FoldPart>
+        <FoldPart title="抽卡">
           <form class="lock-row" @submit.prevent="runDraw('haoyin', drinkCount).catch((e) => showErr(e.message))">
             <span class="switch">英雄豪饮</span>
             <span class="card-have">豪饮卡 {{ resText(cards.drink) }}</span>
@@ -142,9 +141,8 @@ function resText(n) {
             <button type="submit">抽取</button>
           </form>
           <p class="muted">数量是要消耗的卡。豪饮用物品 10061，一张抽一次。高级将领用物品 10020，单抽一张一次。十连按卡数除以 10 向下取整，例如 25 张抽 2 次、用 20 张。不够就停，并写出剩余张数。1 到 99999，十连至少 10 张。点下去会先确认卡和张数。</p>
-        </div>
-        <div class="item-part">
-          <h3>换卡</h3>
+        </FoldPart>
+        <FoldPart title="换卡">
           <form class="lock-row" @submit.prevent="runPick('pick_general', generalCount).catch((e) => showErr(e.message))">
             <span class="switch">换高级将领卡</span>
             <span class="card-have">招募卡自选 {{ resText(cards.recruit) }} · 高级将领卡 {{ resText(cards.general) }}</span>
@@ -170,9 +168,8 @@ function resText(n) {
             <button type="submit">兑换</button>
           </form>
           <p class="muted">招募自选包换成高级将领卡或参谋卡，探索自选包换成实验卡或自动化探索卡。数量是要换出的张数，也是消耗的包数。点下去会先确认。</p>
-        </div>
-        <div class="item-part">
-          <h3>探索</h3>
+        </FoldPart>
+        <FoldPart title="探索">
           <form class="lock-row" @submit.prevent="runLab50(lab50Count).catch((e) => showErr(e.message))">
             <span class="switch">实验室探索50连</span>
             <span class="card-have">实验卡 {{ resText(cards.lab) }}</span>
@@ -187,7 +184,7 @@ function resText(n) {
           </form>
           <p v-if="err && errAt === 'base' && err.includes('数量不足')" class="err">{{ err }}</p>
           <p class="muted">实验室 50 连一次用 50 张实验卡，自动化探索 50 连一次用 50 张自动化探索卡，次数默认 1。点下去会先确认。背包不够这次要的张数时，提示数量不足，不发，也不扣勋章。</p>
-        </div>
+        </FoldPart>
       </details>
       <details class="campaign-box">
         <summary>兵种制造</summary>

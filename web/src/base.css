@@ -215,6 +215,32 @@ table.daily-jobs td.reason {
   min-width: 12em;
   line-height: 1.45;
 }
+.recent-dock {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  max-height: 20vh;
+  max-height: 20dvh;
+}
+.recent-dock .recent-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.recent-dock .recent-head h2 { margin: 8px 0; }
+.recent-dock .recent-toggle { margin: 0; padding: 4px 10px; flex: 0 0 auto; }
+.recent-dock .recent-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.recent-dock.collapsed { max-height: none; }
+.recent-dock.collapsed .recent-scroll,
+.recent-dock.collapsed > .muted { display: none; }
 .off { color: #666; }
 code { font-size: 13px; }
 img.qr { width: 220px; height: auto; background: #fff; padding: 8px; border: 1px solid #ddd; }
@@ -235,25 +261,21 @@ img.qr { width: 220px; height: auto; background: #fff; padding: 8px; border: 1px
     margin-top: 8px;
     box-shadow: 0 1px 0 #eee;
   }
-  .base-page { padding-bottom: 11rem; }
+  .base-page { padding-bottom: 20dvh; }
   .recent-dock {
     position: fixed;
     left: 0;
     right: 0;
     bottom: 0;
     z-index: 6;
+    overflow: hidden;
     background: #fff;
     border-top: 1px solid #e4e4e4;
     box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.08);
     padding: 2px 12px calc(6px + env(safe-area-inset-bottom, 0px));
   }
-  .recent-dock h2 { margin: 8px 0 4px; font-size: 15px; }
+  .recent-dock h2 { margin: 8px 0; font-size: 15px; }
   .recent-dock > .muted { margin: 4px 0 8px; }
-  .recent-dock .recent-scroll {
-    max-height: 8rem;
-    overflow: auto;
-    overscroll-behavior: contain;
-  }
   .recent-dock table { margin-top: 0; }
   .recent-dock table.daily-jobs,
   .recent-dock table.daily-jobs tbody { display: block; width: 100%; min-width: 0; }

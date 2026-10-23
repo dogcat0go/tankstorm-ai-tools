@@ -3333,6 +3333,7 @@ _proc_lock = threading.Lock()
 _LANE_RANK = {
     "war": 0, "daily": 1, "blast": 2, "factory": 3, "cards": 4,
     "haoyin": 5, "admiral": 6, "admiral10": 7,
+    "box_mid": 7, "box_high": 7,
     "pick_general": 8, "pick_staff": 8, "pick_lab": 8, "pick_auto": 8, "lab50": 8,
 }
 
@@ -4659,6 +4660,8 @@ DAILY_KIND_LABEL = {
     "haoyin": "英雄豪饮",
     "admiral": "高级将领单抽",
     "admiral10": "高级将领十连",
+    "box_mid": "中级补给箱十连",
+    "box_high": "高级补给箱十连",
     "pick_general": "换高级将领卡",
     "pick_staff": "换参谋卡",
     "pick_lab": "换实验卡",
@@ -4669,6 +4672,7 @@ DAILY_KIND_LABEL = {
 }
 _BASE_LANE = (
     "blast", "factory", "cards", "haoyin", "admiral", "admiral10",
+    "box_mid", "box_high",
     "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
 )
 _BASE_JOB_KINDS = _BASE_LANE
@@ -5232,16 +5236,16 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
             return "拨款次数要在 1 到 999"
         clean["building_id"] = building
         clean["times"] = times
-    elif kind in ("blast", "haoyin", "admiral", "admiral10"):
+    elif kind in ("blast", "haoyin", "admiral", "admiral10", "box_mid", "box_high"):
         try:
             count = int(str(params.get("count") or "").strip())
         except (TypeError, ValueError):
             return "数量要是数字"
-        if kind in ("haoyin", "admiral", "admiral10"):
+        if kind in ("haoyin", "admiral", "admiral10", "box_mid", "box_high"):
             if not (1 <= count <= 99999):
-                return "卡数量要在 1 到 99999"
-            if kind == "admiral10" and count < 10:
-                return "十连至少要 10 张卡"
+                return "数量要在 1 到 99999"
+            if kind in ("admiral10", "box_mid", "box_high") and count < 10:
+                return "十连至少要 10 张" if kind == "admiral10" else "十连至少要 10 个"
         elif not (1 <= count <= 399):
             return "数量要在 1 到 399"
         clean["count"] = count

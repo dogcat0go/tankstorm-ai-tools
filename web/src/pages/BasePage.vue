@@ -9,6 +9,8 @@ const aaCount = defineModel("aaCount", { type: String, required: true });
 const drinkCount = defineModel("drinkCount", { type: String, required: true });
 const admiralCount = defineModel("admiralCount", { type: String, required: true });
 const admiral10Count = defineModel("admiral10Count", { type: String, required: true });
+const boxMidCount = defineModel("boxMidCount", { type: String, required: true });
+const boxHighCount = defineModel("boxHighCount", { type: String, required: true });
 const generalCount = defineModel("generalCount", { type: String, required: true });
 const staffCount = defineModel("staffCount", { type: String, required: true });
 const labPickCount = defineModel("labPickCount", { type: String, required: true });
@@ -32,6 +34,7 @@ const props = defineProps({
   runFactory: { type: Function, required: true },
   runCards: { type: Function, required: true },
   runDraw: { type: Function, required: true },
+  runBox: { type: Function, required: true },
   runPick: { type: Function, required: true },
   runLab50: { type: Function, required: true },
   runAuto50: { type: Function, required: true },
@@ -103,6 +106,7 @@ function resText(n) {
     <p>金属 {{ resText(metal) }} · 石油 {{ resText(oil) }}</p>
     <p>勋章 {{ resText(credit) }} · 人口 {{ resText(pop) }}</p>
     <p>高级将领卡 {{ resText(cards.general) }} · 参谋卡 {{ resText(cards.staff) }} · 实验卡 {{ resText(cards.lab) }} · 自动化探索卡 {{ resText(cards.auto) }} · 豪饮卡 {{ resText(cards.drink) }}</p>
+    <p>中级补给箱 {{ resText(cards.box_mid) }} · 中级钥匙 {{ resText(cards.box_mid_key) }} · 高级补给箱 {{ resText(cards.box_high) }} · 高级钥匙 {{ resText(cards.box_high_key) }}</p>
     <p>招募卡自选 {{ resText(cards.recruit) }} · 探索卡自选 {{ resText(cards.explore) }}</p>
     <p class="muted">进入这一页就读攻打号背包里的这几种卡。开卡、换自选包或抽卡之后，剩余张数会跟着背包更新。还没收到就显示还没读到。</p>
     <fieldset class="locked-area">
@@ -135,6 +139,21 @@ function resText(n) {
             <button type="submit">抽取</button>
           </form>
           <p class="muted">数量是要消耗的卡。豪饮用物品 10061，一张抽一次。高级将领用物品 10020，单抽一张一次。十连按卡数除以 10 向下取整，例如 25 张抽 2 次、用 20 张。不够就停，并写出剩余张数。1 到 99999，十连至少 10 张。点下去会先确认卡和张数。</p>
+        </FoldPart>
+        <FoldPart title="补给箱">
+          <form class="lock-row" @submit.prevent="runBox('box_mid', boxMidCount).catch((e) => showErr(e.message))">
+            <span class="switch">中级补给箱十连</span>
+            <span class="card-have">箱子 {{ resText(cards.box_mid) }} · 钥匙 {{ resText(cards.box_mid_key) }}</span>
+            <label>数量<input v-model="boxMidCount" class="mins" inputmode="numeric" required /></label>
+            <button type="submit">开启</button>
+          </form>
+          <form class="lock-row" @submit.prevent="runBox('box_high', boxHighCount).catch((e) => showErr(e.message))">
+            <span class="switch">高级补给箱十连</span>
+            <span class="card-have">箱子 {{ resText(cards.box_high) }} · 钥匙 {{ resText(cards.box_high_key) }}</span>
+            <label>数量<input v-model="boxHighCount" class="mins" inputmode="numeric" required /></label>
+            <button type="submit">开启</button>
+          </form>
+          <p class="muted">数量是要开的箱子个数。中级箱 60002 配钥匙 10038，高级箱 60003 配钥匙 10039。一次各扣 10。箱子或钥匙不够 10 就停。25 个开 2 次、用 20 个箱子和 20 把钥匙。点下去会先确认。</p>
         </FoldPart>
         <FoldPart title="换卡">
           <form class="lock-row" @submit.prevent="runPick('pick_general', generalCount).catch((e) => showErr(e.message))">

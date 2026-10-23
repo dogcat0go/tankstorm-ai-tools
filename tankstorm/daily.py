@@ -1336,6 +1336,15 @@ TASKS = [
        gate=Gate("RseAdmiralOpen", "freeVisitCnt"),
        tiers=Tiers(4, [0, 1, 2])),
 
+    # 2026-10-23 22:43 抓包。消息是 RceAdviserDaily，不是剿灭将领旧协议。
+    _t("剿灭将领", "剿灭将领", "04dc", "RceAdviserDaily",
+       {}, "实测",
+       "2026-10-23：noptType 1 开面板，4 进攻（nid 是从 1 起的位置），"
+       "5 刷新，2 合成。场上没有中高级才刷新。"
+       "编号末两位 50 及以上才打（3205x、3207x），3203x 不打。"
+       "不发 nbuycnt，不买次数",
+       runner=lambda rec, sock, config: daily_wipe_generals(rec, sock, config)),
+
     # 2026-10-10 抓包。type=1 只查询。type=11 是拨款，只写 type，
     # 一次把一部分铸造兑成代币（42→20，代币 +22），拨到 0 为止。
     _t("将领授勋", "将领·授勋拨款", "04c1", "RceMedalHonorOpt",
@@ -1660,6 +1669,16 @@ TASKS = [
        runner=lambda rec, sock, config: __import__(
            "tankstorm.guild", fromlist=["daily_donate"]
        ).daily_donate(rec, sock, config)),
+
+    # 2026-10-23 23:14 抓包。刷新候选后参加，不是公会战报名。
+    _t("公会任务", "公会·参加任务", "04f3", "RceGuildBuildOpt",
+       {}, "实测",
+       "2026-10-23：ntype=3 开面板，4 刷新，6 参加。"
+       "参加的 nTaskID 是候选里的 nID。协议不带星级和名字，"
+       "这次点参加的是 nTaskType=13。付费刷新次数大于 0 就停",
+       runner=lambda rec, sock, config: __import__(
+           "tankstorm.guild", fromlist=["daily_guild_task"]
+       ).daily_guild_task(rec, sock, config)),
 
     # ---- 领奖排在会产生进度的任务之后 ----
     _t("周任务", "周任务领奖", "04de", "RceWeekQuestOpt",
@@ -2537,6 +2556,8 @@ _WATCH_CARDS = (
     (10020, "general"), (10107, "staff"), (10006, "lab"),
     (10116, "auto"), (10061, "drink"),
     (110011, "recruit"), (110015, "explore"),
+    (60002, "box_mid"), (60003, "box_high"),
+    (10038, "box_mid_key"), (10039, "box_high_key"),
 )
 
 
@@ -2568,6 +2589,74 @@ def note_bag_cards(rec) -> None:
         found[want[tid]] = count
     from . import citydb
     citydb.note_attack_cards(found)
+
+
+_BOXES = {
+    "box_mid": (60002, 10038, "中级补给箱", "中级钥匙"),
+    "box_high": (60003, 10039, "高级补给箱", "高级钥匙"),
+}
+_BOX_BATCH = 10
+
+
+def open_supply_box(rec, sock, kind, count=10, on_progress=None):
+    """开补给箱。2026-10-23 23:17 抓包：RceBagItemUse，optType=5，一次 count=10。
+
+    中级箱 60002 配钥匙 10038，高级箱 60003 配钥匙 10039。十连各扣 10。
+    请求里只写箱子，钥匙由服务端扣。箱子或钥匙不够 10 就不发。
+    """
+    spec = _BOXES.get(kind)
+    if not spec:
+        return False, "没有这种补给箱"
+    item_id, key_id, name, key_name = spec
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        return False, "数量要是数字"
+    times = count // _BOX_BATCH
+    if times < 1:
+        return False, "十连至少要 10 个"
+    done = 0
+    have = 0
+    for _ in range(times):
+        raise_if_stopped()
+        found = latest_card(rec, item_id)
+        if found is None:
+            return False, "登录包里没有背包，没有开箱"
+        have, slot = found
+        if have < _BOX_BATCH or not slot:
+            head = f"完成 {done}/{times}。" if done else ""
+            return False, f"{head}{name}数量不足，只有 {have} 个，十连要 10 个，不发"
+        keys = latest_card(rec, key_id)
+        key_have = 0 if not keys else keys[0]
+        if key_have < _BOX_BATCH:
+            head = f"完成 {done}/{times}。" if done else ""
+            return False, f"{head}{key_name}数量不足，只有 {key_have} 把，十连要 10 把，不发"
+        mark = rec.seq_mark() if rec else 0
+        sender.send_frame(sock, "0440", encode_message({
+            3: ("int32", _BOX_BATCH), 4: ("int32", slot),
+            5: ("int32", item_id), 7: ("int32", 5),
+        }), rec.rc4_c2s)
+        got = _await_response(
+            sock, rec, "RseBagItemUse", mark, 6.0,
+            want=lambda d, item_id=item_id: (
+                isinstance(d, dict) and d.get("itemID") == item_id))
+        if not isinstance(got, dict):
+            head = f"完成 {done}/{times}。" if done else ""
+            return False, head + "开箱没有回包"
+        if got.get("ret") not in (0, None):
+            head = f"完成 {done}/{times}。" if done else ""
+            return False, head + f"开箱被拒 ret={got.get('ret')}"
+        done += 1
+        if on_progress:
+            on_progress(f"{name} {done}/{times}")
+        _nap(0.4)
+    note_bag_cards(rec)
+    left = latest_card(rec, item_id)
+    keys = latest_card(rec, key_id)
+    remain = left[0] if left else have
+    key_left = keys[0] if keys else 0
+    return True, (f"成功：{name}十连 {done} 次、用 {done * _BOX_BATCH} 个，"
+                  f"剩余箱子={remain}，剩余{key_name}={key_left}")
 
 
 def _draw_send(rec, sock, opcode, fields, reply, kind):
@@ -3025,6 +3114,105 @@ def _ready_heroes(panel, busy):
         ready.append((hid, level))
     ready.sort(key=lambda item: (-item[1], -item[0]))
     return ready
+
+
+def _adviser_ids(data, key):
+    if not isinstance(data, dict) or key not in data:
+        return None
+    v = data[key]
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return [v]
+    if isinstance(v, list) and all(
+            isinstance(x, int) and not isinstance(x, bool) for x in v):
+        return v
+    return None
+
+
+def daily_wipe_generals(rec, sock, config):
+    """剿灭将领。先打场上的中高级，没有才刷新，次数用完再合成。
+
+    2026-10-23 22:43–22:45 抓包：RceAdviserDaily / RseAdviserDaily。
+    noptType=1 开面板，4 进攻，5 刷新，2 合成。nid 是将领位置，从 1 起。
+    当时场上 32079、32077、32059、32057、32058 被打，32038、32039 被跳过，
+    所以末两位小于 50 的当成低级。不发 nbuycnt。
+    """
+    def send(opt, slot=None):
+        fields = {1: ("int32", opt)}
+        if slot is not None:
+            fields[2] = ("int32", slot)
+        mark = rec.seq_mark() if rec else 0
+        sender.send_frame(sock, "04dc", encode_message(fields), rec.rc4_c2s)
+        got = _await_response(
+            sock, rec, "RseAdviserDaily", mark, 6.0,
+            want=lambda d: isinstance(d, dict) and d.get("noptType") == opt)
+        _nap(0.35)
+        return got
+
+    panel = send(1)
+    if not isinstance(panel, dict):
+        return False, "失败：没收到剿灭将领面板"
+    free = _one(panel.get("nfreeTimes"))
+    board = _adviser_ids(panel, "field4")
+    if free is None or board is None:
+        return False, "失败：面板里读不到剩余次数或将领"
+    if free <= 0:
+        bag = [x for x in (_adviser_ids(panel, "field3") or []) if x]
+        if not bag:
+            return True, "成功：没有剩余进攻次数"
+    refresh_left = _one(panel.get("nDefeatMax"))
+    if refresh_left is None or not 0 <= refresh_left <= 5:
+        refresh_left = 3
+    attacked, refreshed = [], 0
+    bag = _adviser_ids(panel, "field3") or []
+    while free > 0 and len(attacked) < 12:
+        raise_if_stopped()
+        slot = next((i for i, npc in enumerate(board) if npc % 100 >= 50), None)
+        if slot is None:
+            if refresh_left <= 0:
+                break
+            got = send(5)
+            refreshed += 1
+            refresh_left -= 1
+            if not isinstance(got, dict):
+                return False, "失败：刷新没有回包（已进攻 %d 次）" % len(attacked)
+            nxt = _adviser_ids(got, "field4")
+            if not nxt or nxt == board:
+                break
+            board = nxt
+            now = _one(got.get("nfreeTimes"))
+            if now is not None:
+                free = now
+            held = _adviser_ids(got, "field3")
+            if held is not None:
+                bag = held
+            continue
+        npc = board[slot]
+        got = send(4, slot + 1)
+        if not isinstance(got, dict):
+            return False, "失败：进攻 %d 没有回包" % npc
+        now = _one(got.get("nfreeTimes"))
+        if now is None or now >= free:
+            break
+        attacked.append(npc)
+        free = now
+        nxt = _adviser_ids(got, "field4")
+        if nxt:
+            board = nxt
+        held = _adviser_ids(got, "field3")
+        if held is not None:
+            bag = held
+    made = bool(attacked or any(bag))
+    if made:
+        got = send(2)
+        if not isinstance(got, dict):
+            return False, "失败：合成没有回包（已进攻 %d 次）" % len(attacked)
+    lows = [x for x in board if x % 100 < 50]
+    return True, "成功：进攻 %d 次（%s），刷新 %d 次%s，还剩 %d 次%s" % (
+        len(attacked), ",".join(str(x) for x in attacked) or "无",
+        refreshed, "，已合成" if made else "",
+        free, ("，场上还剩低级 " + ",".join(str(x) for x in lows)) if lows else "")
 
 
 def daily_medal(rec, sock, config, strong=False):

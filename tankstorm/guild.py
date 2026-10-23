@@ -252,6 +252,89 @@ def _spend(kind, cost, metal, oil, feats, items):
     return metal, oil, feats, items - cost
 
 
+# 2026-10-23 23:14 抓包。公会任务走 RceGuildBuildOpt，不是公会战那条 RceGuildOpt。
+# ntype=3 开面板，4 刷新候选，6 参加。参加时 nTaskID 填候选里的 nID（小编号）。
+# 星级和中文名在客户端 GuildTaskData，协议里没有。
+# 这次刷了 7 页，唯一点参加的是 nTaskType=13。同页没点的类型先不参加。
+_BUILD_OP = "04f3"
+_BUILD_RSE = "RseGuildBuildOpt"
+_TASK_OPEN = 3
+_TASK_REFRESH = 4
+_TASK_JOIN = 6
+_TASK_WANTED = {13}
+_TASK_REFRESH_MAX = 8
+
+
+def _build_send(sock, rec, ntype, task_id=0):
+    fields = {1: ("int32", ntype)}
+    if task_id:
+        fields[3] = ("int32", task_id)
+    before = rec.seq_mark() if rec else 0
+    sender.send_frame(sock, _BUILD_OP, encode_message(fields), rec.rc4_c2s)
+    return _await_response(
+        sock, rec, _BUILD_RSE, before, 6.0,
+        want=lambda d: isinstance(d, dict) and d.get("ntype") == ntype)
+
+
+def _board(data):
+    """刷新回包 field23 是这一页 4 个候选。每项 field1=nID，field2=nTaskType。"""
+    raw = data.get("field23") if isinstance(data, dict) else None
+    rows = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        nid = row.get("nID", row.get("field1"))
+        kind = row.get("nTaskType", row.get("field2"))
+        if isinstance(nid, bool) or isinstance(kind, bool):
+            continue
+        if isinstance(nid, int) and isinstance(kind, int) and nid > 0:
+            out.append((nid, kind))
+    return out
+
+
+def daily_guild_task(rec, sock, config):
+    """参加公会任务。先开面板，没有要的类型就刷新，点到为止。
+
+    不发付费刷新。回包 nCreditFreshNum 大于 0 就停手。
+    """
+    panel = _build_send(sock, rec, _TASK_OPEN)
+    if not isinstance(panel, dict):
+        return False, "失败：没收到公会任务面板"
+    joined = []
+    refreshes = 0
+    while len(joined) < 5:
+        board = _board(panel)
+        pick = next(((nid, kind) for nid, kind in board if kind in _TASK_WANTED), None)
+        if pick is not None:
+            nid, kind = pick
+            got = _build_send(sock, rec, _TASK_JOIN, nid)
+            if not isinstance(got, dict):
+                return False, "失败：参加类型 %d 没有回包" % kind
+            ret = got.get("nRet")
+            if ret not in (0, None):
+                return False, "失败：参加类型 %d 被拒 nRet=%s" % (kind, ret)
+            joined.append(kind)
+            panel = got
+            _nap(0.35)
+            continue
+        if refreshes >= _TASK_REFRESH_MAX:
+            break
+        credit = panel.get("nCreditFreshNum")
+        if isinstance(credit, int) and not isinstance(credit, bool) and credit > 0:
+            break
+        nxt = _build_send(sock, rec, _TASK_REFRESH)
+        refreshes += 1
+        if not isinstance(nxt, dict):
+            return False, "失败：刷新没有回包（已参加 %d 个）" % len(joined)
+        panel = nxt
+        _nap(0.35)
+    if not joined:
+        return True, "成功：刷新 %d 次，没有可参加的目标任务" % refreshes
+    return True, "成功：参加 %d 个（类型 %s），刷新 %d 次" % (
+        len(joined), ",".join(str(k) for k in joined), refreshes)
+
+
 def _donate_total(counts):
     """三种一键的已捐次数相加，每种不超过当天上限，合计最多 15。"""
     total = 0

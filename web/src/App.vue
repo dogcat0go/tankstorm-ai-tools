@@ -85,14 +85,21 @@ const aaCount = ref("1");
 const drinkCount = ref("1");
 const admiralCount = ref("1");
 const admiral10Count = ref("10");
+const boxMidCount = ref("10");
+const boxHighCount = ref("10");
 const generalCount = ref("1");
 const staffCount = ref("1");
 const labPickCount = ref("1");
 const autoCount = ref("1");
 const lab50Count = ref("1");
 const auto50Count = ref("1");
+const spreadX1 = ref("");
+const spreadY1 = ref("");
+const spreadX2 = ref("");
+const spreadY2 = ref("");
 const emptyCards = () => ({
   general: null, staff: null, lab: null, auto: null, drink: null, recruit: null, explore: null,
+  box_mid: null, box_high: null, box_mid_key: null, box_high_key: null,
 });
 const baseCards = ref(emptyCards());
 const ask = ref("");
@@ -293,11 +300,22 @@ async function runBase(countOrBody) {
     ? countOrBody
     : { kind: "blast", count: countOrBody };
   if (body.kind === "cards") {
-    const ok = await confirmUse("开 4 张 1000 万金属卡，以及 4 张 1000 万石油卡。");
+    const ok = await confirmUse("按顺序开这次抓到的资源卡，一次 1 张。10 万金属和石油、500 万石油和金属、50 万金属和石油、200 万石油和金属。1000 万的先不开。");
     if (!ok) return;
   }
   await api("/api/base", body);
   baseNote.value = body.kind === "cards" ? "开资源卡已交给绑定的攻打号" : "爆破兵已交给绑定的攻打号";
+  await refreshBase();
+  await refreshAttacks();
+}
+
+async function runSpread(x1, y1, x2, y2) {
+  showErr("", "base");
+  baseNote.value = "";
+  const ok = await confirmUse(`把全部爆破兵均匀布到 (${x1},${y1}) 和 (${x2},${y2}) 这块区域。`);
+  if (!ok) return;
+  await api("/api/base", { kind: "spread", x1, y1, x2, y2 });
+  baseNote.value = "布开爆破兵已交给绑定的攻打号";
   await refreshBase();
   await refreshAttacks();
 }
@@ -315,6 +333,22 @@ async function runAa(count) {
   showErr("");
   baseNote.value = "";
   await api("/api/base", { count, unit: "aa" });
+  baseNote.value = "已交给绑定的攻打号";
+  await refreshBase();
+  await refreshAttacks();
+}
+
+async function runBox(kind, count) {
+  showErr("", "base");
+  baseNote.value = "";
+  const n = cardNum(count);
+  const times = Math.floor(n / 10);
+  if (times < 1) throw new Error("十连至少要 10 个");
+  const name = kind === "box_high" ? "高级补给箱" : "中级补给箱";
+  const keyName = kind === "box_high" ? "高级钥匙" : "中级钥匙";
+  const ok = await confirmUse(`开启${name} ${times * 10} 个，同时用掉${keyName} ${times * 10} 把，十连 ${times} 次。`);
+  if (!ok) return;
+  await api("/api/base", { kind, count: n });
   baseNote.value = "已交给绑定的攻打号";
   await refreshBase();
   await refreshAttacks();
@@ -1252,12 +1286,18 @@ onUnmounted(() => {
         v-model:drink-count="drinkCount"
         v-model:admiral-count="admiralCount"
         v-model:admiral10-count="admiral10Count"
+        v-model:box-mid-count="boxMidCount"
+        v-model:box-high-count="boxHighCount"
         v-model:general-count="generalCount"
         v-model:staff-count="staffCount"
         v-model:lab-pick-count="labPickCount"
         v-model:auto-count="autoCount"
         v-model:lab50-count="lab50Count"
         v-model:auto50-count="auto50Count"
+        v-model:x1="spreadX1"
+        v-model:y1="spreadY1"
+        v-model:x2="spreadX2"
+        v-model:y2="spreadY2"
         :daily-qq="dailyQq"
         :jobs="baseJobs"
         :blast="baseBlast"
@@ -1270,9 +1310,11 @@ onUnmounted(() => {
         :err="err"
         :err-at="errAt"
         :run-blast="runBase"
+        :run-spread="runSpread"
         :run-factory="runFactory"
         :run-cards="() => runBase({ kind: 'cards' })"
         :run-draw="runDraw"
+        :run-box="runBox"
         :run-pick="runPick"
         :run-lab50="runLab50"
         :run-auto50="runAuto50"

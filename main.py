@@ -38,7 +38,7 @@
   python main.py --atk 7826194927704102 --sweep --atk-times 2
   python main.py --atk-city 2302 --sweep          现场翻页打城：先打再看士气，击退/打不过换人
   python main.py --list-cities        列出全部城市 ID 与中文名
-  python main.py --capture            扫码后打开钩子版游戏窗口，实时抓包。开跑前可选空间或大厅
+  python main.py --capture            扫码后打开钩子版游戏窗口，实时抓包。Ctrl+F8 给操作起名
   python main.py --pve                 征战世界，留空只打当前关
   python main.py --pve 20              从当前关打到第 20 关
   python main.py --pve 1-10,15         只打名单里的关（当前关必须在里面）
@@ -407,7 +407,8 @@ def main() -> int:
     g4.add_argument("--capture", action="store_true",
                     help="扫码登录后打开钩子版 Flash 窗口，实时抓游戏明文包。"
                          "登录可选空间或大厅。游戏窗口仍是 flash_host，"
-                         "不要开官方大厅客户端。请先停掉 --keepalive")
+                         "不要开官方大厅客户端。请先停掉 --keepalive。"
+                         "窗口里 Ctrl+F8 给刚做的操作起名，写进同一份日志")
     g4.add_argument("--task", help="（旧的 HTTP 接口任务，见 endpoints.json）")
     g4.add_argument("--real", action="store_true",
                     help="（已废弃，保留兼容：现在 --daily 一律真实发送）")

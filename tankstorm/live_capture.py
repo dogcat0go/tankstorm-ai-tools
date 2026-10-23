@@ -14,7 +14,8 @@ ExternalInterface 把明文打到页面。大厅登不进去之后，这条链�
   扫码登录（空间或大厅）→ 拿到 canvas_url
   本机 HTTPS 代理冒充 redwar-cdn.sincetimes.com，投递钩子版 SWF
   flash_host（Qt WebEngine + pepflashplayer）打开 canvas_url
-  钩子经 __pkt 上报，这里落盘并打印攻击相关字段
+  钩子经 __pkt 上报，这里落盘并打印攻击相关字段。
+  游戏窗口里 Ctrl+F8 给刚做的操作起名，按按下快捷键的时刻写进同一份日志。
 
 必须先停掉 --keepalive。游戏窗口是 flash_host，不是大厅。
 """
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import shutil
 import socket
@@ -33,7 +35,11 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
+
+# 空代理表才会绕过 Windows 里登记的 127.0.0.1:7892。
+# 国内 CDN 走那条代理时，对端经常不回响应就断开。
+_direct = build_opener(ProxyHandler({}))
 
 from .log import get_logger
 from .paths import app_dir, bundled_dir, user_path
@@ -122,6 +128,7 @@ def run(qq, config: dict) -> int:
 
     log.info("保活是另一个窗口里的 py main.py --keepalive，在那个窗口 Ctrl+C 停")
     log.info("关掉游戏窗口才会结束。日志 %s", log_path)
+    log.info("点完按钮按 Ctrl+F8 起名，时刻按按下快捷键算，写进同一份日志")
     proc = subprocess.Popen(
         [host_exe, "--cfg", cfg_path],
         cwd=os.path.dirname(host_exe),
@@ -133,9 +140,29 @@ def run(qq, config: dict) -> int:
             if line:
                 log.info("窗口 %s", line)
     threading.Thread(target=_host_err, daemon=True).start()
+    marks = queue.Queue()
+    asking = threading.Event()
+    _arm_mark_hotkey(marks, asking)
+    titled = False
+    last_mark = ""
     try:
         while proc.poll() is None:
-            time.sleep(0.4)
+            if not titled:
+                titled = _show_hotkey_title()
+            try:
+                t = marks.get(timeout=0.4)
+            except queue.Empty:
+                continue
+            try:
+                name = _prompt_mark(last_mark, t)
+            except Exception as exc:
+                log.error("标记窗口失败：%s", exc)
+                name = ""
+            finally:
+                asking.clear()
+            if name:
+                last_mark = name
+                _on_pkt({"mark": name, "t": t}, ignore, sink)
     except KeyboardInterrupt:
         log.info("停止抓包")
         proc.terminate()
@@ -152,12 +179,137 @@ def run(qq, config: dict) -> int:
     return 0
 
 
+def _arm_mark_hotkey(q, asking):
+    """Flash 会吃掉窗口快捷键，所以在抓包进程上注册系统热键 Ctrl+F8。"""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.RegisterHotKey.argtypes = [
+        wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
+    user32.RegisterHotKey.restype = wintypes.BOOL
+    user32.GetMessageW.argtypes = [
+        ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+    user32.GetMessageW.restype = ctypes.c_int
+    user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+
+    def loop():
+        # 热键消息只进注册它的那条线程。
+        if not user32.RegisterHotKey(None, 1, 0x0002 | 0x4000, 0x77):
+            log.error("Ctrl+F8 注册失败（%s），这一轮不能给操作起名",
+                      ctypes.get_last_error())
+            return
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            if msg.message == 0x0312 and not asking.is_set():
+                asking.set()
+                q.put(time.time())
+        user32.UnregisterHotKey(None, 1)
+
+    threading.Thread(target=loop, name="mark-hotkey", daemon=True).start()
+
+
+def _show_hotkey_title():
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.FindWindowW.restype = wintypes.HWND
+    user32.SetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
+    hwnd = user32.FindWindowW(None, "坦克风暴 · 抓包")
+    if not hwnd:
+        return False
+    user32.SetWindowTextW(hwnd, "坦克风暴 · 抓包    Ctrl+F8 标记")
+    return True
+
+
+def _prompt_mark(last, t):
+    import ctypes
+    from ctypes import wintypes
+    import tkinter as tk
+    ms = int(round(float(t) * 1000))
+    clock = time.strftime("%H:%M:%S", time.localtime(ms / 1000.0))
+    clock = "%s.%03d" % (clock, ms % 1000)
+    root = tk.Tk()
+    root.title("标记动作")
+    root.attributes("-topmost", True)
+    root.resizable(False, False)
+    tk.Label(
+        root,
+        text="按下时刻 %s。这一下是什么？\n直接 Enter 沿用上次的名字，Esc 取消。" % clock,
+        justify="left",
+    ).pack(padx=12, pady=(12, 6), anchor="w")
+    var = tk.StringVar(value=last)
+    ent = tk.Entry(root, textvariable=var, width=44)
+    ent.pack(padx=12, fill="x")
+    out = {"text": ""}
+
+    def ok(_e=None):
+        out["text"] = var.get().strip()
+        root.destroy()
+
+    def cancel(_e=None):
+        root.destroy()
+
+    bar = tk.Frame(root)
+    bar.pack(pady=10)
+    tk.Button(bar, text="写入", width=10, command=ok).pack(side="left", padx=6)
+    tk.Button(bar, text="取消", width=10, command=cancel).pack(side="left", padx=6)
+    root.bind("<Return>", ok)
+    root.bind("<Escape>", cancel)
+    root.protocol("WM_DELETE_WINDOW", cancel)
+    root.update_idletasks()
+    w, h = root.winfo_reqwidth(), root.winfo_reqheight()
+    root.geometry("+%d+%d" % (
+        (root.winfo_screenwidth() - w) // 2,
+        (root.winfo_screenheight() - h) // 3))
+    ent.focus_set()
+    ent.select_range(0, "end")
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = [
+        wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.AttachThreadInput.argtypes = [
+        wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+
+    def lift():
+        root.lift()
+        root.focus_force()
+        ent.focus_set()
+        fg = user32.GetForegroundWindow()
+        if not fg:
+            return
+        fg_tid = user32.GetWindowThreadProcessId(fg, None)
+        user32.AttachThreadInput(kernel32.GetCurrentThreadId(), fg_tid, True)
+        user32.SetForegroundWindow(root.winfo_id())
+        user32.AttachThreadInput(kernel32.GetCurrentThreadId(), fg_tid, False)
+
+    root.after(0, lift)
+    root.mainloop()
+    return out["text"]
+
+
 def _on_pkt(rec: dict, ignore: set, sink: dict):
+    mark = str(rec.get("mark") or "").strip()
+    if mark:
+        try:
+            ms = int(round(float(rec.get("t")) * 1000))
+        except (TypeError, ValueError):
+            ms = int(round(time.time() * 1000))
+        clock = time.strftime("%H:%M:%S", time.localtime(ms / 1000.0))
+        row = {"mark": mark, "t": round(ms / 1000.0, 3),
+               "ts": "%s.%03d" % (clock, ms % 1000)}
+        sink["fh"].write(json.dumps(row, ensure_ascii=False) + "\n")
+        sink["fh"].flush()
+        log.info("[标记] %s  %s", row["ts"], mark)
+        return
     cls = _short_cls(rec.get("cls") or "")
     if cls in ignore:
         return
     rec = dict(rec)
     rec["cls"] = cls
+    rec["t"] = round(time.time(), 3)
     rec["ts"] = time.strftime("%H:%M:%S")
     sink["fh"].write(json.dumps(rec, ensure_ascii=False) + "\n")
     sink["fh"].flush()
@@ -296,7 +448,7 @@ def _hook_swf(pkt_dir, name, url) -> bool:
     log.info("下载原版 %s", url)
     try:
         req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urlopen(req, timeout=120) as r:
+        with _direct.open(req, timeout=120) as r:
             data = r.read()
         if len(data) < 1_000_000:
             log.warning("不像主体 SWF（%d 字节），跳过 %s", len(data), name)
@@ -623,7 +775,7 @@ class _CdnProxy:
         try:
             req = Request(url, headers={"Accept-Encoding": "identity",
                                         "User-Agent": "Mozilla/5.0"})
-            with urlopen(req, timeout=60) as r:
+            with _direct.open(req, timeout=60) as r:
                 data = r.read()
                 ctype = r.headers.get("Content-Type", "application/octet-stream")
                 status = getattr(r, "status", 200)

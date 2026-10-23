@@ -546,11 +546,14 @@ def _handler(config: dict):
                         raise ValueError("基地战需要高级pro订阅")
                     kind = str(data.get("kind") or data.get("unit") or "blast").strip()
                     if kind not in (
-                            "blast", "factory", "cards", "haoyin", "admiral", "admiral10",
+                            "blast", "spread", "factory", "cards", "haoyin", "admiral", "admiral10",
+                            "box_mid", "box_high",
                             "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50"):
                         raise ValueError("没有这项")
                     if kind == "cards":
                         params = {}
+                    elif kind == "spread":
+                        params = {k: data.get(k) for k in ("x1", "y1", "x2", "y2")}
                     elif kind == "factory":
                         params = {"count": data.get("count"), "army": data.get("army")}
                     else:

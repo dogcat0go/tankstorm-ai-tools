@@ -2258,6 +2258,16 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 daily.note_bag_cards(rec)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind in ("box_mid", "box_high"):
+                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                    citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
+                    return
+                ok, why = daily.open_supply_box(
+                    rec, sock, kind, count=params.get("count") or 10,
+                    on_progress=_show)
+                daily.note_bag_cards(rec)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind in ("pick_general", "pick_staff", "pick_lab", "pick_auto"):
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
                     citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
@@ -2401,7 +2411,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     hold_closed = False
     side_kinds = (
         "daily", "pve", "fund", "chest", "cards",
-        "haoyin", "admiral", "admiral10",
+        "haoyin", "admiral", "admiral10", "box_mid", "box_high",
         "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
     )
 

@@ -40,6 +40,7 @@ const props = defineProps({
 
 const page = ref(null);
 const recentScroller = ref(null);
+const recentOpen = ref(true);
 let recentObserver;
 let recentSeen;
 
@@ -48,19 +49,11 @@ function fitRecent() {
   if (!root) return;
   const dock = root.querySelector(".recent-dock");
   const scroller = recentScroller.value;
+  if (scroller) scroller.style.maxHeight = "";
   const mobile = window.matchMedia("(max-width: 720px)").matches && getComputedStyle(root).display !== "none";
   if (!mobile || !dock) {
-    if (scroller) scroller.style.maxHeight = "";
     root.style.paddingBottom = "";
     return;
-  }
-  if (scroller) {
-    const rows = [...scroller.querySelectorAll("tbody tr")].slice(0, 2);
-    let h = rows.reduce((sum, row) => sum + row.offsetHeight, 0);
-    const head = scroller.querySelector("thead");
-    if (head) h += head.offsetHeight;
-    const next = h > 0 ? `${Math.ceil(h)}px` : "";
-    if (scroller.style.maxHeight !== next) scroller.style.maxHeight = next;
   }
   const pad = `${dock.offsetHeight}px`;
   if (root.style.paddingBottom !== pad) root.style.paddingBottom = pad;
@@ -68,8 +61,8 @@ function fitRecent() {
 
 function bindRecent() {
   recentObserver?.disconnect();
-  const table = recentScroller.value?.querySelector("table");
-  if (table && recentObserver) recentObserver.observe(table);
+  const dock = page.value?.querySelector(".recent-dock");
+  if (dock && recentObserver) recentObserver.observe(dock);
   fitRecent();
 }
 
@@ -89,6 +82,7 @@ onBeforeUnmount(() => {
 
 watch(recentScroller, () => nextTick(bindRecent));
 watch(() => props.jobs, () => nextTick(fitRecent));
+watch(recentOpen, () => nextTick(fitRecent));
 
 function resText(n) {
   if (n === null || n === undefined || n === "") return "还没读到";
@@ -220,8 +214,11 @@ function resText(n) {
     </fieldset>
     <p v-if="note" class="muted">{{ note }}</p>
     <p v-if="err && errAt === 'base'" class="err">{{ err }}</p>
-    <div class="recent-dock">
-      <h2>最近执行</h2>
+    <div class="recent-dock" :class="{ collapsed: !recentOpen }">
+      <div class="recent-head">
+        <h2>最近执行</h2>
+        <button type="button" class="ghost recent-toggle" @click="recentOpen = !recentOpen">{{ recentOpen ? "向下收起" : "向上展开" }}</button>
+      </div>
       <p v-if="!jobs.length" class="muted">还没有执行记录。</p>
       <div v-else ref="recentScroller" class="wide recent-scroll">
         <table class="daily-jobs">

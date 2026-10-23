@@ -1171,6 +1171,79 @@ def set_user_expiry(username: str, expires_at: str) -> bool:
         conn.close()
 
 
+def _add_calendar_month(day):
+    """日期加一个自然月。目标月没有这一天时，落到那个月的最后一天。"""
+    year = day.year + (1 if day.month == 12 else 0)
+    month = 1 if day.month == 12 else day.month + 1
+    if month == 12:
+        last = 31
+    else:
+        last = (datetime(year, month + 1, 1) - timedelta(days=1)).day
+    return day.replace(year=year, month=month, day=min(day.day, last))
+
+
+def apply_member_expiry(user_id: int, action: str, expires_at: str = "") -> str:
+    """改成员有效期。action 为 expire、month 或 custom。成功返回空字符串。
+
+    expire 写成北京时间的昨天，账号马上算过期。
+    month 在仍有效的日期上加一个自然月；没填或已经过期，从今天起加一个月。
+    custom 必须是 YYYY-MM-DD，这一天仍然有效。
+    """
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return "没有这个账号"
+    action = str(action or "").strip()
+    today = datetime.strptime(beijing_day(), "%Y-%m-%d").date()
+    if action == "expire":
+        target = today - timedelta(days=1)
+    elif action == "month":
+        target = None
+    elif action == "custom":
+        text = str(expires_at or "").strip()[:10]
+        if not text:
+            return "请选一个日期"
+        try:
+            target = datetime.strptime(text, "%Y-%m-%d").date()
+        except ValueError:
+            return "有效期要写成 2026-12-31 这种日期"
+        if target.isoformat() != text:
+            return "有效期要写成 2026-12-31 这种日期"
+    else:
+        return "有效期操作不对"
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT IFNULL(expires_at,''), username FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+        if not row:
+            conn.rollback()
+            return "没有这个账号"
+        if action == "month":
+            base = today
+            stored = (row[0] or "").strip()[:10]
+            if stored and not account_expired(stored):
+                try:
+                    base = datetime.strptime(stored, "%Y-%m-%d").date()
+                except ValueError:
+                    base = today
+            target = _add_calendar_month(base)
+        cur = conn.execute(
+            "UPDATE app_user SET expires_at=? WHERE id=?",
+            (target.isoformat(), user_id))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "没有这个账号"
+        name = row[1]
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    log.info("登录账号 %s 的有效期改为 %s", name, target.isoformat())
+    return ""
+
+
 def list_members() -> list:
     """全部登录账号。给管理员看页面配置，不含密码。"""
     conn = connect(readonly=True)

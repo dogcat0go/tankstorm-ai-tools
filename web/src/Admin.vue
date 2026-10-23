@@ -9,6 +9,11 @@ const err = ref("");
 const cities = ref([]);
 const members = ref([]);
 const openMember = ref(0);
+const openExpiry = ref(0);
+const expiryDraft = ref({});
+const expiryBusy = ref(0);
+const expiryErr = ref({});
+const expiryNote = ref({});
 const clearing = ref(0);
 const stormNotes = ref({});
 const stormErr = ref({});
@@ -394,6 +399,56 @@ function toggleMember(id) {
   openMember.value = openMember.value === id ? 0 : id;
 }
 
+function toggleExpiry(m) {
+  if (openExpiry.value === m.id) {
+    openExpiry.value = 0;
+    return;
+  }
+  openExpiry.value = m.id;
+  const day = String(m.expires_at || "").trim().slice(0, 10);
+  if (!expiryDraft.value[m.id] && /^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    expiryDraft.value = { ...expiryDraft.value, [m.id]: day };
+  }
+}
+
+async function saveExpiry(m, action) {
+  if (expiryBusy.value) return;
+  if (action === "expire") {
+    if (!window.confirm("把 " + m.username + " 设为已过期？有效期会改成北京时间的昨天。未勾选「显示过期」时，这个账号会从列表里消失。")) return;
+  }
+  if (action === "month" && !String(m.expires_at || "").trim()) {
+    if (!window.confirm(m.username + " 现在不限期。延长一个月会从今天起算，改成一个月后到期。")) return;
+  }
+  err.value = "";
+  expiryErr.value = { ...expiryErr.value, [m.id]: "" };
+  const body = { user_id: m.id, action };
+  if (action === "custom") {
+    body.expires_at = String(expiryDraft.value[m.id] || "").trim();
+    if (!body.expires_at) {
+      expiryErr.value = { ...expiryErr.value, [m.id]: "请选一个日期" };
+      return;
+    }
+  }
+  expiryBusy.value = m.id;
+  try {
+    const data = await api("/api/admin/members/expiry", body);
+    paintMembers(data.members);
+    const saved = (data.members || []).find((row) => row.id === m.id);
+    const day = saved && saved.expires_at ? String(saved.expires_at).slice(0, 10) : "";
+    expiryNote.value = {
+      ...expiryNote.value,
+      [m.id]: action === "expire" ? "已设为过期" : "有效期已改到 " + (day || "不限期"),
+    };
+    if (day) expiryDraft.value = { ...expiryDraft.value, [m.id]: day };
+  } catch (e) {
+    const message = e.message || "请求失败";
+    err.value = message;
+    expiryErr.value = { ...expiryErr.value, [m.id]: message };
+  } finally {
+    expiryBusy.value = 0;
+  }
+}
+
 async function clearMember(m) {
   if (clearing.value) return;
   if (!window.confirm("清空 " + m.username + " 的账号配置？档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限会留下。")) return;
@@ -433,6 +488,7 @@ async function logout() {
   me.value = null;
   members.value = [];
   openMember.value = 0;
+  openExpiry.value = 0;
   fighters.value = [];
   scanRanges.value = [];
   clearMemberFilters();
@@ -484,7 +540,7 @@ onUnmounted(() => {
         <button type="button" role="tab" :aria-selected="sheet === 'fighters'" :class="{ ghost: sheet !== 'fighters' }" @click="sheet = 'fighters'">攻打 QQ</button>
       </div>
       <template v-if="sheet === 'members'">
-      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。过期账号默认不显示，有效期当天仍然有效，没填有效期的一直显示。每页 20 个，点表头可以排序。</p>
+      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。点「有效期」可以设为过期、延长一个月，或改成指定日期。过期账号默认不显示，有效期当天仍然有效，没填有效期的一直显示。每页 20 个，点表头可以排序。</p>
       <form class="filters" @submit.prevent>
         <label>搜索<input v-model="memberQ" placeholder="账号或 QQ" /></label>
         <label>区服
@@ -545,9 +601,27 @@ onUnmounted(() => {
                 <td>{{ m.attack_qq || "—" }}</td>
                 <td>{{ regionText(m) }}</td>
                 <td :class="onlineOf(m) ? 'on' : 'off'">{{ onlineOf(m) ? "在线" : "没在跑" }}</td>
-                <td>
+                <td class="member-ops">
                   <button type="button" class="ghost" @click="toggleMember(m.id)">{{ openMember === m.id ? "收起" : "配置" }}</button>
                   <button type="button" class="ghost" :disabled="clearing === m.id" @click="clearMember(m).catch((e) => (err = e.message))">清空</button>
+                  <button type="button" class="ghost" :class="{ here: openExpiry === m.id }" :aria-expanded="openExpiry === m.id" @click="toggleExpiry(m)">{{ openExpiry === m.id ? "收起" : "有效期" }}</button>
+                </td>
+              </tr>
+              <tr v-if="openExpiry === m.id">
+                <td colspan="7" class="member-cfg member-expiry">
+                  <p>当前：{{ m.expires_at || "不限期" }}<span v-if="memberExpired(m)">，已过期</span>。按北京时间，到期当天仍然有效。</p>
+                  <div class="expiry-actions">
+                    <button type="button" :disabled="expiryBusy === m.id" @click="saveExpiry(m, 'expire').catch((e) => (err = e.message))">设为过期</button>
+                    <button type="button" :disabled="expiryBusy === m.id" @click="saveExpiry(m, 'month').catch((e) => (err = e.message))">延长一个月</button>
+                    <form @submit.prevent="saveExpiry(m, 'custom').catch((e) => (err = e.message))">
+                      <label>自定义
+                        <input type="date" v-model="expiryDraft[m.id]" />
+                      </label>
+                      <button type="submit" :disabled="expiryBusy === m.id">保存</button>
+                    </form>
+                  </div>
+                  <p v-if="expiryErr[m.id]" class="err">{{ expiryErr[m.id] }}</p>
+                  <p v-else-if="expiryNote[m.id]" class="muted">{{ expiryNote[m.id] }}</p>
                 </td>
               </tr>
               <tr v-if="openMember === m.id">

@@ -2932,11 +2932,11 @@ def clear_retreat_on(user_id: int = 0) -> bool:
 
 
 def schedule_empty_order(order_id: int, minutes: int, beats=None, stuck=False,
-                         note="") -> bool:
+                         cleared=False, note="") -> bool:
     """同一条清城订单过这么多分钟再排队。已经不在打的返回 False。
 
-    stuck 为真表示城里还留着打不过的人。否则是这几页没人。
-    note 是这一轮后退的说明，接到倒计时后面。
+    stuck 为真表示城里还留着打不过的人。cleared 为真表示这几页已经打完。
+    两者都不是时，是这几页没人。note 是这一轮后退的说明，接到倒计时后面。
     """
     minutes = int(minutes or 0)
     if minutes <= 0:
@@ -2945,6 +2945,8 @@ def schedule_empty_order(order_id: int, minutes: int, beats=None, stuck=False,
     run_at = due.strftime("%Y-%m-%dT%H:%M:%SZ")
     if stuck:
         reason = f"还有打不过的人，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
+    elif cleared:
+        reason = f"这几页打完了，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
     else:
         reason = f"这座城是空的，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
     extra = str(note or "").strip()

@@ -50,7 +50,7 @@ RceCountryOpt，两回事。
 import time
 
 from . import sender
-from .daily import _await_response, _nap, _read_path, raise_if_stopped
+from .daily import _await_response, _drain_incoming, _nap, _read_path, raise_if_stopped
 from .log import get_logger
 from .proto_encode import encode_message
 
@@ -176,8 +176,8 @@ def daily_join(rec, sock, config):
 # type:200 打开，type:208 进战场，type:217 按页读 npcList.lvl。
 # 对上等级后反复 type:203，npcID 用列表里的 baseid。回包是 type:251，紧跟着战报。
 # 体力是 thew（字段 44）。当前积分是 nowPersonMsg.point（字段 40 里的字段 1）。
-# 251 之后再发 type:208 回到战场，免得下一次 203 没有回包。这条没回到不算进攻失败。
-# 两次进攻至少隔开国战的第一档 6.5 秒。体力下降才算打上。不发 type:204 领奖。
+# 251 后面是战报。战报读完再发 type:208 回到战场，回到了才隔 6.5 秒打下一次。
+# 战报没完就发下一次 203，服务器不回 251。体力下降才算打上。不发 type:204 领奖。
 TYPE_CAMP_OPEN = 200
 TYPE_CAMP_ENTER = 208
 TYPE_CAMP_LIST = 217
@@ -329,7 +329,6 @@ def daily_campaign(rec, sock, config):
             why = f"体力不够（剩余 {thew}），停手"
             break
         _sleep_cd(last_act, 0, gap, "公会战役")
-        last_act = time.time()
         r = _wait(sock, rec, _send(
             sock, rec, TYPE_CAMP_ATK, _camp_fields(TYPE_CAMP_ATK, 0, found)),
             TYPE_CAMP_RET)
@@ -357,19 +356,40 @@ def daily_campaign(rec, sock, config):
                  score if score is not None else "读不到")
         thew = now
         citydb.note_guild_camp(thew, score)
-        back = _wait(sock, rec, _send(
-            sock, rec, TYPE_CAMP_ENTER, _camp_fields(TYPE_CAMP_ENTER)),
-            TYPE_CAMP_ENTER, timeout=8.0)
-        if isinstance(back, dict) and back.get("ret") in (0, None):
-            got = _camp_thew(back)
-            if got is not None:
-                thew = got
-            got = _camp_score(back)
-            if got is not None:
-                score = got
-            citydb.note_guild_camp(thew, score)
-        else:
-            log.info("[公会战役] 回到战场没有回包，这次进攻已经算上")
+        # 251 一到就返回，战报还在后面。先读完再回战场，否则下一次进攻没有 251。
+        quiet_until = time.time() + 10.0
+        not_before = time.time() + 3.0
+        idle_since = None
+        while time.time() < quiet_until:
+            raise_if_stopped()
+            mark = rec.seq_mark() if rec else 0
+            _drain_incoming()
+            now_ts = time.time()
+            if rec and rec.seq_mark() != mark:
+                idle_since = None
+            elif idle_since is None:
+                idle_since = now_ts
+            if now_ts >= not_before and idle_since is not None and now_ts - idle_since >= 1.0:
+                break
+            time.sleep(0.2)
+        back = None
+        for _try in range(2):
+            back = _wait(sock, rec, _send(
+                sock, rec, TYPE_CAMP_ENTER, _camp_fields(TYPE_CAMP_ENTER)),
+                TYPE_CAMP_ENTER, timeout=8.0)
+            if isinstance(back, dict) and back.get("ret") in (0, None):
+                break
+        if not isinstance(back, dict) or back.get("ret") not in (0, None):
+            why = "打完没有回到战场，停手"
+            break
+        got = _camp_thew(back)
+        if got is not None:
+            thew = got
+        got = _camp_score(back)
+        if got is not None:
+            score = got
+        citydb.note_guild_camp(thew, score)
+        last_act = time.time()
     point = (f"，当前积分 {score}（nowPersonMsg.point）" if score is not None
              else "，积分读不到")
     if hits <= 0:

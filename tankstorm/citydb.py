@@ -995,15 +995,19 @@ def user_tier(user_id: int) -> str:
 
 
 def account_expired(expires_at: str) -> bool:
-    """有效期是北京时间的日期，这一天仍然有效。空表示不限期。"""
-    day = (expires_at or "").strip()[:10]
+    """有效期是北京时间的日期，这一天仍然有效。空表示不限期。
+
+    月和日可以不补零，例如 2026-11-9。比较前先补成 2026-11-09，
+    否则没补零的日期用字符串比较会排错。写错的日期算过期。
+    """
+    day = (expires_at or "").strip()[:10].strip()
     if not day:
         return False
     try:
-        datetime.strptime(day, "%Y-%m-%d")
+        parsed = datetime.strptime(day, "%Y-%m-%d").date()
     except ValueError:
         return True
-    return day < beijing_day()
+    return parsed.isoformat() < beijing_day()
 
 
 def expiry_deadline_ms(expires_at: str):
@@ -1011,7 +1015,7 @@ def expiry_deadline_ms(expires_at: str):
 
     库存的是北京时间日期，这一天仍然有效，到次日 0 点才算过。
     """
-    day = (expires_at or "").strip()[:10]
+    day = (expires_at or "").strip()[:10].strip()
     if not day:
         return None
     try:
@@ -2932,11 +2936,11 @@ def clear_retreat_on(user_id: int = 0) -> bool:
 
 
 def schedule_empty_order(order_id: int, minutes: int, beats=None, stuck=False,
-                         note="") -> bool:
+                         cleared=False, note="") -> bool:
     """同一条清城订单过这么多分钟再排队。已经不在打的返回 False。
 
-    stuck 为真表示城里还留着打不过的人。否则是这几页没人。
-    note 是这一轮后退的说明，接到倒计时后面。
+    stuck 为真表示城里还留着打不过的人。cleared 为真表示这几页已经打完。
+    两者都不是时，是这几页没人。note 是这一轮后退的说明，接到倒计时后面。
     """
     minutes = int(minutes or 0)
     if minutes <= 0:
@@ -2945,6 +2949,8 @@ def schedule_empty_order(order_id: int, minutes: int, beats=None, stuck=False,
     run_at = due.strftime("%Y-%m-%dT%H:%M:%SZ")
     if stuck:
         reason = f"还有打不过的人，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
+    elif cleared:
+        reason = f"这几页打完了，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
     else:
         reason = f"这座城是空的，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
     extra = str(note or "").strip()

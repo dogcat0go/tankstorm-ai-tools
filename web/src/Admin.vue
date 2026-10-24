@@ -158,13 +158,22 @@ function beijingDay() {
   }).format(new Date());
 }
 
-function accountExpired(expiresAt) {
-  const day = String(expiresAt || "").trim().slice(0, 10);
-  if (!day) return false;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return true;
-  const [y, mo, d] = day.split("-").map((n) => Number(n));
+function expiryDay(expiresAt) {
+  const matched = String(expiresAt || "").trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)/);
+  if (!matched) return "";
+  const y = Number(matched[1]);
+  const mo = Number(matched[2]);
+  const d = Number(matched[3]);
   const dt = new Date(Date.UTC(y, mo - 1, d));
-  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return true;
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return "";
+  return y + "-" + String(mo).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+}
+
+function accountExpired(expiresAt) {
+  const text = String(expiresAt || "").trim();
+  if (!text) return false;
+  const day = expiryDay(text);
+  if (!day) return true;
   return day < beijingDay();
 }
 
@@ -191,7 +200,10 @@ function cmpVal(a, b, dir) {
 function memberKey(m, col) {
   if (col === "username") return m.username || "";
   if (col === "tier") return TIER_RANK[m.tier] || 0;
-  if (col === "expires") return (m.expires_at || "").trim() || "9999-99-99";
+  if (col === "expires") {
+    const raw = (m.expires_at || "").trim();
+    return expiryDay(raw) || raw || "9999-99-99";
+  }
   if (col === "qq") return m.attack_qq || "";
   if (col === "region") return regionOf(m) || 9999;
   if (col === "online") return onlineOf(m) ? 1 : 0;
@@ -485,8 +497,8 @@ function toggleExpiry(m) {
     return;
   }
   openExpiry.value = m.id;
-  const day = String(m.expires_at || "").trim().slice(0, 10);
-  if (!expiryDraft.value[m.id] && /^\d{4}-\d{2}-\d{2}$/.test(day)) {
+  const day = expiryDay(m.expires_at);
+  if (!expiryDraft.value[m.id] && day) {
     expiryDraft.value = { ...expiryDraft.value, [m.id]: day };
   }
 }
@@ -756,7 +768,7 @@ onUnmounted(() => {
         <p v-else-if="logBusy && !logView" class="muted">正在读日志。</p>
         <template v-if="logView">
           <p>登录账号：{{ accountLine(logView.accounts) }}</p>
-          <p class="muted">留空 UID 的是清城。同一条过了分钟再排队，就是空城再打。当前说明写在订单上，每一次再打写在运行日志里。空城再打：{{ clearWaitLine(logView.accounts) }}。</p>
+          <p class="muted">留空 UID 的是清城。同一条过了分钟再排队，就是空城再打。打完、空了、还有打不过的人，都按这个分钟再来。城里没人时人留在原地。人已经在要退到的城里就不再移动。当前说明写在订单上，每一次再打写在运行日志里。空城再打：{{ clearWaitLine(logView.accounts) }}。</p>
           <h3>提交的攻打</h3>
           <div class="wide qq-orders" v-if="logView.orders.length">
             <table>

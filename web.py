@@ -62,11 +62,11 @@ def _deep_merge(base: dict, over: dict) -> dict:
 
 def _date(text: str) -> str:
     try:
-        datetime.strptime(text, "%Y-%m-%d")
+        parsed = datetime.strptime(text, "%Y-%m-%d")
     except ValueError:
         log.error("有效期要写成 2026-12-31 这种日期")
         return ""
-    return text
+    return parsed.strftime("%Y-%m-%d")
 
 
 def main() -> int:

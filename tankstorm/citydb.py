@@ -2267,7 +2267,7 @@ def bind_attack_account(user_id: int, account: str) -> str:
     return ""
 
 
-_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "hereask", "pageqr", "qrpath", "resume")
+_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "hereask", "equipask", "pageqr", "qrpath", "resume")
 
 
 def clear_attack_binding(user_id: int) -> str:
@@ -4266,8 +4266,87 @@ def take_attack_here() -> bool:
     return True
 
 
+_EQUIP_CARD_KEYS = ("box_mid", "box_high", "box_mid_key", "box_high_key")
+# 点进基地战助手读装备栏。一次请求超过 10 秒还没读到就作废，不再占着信号。
+# 失败后再隔 10 秒试下一次，一共最多 3 次。读到箱子和钥匙就停，不为了刷新再读。
+EQUIP_ASK_TIMEOUT = 10
+EQUIP_ASK_GAP = 10
+EQUIP_ASK_TRIES = 3
+_equip_lock = threading.Lock()
+
+
+def _equip_boxes_known(user_id: int) -> bool:
+    cards = attack_cards(int(user_id))
+    return all(cards.get(key) is not None for key in _EQUIP_CARD_KEYS)
+
+
+def _equip_load(user_id: int) -> dict:
+    raw = _signal_value(_mark_name("equipask", user_id)).strip()
+    if not raw:
+        return {}
+    if raw == "1":
+        return {"old": True}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"old": True}
+    if not isinstance(data, dict):
+        return {"old": True}
+    n, at, st = data.get("n"), data.get("at"), data.get("st")
+    if (isinstance(n, bool) or not isinstance(n, int) or n < 1
+            or isinstance(at, bool) or not isinstance(at, int) or at < 0
+            or st not in ("wait", "send", "miss")):
+        return {"old": True}
+    return {"n": n, "at": at, "st": st}
+
+
+def _equip_save(user_id: int, data: dict) -> None:
+    _upsert_signal(
+        _mark_name("equipask", user_id),
+        json.dumps({"n": int(data["n"]), "at": int(data["at"]), "st": data["st"]}))
+
+
+def _equip_clear(user_id: int) -> None:
+    _delete_signal(_mark_name("equipask", user_id))
+
+
+def _equip_phrase(data: dict) -> str:
+    st = data.get("st")
+    if st == "send":
+        return "正在读装备栏"
+    if st == "wait":
+        return "正在等攻打线程"
+    if st == "miss" and int(data.get("n") or 0) < EQUIP_ASK_TRIES:
+        return "正在等攻打线程"
+    if st == "miss":
+        return "这次没读到装备栏"
+    return ""
+
+
+def _equip_settle(user_id: int) -> dict:
+    """超时的这次作废。间隔到了、次数还没用完，就再挂一次。调用方已持有 _equip_lock。"""
+    data = _equip_load(user_id)
+    if not data:
+        return {}
+    if shutdown_due(user_id) or data.get("old") or _equip_boxes_known(user_id):
+        _equip_clear(user_id)
+        return {}
+    now = int(time.time())
+    if data["st"] in ("wait", "send") and now - int(data["at"]) >= EQUIP_ASK_TIMEOUT:
+        log.info("装备栏第 %s 次超过 %s 秒，这次作废", data["n"], EQUIP_ASK_TIMEOUT)
+        data = {"n": int(data["n"]), "at": now, "st": "miss"}
+        _equip_save(user_id, data)
+    if (data["st"] == "miss" and int(data["n"]) < EQUIP_ASK_TRIES
+            and now - int(data["at"]) >= EQUIP_ASK_GAP):
+        nxt = int(data["n"]) + 1
+        log.info("装备栏再读一次，第 %s/%s 次", nxt, EQUIP_ASK_TRIES)
+        data = {"n": nxt, "at": now, "st": "wait"}
+        _equip_save(user_id, data)
+    return data
+
+
 def request_equip_bag(user_id: int) -> str:
-    """进基地战助手时读一次装备栏，用来显示补给箱和钥匙。"""
+    """进基地战助手时读一次装备栏。已经有箱子和钥匙就不再读。"""
     user_id = int(user_id or 0)
     if shutdown_due(user_id):
         return "已定时关闭，不再执行任务"
@@ -4278,22 +4357,79 @@ def request_equip_bag(user_id: int) -> str:
         return "攻打没在跑"
     if status.get("phase") == "login" or status.get("need_login"):
         return "还在登录，连上后再看装备栏"
-    _upsert_signal(_mark_name("equipask", user_id), "1")
+    with _equip_lock:
+        if _equip_boxes_known(user_id):
+            _equip_clear(user_id)
+            return ""
+        data = _equip_settle(user_id)
+        if shutdown_due(user_id) or _equip_boxes_known(user_id):
+            return ""
+        st = data.get("st")
+        now = int(time.time())
+        if st in ("wait", "send"):
+            return ""
+        if st == "miss" and (
+                now - int(data["at"]) < EQUIP_ASK_GAP
+                or int(data["n"]) < EQUIP_ASK_TRIES):
+            return ""
+        _equip_save(user_id, {"n": 1, "at": now, "st": "wait"})
     return ""
 
 
-def take_equip_bag() -> bool:
-    """领走这一次查看。领过就不再读第二次。"""
+def equip_bag_note(user_id: int) -> str:
+    """页面上一句。正在等、正在读，或这次没读到。已经有数量就是空。"""
+    user_id = int(user_id or 0)
+    if not user_id:
+        return ""
+    with _equip_lock:
+        return _equip_phrase(_equip_settle(user_id))
+
+
+def equip_bag_ready() -> bool:
+    """攻打循环里还有一次没超时的读取。没有就返回 False，不要去占收发锁。"""
     user_id = attack_context_user()
     if not user_id:
         return False
-    if shutdown_due(user_id) and shutdown_covers_context():
+    with _equip_lock:
+        return _equip_settle(user_id).get("st") == "wait"
+
+
+def take_equip_bag() -> bool:
+    """领走还没超时的这一次，标成正在读。超时就作废，不发包。"""
+    user_id = attack_context_user()
+    if not user_id:
         return False
-    name = _mark_name("equipask", user_id)
-    if _signal_value(name).strip() != "1":
+    with _equip_lock:
+        if shutdown_due(user_id) or _equip_boxes_known(user_id):
+            _equip_clear(user_id)
+            return False
+        data = _equip_load(user_id)
+        if not data or data.get("old") or data.get("st") != "wait":
+            return False
+        now = int(time.time())
+        if now - int(data["at"]) >= EQUIP_ASK_TIMEOUT:
+            log.info("装备栏第 %s 次超过 %s 秒，这次作废", data["n"], EQUIP_ASK_TIMEOUT)
+            _equip_save(user_id, {"n": int(data["n"]), "at": now, "st": "miss"})
+            return False
+        _equip_save(user_id, {"n": int(data["n"]), "at": int(data["at"]), "st": "send"})
+        return True
+
+
+def finish_equip_bag() -> bool:
+    """这一次读完。读到箱子和钥匙就清掉信号并返回 True，否则记下失败。"""
+    user_id = attack_context_user()
+    if not user_id:
         return False
-    _delete_signal(name)
-    return True
+    with _equip_lock:
+        if _equip_boxes_known(user_id):
+            _equip_clear(user_id)
+            return True
+        data = _equip_load(user_id)
+        if data.get("st") == "wait":
+            return False
+        n = int(data["n"]) if data and not data.get("old") else 1
+        _equip_save(user_id, {"n": n if n > 0 else 1, "at": int(time.time()), "st": "miss"})
+        return False
 
 
 def note_attack_link(interval: float) -> None:
@@ -4914,7 +5050,7 @@ LOCKED_DAILY_KINDS = frozenset()
 LOCKED_DAILY_TASKS = frozenset({
     "修复坦克", "战功排名", "英雄开采",
     "技能书将领", "技能书参谋", "配件探索",
-    "公会战参加", "周任务",
+    "周任务",
 })
 
 

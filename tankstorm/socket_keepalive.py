@@ -2010,20 +2010,27 @@ def _refresh_asked_here(rec, sock, config) -> bool:
 
 
 def _refresh_equip_bag(rec, sock) -> None:
-    """页面刚进入基地战助手。读一次装备栏。没有请求就什么都不做。"""
+    """页面刚进入基地战助手。读一次装备栏。没有请求就什么都不做。
+
+    线程正忙或超过 10 秒还没读到，这次作废。再试隔 10 秒，一共最多 3 次。
+    取信号和发包都在收发锁里，避免和别的路同时 recv。
+    """
     from . import citydb, daily
 
-    if not citydb.take_equip_bag():
+    if not citydb.equip_bag_ready():
         return
     try:
         with daily.lane_hold():
-            got = daily.refresh_virtual_items(rec, sock)
+            if not citydb.take_equip_bag():
+                return
+            daily.refresh_virtual_items(rec, sock)
     except OSError:
+        citydb.finish_equip_bag()
         raise
-    if not isinstance(got, dict):
-        log.info("页面要看补给箱，没读到装备栏")
+    if citydb.finish_equip_bag():
+        log.info("页面读了一次装备栏")
         return
-    log.info("页面读了一次装备栏")
+    log.info("页面要看补给箱，没读到装备栏")
 
 
 def _run_requested_move(rec, sock, config, beater) -> bool:

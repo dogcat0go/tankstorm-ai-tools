@@ -91,6 +91,12 @@ _NESTED = {
         "3": ("baseid", "string"),
         "6": ("lvl", "int32"),
     },
+    # RseGuildOpt.nowPersonMsg，GVEPersonalMsg。2026-10-24：point 是当前积分，rank 是名次。
+    # 打开时 point=0，两次进攻后 1122、2244。lastPersonMsg / HighestPersonMsg 不是这一场的当前积分。
+    "nowPersonMsg": {
+        "1": ("point", "int32"),
+        "2": ("rank", "int32"),
+    },
 }
 
 

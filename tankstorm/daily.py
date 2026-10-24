@@ -1738,11 +1738,13 @@ TASKS = [
 
     # 2026-10-24 13:18–13:19 抓包。公会战役进攻，不是上面的 type:70 报名。
     # type:200 打开，type:208 进战场，type:217 按页读 npcList.lvl，
-    # 对上等级才发 type:203。回包是 type:251，体力下降才算打上。
+    # 对上等级后反复 type:203。回包 type:251，体力 thew 下降才算打上。
+    # 执行器自己把这一轮打到停手，外层仍按一次任务记 max_per_day。
     _t("公会战役", "公会战役·进攻据点", "0479", "RceGuildOpt",
        {}, "实测",
        "2026-10-24：type:200 打开，type:208 进战场，type:217 读据点等级。"
-       "对上「公会战役.敌方等级」才发 type:203。回包 type:251 且体力下降才算打上。"
+       "对上「公会战役.敌方等级」后反复 type:203，直到体力不够、体力不再下降或被拒绝。"
+       "体力读 thew，当前积分读 nowPersonMsg.point。一轮打完算一次。"
        "只在周五 10:00 到周六 22:00（本机时间）。不领奖、不刷新",
        runner=lambda rec, sock, config: __import__(
            "tankstorm.guild", fromlist=["daily_campaign"]

@@ -174,7 +174,9 @@ def daily_join(rec, sock, config):
 # 2026-10-24 13:18 抓包。公会战役进攻，不是上面的 type:70 报名。
 # 请求字段是 type / page / npcID / boxID / buffID / listCountryID，和报名那 7 个 0 不是同一套。
 # type:200 打开，type:208 进战场，type:217 按页读 npcList.lvl。
-# 对上等级才发 type:203，npcID 用列表里的 baseid。回包是 type:251，体力下降才算打上。
+# 对上等级后反复 type:203，npcID 用列表里的 baseid。回包是 type:251。
+# 体力是 thew（字段 44）。当前积分是 nowPersonMsg.point（字段 40 里的字段 1）。
+# 体力下降才算打上，同一据点打到体力不够、体力不再下降或被拒。
 # 不发 type:204 领奖，也不发打完之后那条 type:208。
 TYPE_CAMP_OPEN = 200
 TYPE_CAMP_ENTER = 208
@@ -228,15 +230,25 @@ def _camp_npcs(data):
     return rows
 
 
-def _camp_thew(data):
-    v = data.get("thew") if isinstance(data, dict) else None
+def _camp_int(data, key):
+    v = data.get(key) if isinstance(data, dict) else None
     if isinstance(v, bool) or not isinstance(v, int):
         return None
     return v
 
 
+def _camp_thew(data):
+    return _camp_int(data, "thew")
+
+
+def _camp_score(data):
+    """当前积分。2026-10-24：nowPersonMsg.point，打开时 0，每打一次加一截。"""
+    msg = data.get("nowPersonMsg") if isinstance(data, dict) else None
+    return _camp_int(msg, "point")
+
+
 def daily_campaign(rec, sock, config):
-    """窗口内先读据点等级，对上配置才进攻。窗口外不发包。"""
+    """窗口内对上等级后按体力连打。窗口外不发包。一轮只算一次任务。"""
     from . import citydb
     if not citydb.base_tier(citydb.user_tier(citydb.attack_context_user() or 0)):
         return False, "活动助手需要高级pro订阅"
@@ -260,6 +272,10 @@ def daily_campaign(rec, sock, config):
 
     found = None
     thew = None
+    score = _camp_score(opened)
+    got = _camp_score(entered)
+    if got is not None:
+        score = got
     seen = set()
     for page in range(_CAMP_PAGES):
         raise_if_stopped()
@@ -278,6 +294,9 @@ def daily_campaign(rec, sock, config):
         if got is None:
             return False, "据点列表里读不到体力，不打"
         thew = got
+        got = _camp_score(data)
+        if got is not None:
+            score = got
         ids = {npc for _, npc in rows}
         if ids and ids <= seen:
             break
@@ -291,23 +310,52 @@ def daily_campaign(rec, sock, config):
     if not found:
         return False, f"据点列表里没有 {level} 级，不打"
 
-    log.info("[公会战役] 打 %s 级据点 %s，当前体力 %s", level, found, thew)
-    _nap(0.6)
-    r = _wait(sock, rec, _send(
-        sock, rec, TYPE_CAMP_ATK, _camp_fields(TYPE_CAMP_ATK, 0, found)),
-        TYPE_CAMP_RET)
-    if not isinstance(r, dict):
-        return False, "进攻没有回包，停手"
-    ret = r.get("ret")
-    if ret not in (0, None):
-        return False, f"服务器拒绝 ret={ret}"
-    now = _camp_thew(r)
-    if now is None:
-        return False, "回包里读不到体力，认不出成败"
-    if now >= thew:
-        return False, f"体力没有下降（{thew}→{now}），没打上"
-    log.info("[公会战役] 已进攻 %s 级，体力 %s→%s", level, thew, now)
-    return True, f"成功：进攻了 {level} 级据点（{found}），体力 {thew}→{now}"
+    log.info("[公会战役] 打 %s 级据点 %s，当前体力 %s，积分 %s",
+             level, found, thew, score if score is not None else "读不到")
+    start = thew
+    hits = 0
+    cost = None
+    why = ""
+    while True:
+        raise_if_stopped()
+        if not _camp_window():
+            why = "已经离开周五 10:00 到周六 22:00，停手"
+            break
+        if thew <= 0 or (cost is not None and thew < cost):
+            why = f"体力不够（剩余 {thew}），停手"
+            break
+        _nap(0.6)
+        r = _wait(sock, rec, _send(
+            sock, rec, TYPE_CAMP_ATK, _camp_fields(TYPE_CAMP_ATK, 0, found)),
+            TYPE_CAMP_RET)
+        if not isinstance(r, dict):
+            why = "进攻没有回包，停手"
+            break
+        ret = r.get("ret")
+        if ret not in (0, None):
+            why = f"服务器拒绝 ret={ret}，停手"
+            break
+        now = _camp_thew(r)
+        if now is None:
+            why = "回包里读不到体力，停手"
+            break
+        got = _camp_score(r)
+        score = got
+        if now >= thew:
+            why = f"体力没有下降（{thew}→{now}），停手"
+            break
+        cost = thew - now
+        hits += 1
+        log.info("[公会战役] 第 %s 次进攻 %s 级，体力 %s→%s，积分 %s",
+                 hits, level, thew, now,
+                 score if score is not None else "读不到")
+        thew = now
+    point = (f"，当前积分 {score}（nowPersonMsg.point）" if score is not None
+             else "，积分读不到")
+    if hits <= 0:
+        return False, why + point
+    return True, (f"成功：{level} 级据点（{found}）打了 {hits} 次，"
+                  f"体力 {start}→{thew}{point}。{why}")
 
 
 # GuildContribute_2016092801.dat。一键用每种的第二行。

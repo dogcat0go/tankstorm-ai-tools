@@ -119,6 +119,7 @@ const guildLevelNote = ref("");
 let guildLevelReady = false;
 const fundBuilding = ref("");
 const fundTimes = ref("1");
+const fundNote = ref("");
 const fundBuildings = [
   { id: "10132", name: "比萨斜塔" },
   { id: "10133", name: "埃菲尔铁塔" },
@@ -126,6 +127,7 @@ const fundBuildings = [
   { id: "10135", name: "女神像" },
   { id: "10136", name: "红场" },
   { id: "10137", name: "帝国大厦" },
+  { id: "10144", name: "万磁陀螺" },
 ];
 const dailyNote = ref("");
 const dailyAt = ref("");
@@ -219,6 +221,7 @@ async function refreshDaily() {
     guildLevel.value = "";
     guildLevelNote.value = "";
     guildLevelReady = false;
+    fundNote.value = "";
     return;
   }
   const data = await api("/api/daily");
@@ -311,6 +314,7 @@ async function refreshBase() {
   baseCredit.value = data.credit == null ? null : data.credit;
   basePop.value = data.pop == null ? null : data.pop;
   baseCards.value = data.cards || emptyCards();
+  applyEquipNote(data.equip_note || "", baseCards.value);
 }
 
 async function runBase(countOrBody) {
@@ -447,11 +451,11 @@ async function runLab50(count) {
 }
 
 async function runFund(building, times) {
-  showErr("");
-  baseNote.value = "";
+  showErr("", "activity");
+  fundNote.value = "";
   await api("/api/daily", { kind: "fund", building_id: building, times });
-  baseNote.value = "已交给绑定的攻打号";
-  await refreshBase();
+  fundNote.value = "已交给绑定的攻打号";
+  await refreshDaily();
   await refreshAttacks();
 }
 
@@ -476,6 +480,42 @@ function askAttackHere() {
   api("/api/attack-here", {}).catch(() => {});
 }
 
+const EQUIP_NOTES = ["正在等攻打线程", "正在读装备栏", "这次没读到装备栏"];
+let equipNoteAt = 0;
+
+function boxesRead(cards) {
+  if (!cards) return false;
+  return ["box_mid", "box_high", "box_mid_key", "box_high_key"].every(
+    (key) => cards[key] !== null && cards[key] !== undefined);
+}
+
+function applyEquipNote(text, cards) {
+  const cur = baseNote.value;
+  if (cur && !EQUIP_NOTES.includes(cur)) return;
+  if (boxesRead(cards)) {
+    if (EQUIP_NOTES.includes(cur)) baseNote.value = "";
+    return;
+  }
+  if (text && text === cur) return;
+  if (!text) {
+    if (cur && Date.now() - equipNoteAt < 12000) return;
+    if (cur) baseNote.value = "";
+    return;
+  }
+  equipNoteAt = Date.now();
+  baseNote.value = text;
+}
+
+async function askBaseEquip() {
+  try {
+    const data = await api("/api/base-equip", {});
+    applyEquipNote(data.note || "", baseCards.value);
+  } catch (e) {
+    if (EQUIP_NOTES.includes(baseNote.value)) baseNote.value = "";
+    showErr(e.message, "base");
+  }
+}
+
 function markAttackHere() {
   const on = !!(toolsOn.value && tab.value === "attack");
   if (on && !attackHereOn) askAttackHere();
@@ -488,7 +528,7 @@ function pickTab(key) {
   if (key === "activity") refreshDaily().catch((e) => showErr(e.message, "activity"));
   if (key === "base") {
     refreshBase().catch((e) => showErr(e.message, "base"));
-    api("/api/base-equip", {}).catch(() => {});
+    askBaseEquip();
   }
   if (key === "attack") attackHereOn = false;
   markAttackHere();
@@ -1192,14 +1232,19 @@ onUnmounted(() => {
       <ActivityPage
         v-show="toolsOn && me && me.base_war && tab === 'activity'"
         v-model:guild-level="guildLevel"
+        v-model:fund-building="fundBuilding"
+        v-model:fund-times="fundTimes"
         :daily-qq="dailyQq"
         :tasks="dailyTasks"
         :daily-switching="dailySwitching"
         :note="guildLevelNote"
+        :fund-buildings="fundBuildings"
+        :fund-note="fundNote"
         :err="err"
         :err-at="errAt"
         :save-level="saveGuildLevel"
         :save-daily-switch="saveDailySwitch"
+        :run-fund="runFund"
         :show-err="showErr"
       />
       <DailyPage

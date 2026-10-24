@@ -336,6 +336,7 @@ def _handler(config: dict):
                     "credit": wallet["credit"],
                     "pop": citydb.attack_pop(user["id"]),
                     "cards": citydb.attack_cards(user["id"]),
+                    "equip_note": citydb.equip_bag_note(user["id"]),
                     "jobs": citydb.list_daily_jobs(user["id"], limit=6, kind="base"),
                 })
                 return
@@ -653,7 +654,7 @@ def _handler(config: dict):
                     why = citydb.request_equip_bag(user["id"])
                     if why:
                         raise ValueError(why)
-                    _json(self, 200, {"ok": True})
+                    _json(self, 200, {"ok": True, "note": citydb.equip_bag_note(user["id"])})
                 elif path == "/api/attack-move":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "移动到指定城市需要中级或高级订阅"})

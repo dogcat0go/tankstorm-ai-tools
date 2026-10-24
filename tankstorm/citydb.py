@@ -5426,8 +5426,13 @@ def set_daily_schedule(user_id: int, raw) -> str:
         conn.close()
 
 
-def enqueue_due_daily_jobs() -> list:
-    """到点且这一档今天还没排过的账号，排一轮日常。返回刚排上的 user_id。"""
+def enqueue_due_daily_jobs(guild_defaults=None) -> list:
+    """到点且这一档今天还没排过的账号，排一轮日常。
+
+    公会任务不另开线程干等。同一次定时醒来里，开关开着并且距上次已满一小时，
+    也在这里再排一次，只做公会任务。别的日常仍是每天一档。
+    返回刚排上的 user_id。
+    """
     if "daily" in LOCKED_DAILY_KINDS:
         return []
     clock = beijing_clock()
@@ -5498,9 +5503,12 @@ def enqueue_due_daily_jobs() -> list:
             queued.append(int(user_id))
             log.info("定时日常：账号 %s 到点 %s，已排队", name, at)
         conn.commit()
-        return queued
     finally:
         conn.close()
+    for user_id in enqueue_due_guild_tasks(guild_defaults):
+        if user_id not in queued:
+            queued.append(user_id)
+    return queued
 
 
 _GUILD_HOUR_AT = "_公会任务于"
@@ -5559,9 +5567,10 @@ def _daily_job_runs_guild(params_raw) -> bool:
 
 
 def enqueue_due_guild_tasks(defaults=None) -> list:
-    """公会任务开关开着，并且距上次看过已经满一小时，就再排一次。
+    """给定时日常那一次醒来用，不自己开线程，也不睡到整点。
 
-    只做这一项。定时日常那一轮如果正排着或正在做，它自己会看公会任务，这里不重复排。
+    公会任务开关开着，并且距上次看过已经满一小时，就再排一次，只做这一项。
+    定时日常那一轮如果正排着或正在做，它自己会看公会任务，这里不重复排。
     别的日常仍按原来的每天一档，不受这一小时影响。
     """
     if "daily" in LOCKED_DAILY_KINDS or _GUILD_TASK_KEY in LOCKED_DAILY_TASKS:

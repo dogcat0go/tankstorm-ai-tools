@@ -95,6 +95,7 @@ const guildClaimable = computed(() =>
     <details class="guild-fold">
       <summary>
         公会任务
+        <span class="muted">功能尚在完善</span>
         <span v-if="!guildBoard" class="muted">还没读到</span>
         <span v-else class="muted">已领过 {{ guildBoard.finish }}/{{ guildBoard.cap }} · {{ guildClaimable ? "身上 " + guildClaimable + " 条可以领" : "现在不能领奖" }}</span>
       </summary>
@@ -166,6 +167,7 @@ const guildClaimable = computed(() =>
                 @change="saveDailySwitch(it, $event)"
               />
               <span v-if="it.locked" class="muted">功能尚在恢复中...</span>
+              <span v-else-if="it.key === '公会任务'" class="muted">功能尚在完善</span>
             </td>
             <td>{{ it.done }}/{{ it.max }}</td>
           </tr>

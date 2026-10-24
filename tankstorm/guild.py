@@ -479,20 +479,24 @@ def _spend(kind, cost, metal, oil, feats, items):
     return metal, oil, feats, items - cost
 
 
-# 2026-10-23 23:14 抓包。公会任务走 RceGuildBuildOpt，不是公会战那条 RceGuildOpt。
-# ntype=3 开面板，4 刷新候选，6 把候选接过来（小编号），9 参加别人已发布的（大编号），7 领完成的。
-# 星级不在协议里。4 星和 5 星的 nTaskType 来自 config/BaseGuildTask_2023071801.dat 的 LEVEL。
-# 一天最多 5 个，见 GuildTaskBase_2014121603.dat 的 completeNum。付费刷新不发。
+# 2026-10-24 22:09 抓包。领奖和参加的编号和早先记的相反。
+# ntype=3 开面板，4 刷新候选，6 承接看板上的候选（小编号）。
+# ntype=7 参加已经发布的团队任务（大编号）。今日参与次数加 1，公会积分不变。
+# ntype=9 领取整队已完成的奖励（大编号）。公会积分加 10，参与次数不变。
+# 领过的自己那一份 field6（bGetReward）为 true。接着会推一条 ntype=102，不用发。
+# 星级不在协议里。4 星和 5 星的 nTaskType 来自 BaseGuildTask 的 LEVEL。
+# 一天最多 5 个。付费刷新不发。
 _BUILD_OP = "04f3"
 _BUILD_RSE = "RseGuildBuildOpt"
 _TASK_OPEN = 3
 _TASK_REFRESH = 4
 _TASK_PUBLISH = 6
-_TASK_CLAIM = 7
-_TASK_JOIN = 9
+_TASK_JOIN = 7
+_TASK_CLAIM = 9
+# 4 星、5 星里默认不参加：摧毁基地 4/5、战争令牌 24/25、消耗勋章 29/30、探索 39/40、公会捐献 49/50。
 _STAR_IDS = frozenset({
-    4, 5, 9, 10, 14, 15, 19, 20, 24, 25, 29, 30, 34, 35,
-    39, 40, 44, 45, 49, 50, 54, 55, 59, 60, 64, 65, 69, 70,
+    9, 10, 14, 15, 19, 20, 34, 35,
+    44, 45, 54, 55, 59, 60, 64, 65, 69, 70,
 })
 _TASK_CAP = 5
 _TASK_REFRESH_MAX = 8
@@ -606,8 +610,9 @@ def _task_rows(data, key):
         kind = _as_int(row, "nTaskType", "field2")
         proc = _as_int(row, "nProcess", "field3") or 0
         need = _as_int(row, "nTotalNeed", "field4") or 0
+        got = row.get("bGetReward", row.get("field6")) is True
         if nid and kind and nid > 0:
-            out.append((nid, kind, proc, need))
+            out.append((nid, kind, proc, need, got))
     return out
 
 
@@ -627,7 +632,7 @@ def _team_done(panel, nid):
 
     field21 是团队任务，nProcess 是大家加起来的进度，nTotalNeed 是整队需求。
     """
-    for tid, _kind, proc, need in _task_rows(panel, "field21"):
+    for tid, _kind, proc, need, *_rest in _task_rows(panel, "field21"):
         if tid == nid and need > 0 and proc >= need:
             return True
     return False
@@ -637,7 +642,8 @@ def guild_reward_ready(panel):
     """身上有整队都做完、还没领的任务。"""
     if not isinstance(panel, dict):
         return False
-    return any(_team_done(panel, row[0]) for row in _task_rows(panel, "field22"))
+    return any(_team_done(panel, row[0]) and not row[4]
+               for row in _task_rows(panel, "field22"))
 
 
 def guild_hour_plan(finish_num, held, reward_ready, cap=_TASK_CAP):
@@ -685,11 +691,14 @@ def guild_panel_board(panel, just_claimed=()):
     mine = _task_rows(panel, "field22") if isinstance(panel, dict) else []
     tasks = []
     left = {}
-    for nid, kind, proc, need in mine:
+    for nid, kind, proc, need, got in mine:
         name, star, detail = _task_text(kind)
         mine_full = (isinstance(need, int) and not isinstance(need, bool) and need > 0
                      and isinstance(proc, int) and not isinstance(proc, bool) and proc >= need)
-        if _team_done(panel, nid):
+        taken = got is True
+        if taken:
+            state = "已领奖"
+        elif _team_done(panel, nid):
             state = "可领奖"
         elif mine_full:
             state = "等队友"
@@ -743,7 +752,7 @@ def _remember_guild_panel(panel, just_claimed=()):
 
 
 _STAR5 = frozenset({
-    5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70,
+    10, 15, 20, 35, 45, 55, 60, 65, 70,
 })
 
 
@@ -767,16 +776,16 @@ def _best(rows, seen, mine):
 
 
 def _claim_tasks(sock, rec, panel):
-    """整队做完的才领。ntype=7，编号用大 id。一条被拒就跳过，接着领下一条。"""
+    """整队做完、自己还没领过的才领。ntype=9，编号用大 id。一条被拒就跳过。"""
     claimed = []
     seen = set()
     while True:
         raise_if_stopped()
         mine = [row for row in _task_rows(panel, "field22")
-                if row[0] not in seen and _team_done(panel, row[0])]
+                if row[0] not in seen and not row[4] and _team_done(panel, row[0])]
         if not mine:
             return panel, claimed
-        nid, kind, _proc, _need = mine[0]
+        nid, kind, _proc, _need, _got = mine[0]
         seen.add(nid)
         got = _build_send(sock, rec, _TASK_CLAIM, nid)
         if not isinstance(got, dict):
@@ -836,7 +845,7 @@ def _guild_tasks(sock, rec):
         pub = _published(panel, pub)
         live = _best(pub, seen, mine)
         if live is not None:
-            nid, kind, _proc, _need = live
+            nid, kind, _proc, _need, _got = live
             seen.add(nid)
             got = _build_send(sock, rec, _TASK_JOIN, nid)
             if not isinstance(got, dict):
@@ -852,7 +861,7 @@ def _guild_tasks(sock, rec):
             continue
         pick = _best(_task_rows(panel, "field23"), seen, mine)
         if pick is not None:
-            nid, kind, _proc, _need = pick
+            nid, kind, _proc, _need, _got = pick
             seen.add(nid)
             got = _build_send(sock, rec, _TASK_PUBLISH, nid)
             if not isinstance(got, dict):

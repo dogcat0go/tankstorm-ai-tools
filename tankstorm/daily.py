@@ -1618,10 +1618,12 @@ TASKS = [
     _t("配件探索", "配件中心·基地探索", "043a", "RceWPCExplore",
        {1: ("int32", 10001), 2: ("int32", 0), 3: ("int32", 0),
         4: ("int32", 0), 5: ("int32", 0), 6: ("int32", 0), 7: ("int32", 0)},
-       "实测", "实测 RceWPCBaseOpen{type:1} 开面板 → RceWPCExplore{sceneID:10001}。"
-               "useItemID/useItemCnt 是库存上报不是消耗，此处一律不发。"
-               "开面板响应 RseWPCBaseOpen.leftFreeCnt 才是剩余免费次数，"
-               "leftTime 是冷却秒数（此前把它当次数用过）",
+       "实测", "2026-10-24 22:48 抓包：先 RceWPCBaseOpen type=1，回包 leftFreeCnt=[3,1,1]、"
+               "leftTime=[0,0,0]。再按场景发 RceWPCExplore，expType、exploreCnt、credit、"
+               "discountType 都显式写 0。基地 10001 的 useItemID、useItemCnt 也写 0，"
+               "免费次数 3→2→1→0。中级 10002 上报配件卡 10005 的槽位和数量，"
+               "高级 10003 上报实验室探索卡 10006 的槽位和数量，credit 仍是 0，不扣卡。"
+               "回包 ret=0，leftFreeCnt 是这一档剩余，itemID 是掉落。leftTime 不是冷却闸门",
        max_per_day=5,
        prelude=[("0437", {1: ("int32", 1)})],
        gate=Gate("RseWPCBaseOpen", "leftFreeCnt"),
@@ -4645,6 +4647,12 @@ def _do_once(task, sock, rec, st, results, details, field_names,
         if task.tiers and tier is not None:
             fields = dict(fields)
             fields[task.tiers.field] = ("int32", task.tiers.values[tier])
+            if task.key == "配件探索":
+                card = {10002: 10005, 10003: 10006}.get(task.tiers.values[tier])
+                known = latest_card(rec, card) if card else None
+                slot = known[1] if known else None
+                fields[5] = ("int32", slot or 0)
+                fields[6] = ("int32", known[0] if slot else 0)
 
         ok, why = _check_safety(task, field_names, fields)
         if not ok:

@@ -79,11 +79,11 @@ def _fields(type_):
             23: ("int32", 0)}
 
 
-def _send(sock, rec, type_):
+def _send(sock, rec, type_, fields=None):
     before = rec.seq_mark() if rec else 0
-    sender.send_frame(sock, OPCODE, encode_message(_fields(type_),
-                                                   omit_zero=False),
-                      rec.rc4_c2s)
+    body = encode_message(_fields(type_) if fields is None else fields,
+                          omit_zero=False)
+    sender.send_frame(sock, OPCODE, body, rec.rc4_c2s)
     return before
 
 
@@ -169,6 +169,193 @@ def daily_join(rec, sock, config):
              time.strftime("%m-%d %H:%M:%S", time.localtime(now_at)))
     return True, (f"成功：已参加公会战（服务端记录时刻 "
                   f"{time.strftime('%m-%d %H:%M', time.localtime(now_at))}）")
+
+
+# 2026-10-24 13:18 抓包。公会战役进攻，不是上面的 type:70 报名。
+# 请求字段是 type / page / npcID / boxID / buffID / listCountryID，和报名那 7 个 0 不是同一套。
+# type:200 打开，type:208 进战场，type:217 按页读 npcList.lvl。
+# 对上等级后反复 type:203，npcID 用列表里的 baseid。回包是 type:251。
+# 体力是 thew（字段 44）。当前积分是 nowPersonMsg.point（字段 40 里的字段 1）。
+# 体力下降才算打上，同一据点打到体力不够、体力不再下降或被拒。
+# 不发 type:204 领奖，也不发打完之后那条 type:208。
+TYPE_CAMP_OPEN = 200
+TYPE_CAMP_ENTER = 208
+TYPE_CAMP_LIST = 217
+TYPE_CAMP_ATK = 203
+TYPE_CAMP_RET = 251
+_CAMP_PAGES = 5
+
+
+def _camp_fields(type_, page=0, npc="0"):
+    return {2: ("int32", type_), 4: ("int32", page),
+            25: ("string", str(npc)), 26: ("int32", 0),
+            27: ("int32", 0), 28: ("int32", 0)}
+
+
+def _camp_window(now=None):
+    """周五 10:00 到周六 22:00，按本机时区。周六 22:00 整点已经出窗口。"""
+    lt = time.localtime(now if now is not None else time.time())
+    mins = lt.tm_hour * 60 + lt.tm_min
+    if lt.tm_wday == 4 and mins >= 10 * 60:
+        return True
+    return lt.tm_wday == 5 and mins < 22 * 60
+
+
+def _camp_npcs(data):
+    """据点列表。读不全返回 None，这一页没有据点返回空列表。"""
+    if not isinstance(data, dict) or data.get("ret") not in (0, None):
+        return None
+    raw = data.get("npcList")
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return None
+    rows = []
+    for row in raw:
+        if not isinstance(row, dict):
+            return None
+        lvl = row.get("lvl")
+        base = row.get("baseid")
+        if isinstance(lvl, bool) or not isinstance(lvl, int):
+            return None
+        if isinstance(base, bool):
+            return None
+        if isinstance(base, int):
+            base = str(base)
+        if not isinstance(base, str) or not base.isdigit() or int(base) <= 0:
+            return None
+        rows.append((lvl, base))
+    return rows
+
+
+def _camp_int(data, key):
+    v = data.get(key) if isinstance(data, dict) else None
+    if isinstance(v, bool) or not isinstance(v, int):
+        return None
+    return v
+
+
+def _camp_thew(data):
+    return _camp_int(data, "thew")
+
+
+def _camp_score(data):
+    """当前积分。2026-10-24：nowPersonMsg.point，打开时 0，每打一次加一截。"""
+    msg = data.get("nowPersonMsg") if isinstance(data, dict) else None
+    return _camp_int(msg, "point")
+
+
+def daily_campaign(rec, sock, config):
+    """窗口内对上等级后按体力连打。窗口外不发包。一轮只算一次任务。"""
+    from . import citydb
+    if not citydb.base_tier(citydb.user_tier(citydb.attack_context_user() or 0)):
+        return False, "活动助手需要高级pro订阅"
+    if not _camp_window():
+        return False, "不在周五 10:00 到周六 22:00（本机时间），跳过"
+    level = (config.get("公会战役") or {}).get("敌方等级")
+    if isinstance(level, bool) or not isinstance(level, int) or level <= 0:
+        return False, "没配敌方等级（公会战役.敌方等级），不打"
+
+    opened = _wait(sock, rec, _send(sock, rec, TYPE_CAMP_OPEN,
+                                    _camp_fields(TYPE_CAMP_OPEN)),
+                   TYPE_CAMP_OPEN)
+    if not isinstance(opened, dict) or opened.get("ret") not in (0, None):
+        return False, "打不开公会战役（type:200 没回包），不打"
+    _nap(0.6)
+    entered = _wait(sock, rec, _send(sock, rec, TYPE_CAMP_ENTER,
+                                     _camp_fields(TYPE_CAMP_ENTER)),
+                    TYPE_CAMP_ENTER)
+    if not isinstance(entered, dict) or entered.get("ret") not in (0, None):
+        return False, "进不了战场（type:208 没回包），不打"
+
+    found = None
+    thew = None
+    score = _camp_score(opened)
+    got = _camp_score(entered)
+    if got is not None:
+        score = got
+    seen = set()
+    for page in range(_CAMP_PAGES):
+        raise_if_stopped()
+        _nap(0.6)
+        data = _wait(sock, rec, _send(
+            sock, rec, TYPE_CAMP_LIST, _camp_fields(TYPE_CAMP_LIST, page)),
+            TYPE_CAMP_LIST)
+        if not isinstance(data, dict) or data.get("page") != page:
+            return False, f"读不到第 {page} 页据点，不打"
+        if data.get("ret") not in (0, None):
+            return False, f"据点列表被拒绝 ret={data.get('ret')}，不打"
+        rows = _camp_npcs(data)
+        if rows is None:
+            return False, f"第 {page} 页据点等级读不全，不打"
+        got = _camp_thew(data)
+        if got is None:
+            return False, "据点列表里读不到体力，不打"
+        thew = got
+        got = _camp_score(data)
+        if got is not None:
+            score = got
+        ids = {npc for _, npc in rows}
+        if ids and ids <= seen:
+            break
+        seen |= ids
+        for lvl, npc in rows:
+            if lvl == level:
+                found = npc
+                break
+        if found or not rows:
+            break
+    if not found:
+        return False, f"据点列表里没有 {level} 级，不打"
+
+    log.info("[公会战役] 打 %s 级据点 %s，当前体力 %s，积分 %s",
+             level, found, thew, score if score is not None else "读不到")
+    start = thew
+    hits = 0
+    cost = None
+    why = ""
+    while True:
+        raise_if_stopped()
+        if not _camp_window():
+            why = "已经离开周五 10:00 到周六 22:00，停手"
+            break
+        if thew <= 0 or (cost is not None and thew < cost):
+            why = f"体力不够（剩余 {thew}），停手"
+            break
+        _nap(0.6)
+        r = _wait(sock, rec, _send(
+            sock, rec, TYPE_CAMP_ATK, _camp_fields(TYPE_CAMP_ATK, 0, found)),
+            TYPE_CAMP_RET)
+        if not isinstance(r, dict):
+            why = "进攻没有回包，停手"
+            break
+        ret = r.get("ret")
+        if ret not in (0, None):
+            why = f"服务器拒绝 ret={ret}，停手"
+            break
+        now = _camp_thew(r)
+        if now is None:
+            why = "回包里读不到体力，停手"
+            break
+        got = _camp_score(r)
+        score = got
+        if now >= thew:
+            why = f"体力没有下降（{thew}→{now}），停手"
+            break
+        cost = thew - now
+        hits += 1
+        log.info("[公会战役] 第 %s 次进攻 %s 级，体力 %s→%s，积分 %s",
+                 hits, level, thew, now,
+                 score if score is not None else "读不到")
+        thew = now
+    point = (f"，当前积分 {score}（nowPersonMsg.point）" if score is not None
+             else "，积分读不到")
+    if hits <= 0:
+        return False, why + point
+    return True, (f"成功：{level} 级据点（{found}）打了 {hits} 次，"
+                  f"体力 {start}→{thew}{point}。{why}")
 
 
 # GuildContribute_2016092801.dat。一键用每种的第二行。
@@ -315,6 +502,30 @@ def _finish_num(panel):
     return 0 if n is None else n
 
 
+_STAR5 = frozenset({
+    5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70,
+})
+
+
+def _star(kind):
+    if kind in _STAR5:
+        return 5
+    if kind in _STAR_IDS:
+        return 4
+    return 0
+
+
+def _best(rows, seen, mine):
+    """5 星先于 4 星。已经接过、做满的不要。"""
+    cands = [
+        row for row in rows
+        if row[0] not in seen and row[0] not in mine and _star(row[1]) >= 4
+        and row[3] > 0 and row[2] < row[3]
+    ]
+    cands.sort(key=lambda row: _star(row[1]), reverse=True)
+    return cands[0] if cands else None
+
+
 def _claim_tasks(sock, rec, panel):
     """自己的任务进度满了就领。ntype=7，编号用大 id。"""
     claimed = []
@@ -338,53 +549,57 @@ def _claim_tasks(sock, rec, panel):
         _nap(0.35)
 
 
+def _published(panel, prev):
+    if isinstance(panel, dict) and "field21" in panel:
+        return _task_rows(panel, "field21")
+    return prev
+
+
 def _guild_tasks(sock, rec):
     panel = _build_send(sock, rec, _TASK_OPEN)
     if not isinstance(panel, dict):
         return False, "失败：没收到公会任务面板"
-    panel, claimed = _claim_tasks(sock, rec, panel)
-    if panel is None:
-        return False, "失败：领取已完成任务没有成功"
+    room = _TASK_CAP - _finish_num(panel)
+    if room < 0:
+        room = 0
     joined = []
-    published = []
+    taken = []
     refreshes = 0
     seen = set()
-    while _finish_num(panel) < _TASK_CAP:
+    pub = _task_rows(panel, "field21")
+    got_n = 0
+    while got_n < room:
         raise_if_stopped()
         mine = {row[0] for row in _task_rows(panel, "field22")}
-        live = next((
-            row for row in _task_rows(panel, "field21")
-            if row[0] not in seen and row[1] in _STAR_IDS and row[0] not in mine
-            and row[3] > 0 and row[2] < row[3]
-        ), None)
+        pub = _published(panel, pub)
+        live = _best(pub, seen, mine)
         if live is not None:
             nid, kind, _proc, _need = live
             seen.add(nid)
             got = _build_send(sock, rec, _TASK_JOIN, nid)
             if not isinstance(got, dict):
-                return False, "失败：参加已发布任务没有回包"
+                return False, "失败：参加已有团队任务没有回包"
             ret = got.get("nRet")
             if ret not in (0, None):
                 return False, "失败：参加类型 %d 被拒 nRet=%s" % (kind, ret)
             joined.append(kind)
             panel = got
+            got_n += 1
             _nap(0.35)
             continue
-        pick = next((
-            row for row in _task_rows(panel, "field23")
-            if row[0] not in seen and row[1] in _STAR_IDS
-        ), None)
+        pick = _best(_task_rows(panel, "field23"), seen, mine)
         if pick is not None:
             nid, kind, _proc, _need = pick
             seen.add(nid)
             got = _build_send(sock, rec, _TASK_PUBLISH, nid)
             if not isinstance(got, dict):
-                return False, "失败：发布类型 %d 没有回包" % kind
+                return False, "失败：承接类型 %d 没有回包" % kind
             ret = got.get("nRet")
             if ret not in (0, None):
-                return False, "失败：发布类型 %d 被拒 nRet=%s" % (kind, ret)
-            published.append(kind)
+                return False, "失败：承接类型 %d 被拒 nRet=%s" % (kind, ret)
+            taken.append(kind)
             panel = got
+            got_n += 1
             _nap(0.35)
             continue
         if refreshes >= _TASK_REFRESH_MAX:
@@ -398,16 +613,35 @@ def _guild_tasks(sock, rec):
             return False, "失败：刷新没有回包"
         panel = nxt
         _nap(0.35)
+    panel, claimed = _claim_tasks(sock, rec, panel)
+    noted = _note_guild_claims(len(claimed))
+    if panel is None:
+        return False, "失败：领取已完成任务没有成功（已领奖 %d/%d）" % (noted, _TASK_CAP)
     bits = []
-    if claimed:
-        bits.append("领取 %d 个" % len(claimed))
     if joined:
-        bits.append("参加 %d 个" % len(joined))
-    if published:
-        bits.append("发布 %d 个" % len(published))
+        bits.append("参加已有 %d 个" % len(joined))
+    if taken:
+        bits.append("承接 %d 个" % len(taken))
+    if claimed:
+        bits.append("领奖 %d 个" % len(claimed))
+    head = "已领奖 %d/%d" % (noted, _TASK_CAP)
     if not bits:
-        return True, "成功：没有可领、可参加或可发布的 4 星、5 星任务，刷新 %d 次" % refreshes
-    return True, "成功：" + "，".join(bits) + "，刷新 %d 次" % refreshes
+        return True, "成功：%s，没有可参加或可承接的 4 星、5 星，刷新 %d 次" % (head, refreshes)
+    return True, "成功：%s，" % head + "，".join(bits) + "，刷新 %d 次" % refreshes
+
+
+def _note_guild_claims(n):
+    """领奖才计入今日完成。没领奖不记，下次接着看。"""
+    from .daily import _load_state, _save_state
+    st = _load_state()
+    prev = st.get("done", {}).get("公会任务", 0)
+    if not isinstance(prev, int) or isinstance(prev, bool) or prev < 0:
+        prev = 0
+    total = prev if n <= 0 else min(_TASK_CAP, prev + n)
+    if total != prev:
+        st.setdefault("done", {})["公会任务"] = total
+        _save_state(st)
+    return total
 
 
 def _flag_list(val):

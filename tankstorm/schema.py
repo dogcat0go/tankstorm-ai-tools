@@ -86,6 +86,17 @@ _NESTED = {
         "5": ("defName", "string"),
         "6": ("defCountry", "int32"),
     },
+    # RseGuildOpt.npcList，CountryUser。2026-10-24 公会战役据点：baseid 是进攻用的 npcID，lvl 是等级。
+    "npcList": {
+        "3": ("baseid", "string"),
+        "6": ("lvl", "int32"),
+    },
+    # RseGuildOpt.nowPersonMsg，GVEPersonalMsg。2026-10-24：point 是当前积分，rank 是名次。
+    # 打开时 point=0，两次进攻后 1122、2244。lastPersonMsg / HighestPersonMsg 不是这一场的当前积分。
+    "nowPersonMsg": {
+        "1": ("point", "int32"),
+        "2": ("rank", "int32"),
+    },
 }
 
 

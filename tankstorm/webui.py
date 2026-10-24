@@ -20,6 +20,7 @@ import re
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 from . import citydb
 from .log import get_logger
@@ -347,6 +348,7 @@ def _handler(config: dict):
                     "credit": wallet["credit"],
                     "pop": citydb.attack_pop(user["id"]),
                     "cards": citydb.attack_cards(user["id"]),
+                    "equip_note": citydb.equip_bag_note(user["id"]),
                     "jobs": citydb.list_daily_jobs(user["id"], limit=6, kind="base"),
                     "resource_catalog": fund.resource_catalog(),
                     "resource_cards": _resource_cards_of(user["id"]),
@@ -361,6 +363,10 @@ def _handler(config: dict):
                 uin = citydb.attack_qq_of(user["id"])
                 switches = citydb.daily_switches(
                     user["id"], (config.get("每日任务") or {}).get("任务") or {})
+                guild_level = citydb.guild_camp_level(user["id"])
+                if guild_level is None:
+                    raw = (config.get("公会战役") or {}).get("敌方等级")
+                    guild_level = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 51
                 _json(self, 200, {
                     "qq": uin,
                     "tasks": daily.task_board(uin, switches),
@@ -369,6 +375,7 @@ def _handler(config: dict):
                     "stages": citydb.campaign_stages(user["id"]),
                     "schedule": citydb.daily_schedule(user["id"]),
                     "modo_at": citydb.modo_schedule(user["id"]),
+                    "guild_level": guild_level,
                 })
                 return
             if path == "/api/admin/fighters":
@@ -380,6 +387,27 @@ def _handler(config: dict):
                     _json(self, 403, {"error": "只有管理员能看全部攻打 QQ"})
                     return
                 _json(self, 200, {"fighters": citydb.list_attack_fighters()})
+                return
+            if path == "/api/admin/qq-log":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能看攻打日志"})
+                    return
+                query = parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+                try:
+                    detail = citydb.attack_qq_detail(
+                        (query.get("qq") or [""])[0],
+                        (query.get("days") or ["3"])[0])
+                except ValueError as exc:
+                    _json(self, 400, {"error": str(exc)})
+                    return
+                if detail is None:
+                    _json(self, 404, {"error": "没有这个攻打 QQ"})
+                    return
+                _json(self, 200, detail)
                 return
             if path == "/api/admin/members":
                 user = self._user()
@@ -527,6 +555,8 @@ def _handler(config: dict):
                     })
                 elif path == "/api/daily/switch":
                     from . import daily
+                    if str(data.get("key") or "") == "公会战役" and not citydb.base_tier(user.get("tier") or ""):
+                        raise ValueError("活动助手需要高级pro订阅")
                     on = data.get("on")
                     if isinstance(on, str):
                         on = on.strip().lower() in ("1", "true", "on", "开")
@@ -543,6 +573,16 @@ def _handler(config: dict):
                     _json(self, 200, {
                         "ok": True,
                         "tasks": daily.task_board(uin, switches),
+                    })
+                elif path == "/api/daily/guild-level":
+                    if not citydb.base_tier(user.get("tier") or ""):
+                        raise ValueError("活动助手需要高级pro订阅")
+                    why = citydb.set_guild_camp_level(user["id"], data.get("level"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {
+                        "ok": True,
+                        "guild_level": citydb.guild_camp_level(user["id"]),
                     })
                 elif path == "/api/daily/cancel":
                     try:
@@ -641,7 +681,7 @@ def _handler(config: dict):
                     why = citydb.request_equip_bag(user["id"])
                     if why:
                         raise ValueError(why)
-                    _json(self, 200, {"ok": True})
+                    _json(self, 200, {"ok": True, "note": citydb.equip_bag_note(user["id"])})
                 elif path == "/api/attack-move":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "移动到指定城市需要中级或高级订阅"})

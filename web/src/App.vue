@@ -7,6 +7,7 @@ import AccountBar from "./pages/AccountBar.vue";
 import AttackStatus from "./pages/AttackStatus.vue";
 import AttackPage from "./pages/AttackPage.vue";
 import DailyPage from "./pages/DailyPage.vue";
+import ActivityPage from "./pages/ActivityPage.vue";
 import BasePage from "./pages/BasePage.vue";
 import WatchPage from "./pages/WatchPage.vue";
 import QqPage from "./pages/QqPage.vue";
@@ -115,8 +116,12 @@ const baseCredit = ref(null);
 const basePop = ref(null);
 const pveStages = ref("");
 let pveStagesReady = false;
+const guildLevel = ref("");
+const guildLevelNote = ref("");
+let guildLevelReady = false;
 const fundBuilding = ref("");
 const fundTimes = ref("1");
+const fundNote = ref("");
 const fundBuildings = [
   { id: "10132", name: "比萨斜塔" },
   { id: "10133", name: "埃菲尔铁塔" },
@@ -124,6 +129,7 @@ const fundBuildings = [
   { id: "10135", name: "女神像" },
   { id: "10136", name: "红场" },
   { id: "10137", name: "帝国大厦" },
+  { id: "10144", name: "万磁陀螺" },
 ];
 const dailyNote = ref("");
 const dailyAt = ref("");
@@ -214,6 +220,10 @@ async function refreshDaily() {
     modoAt.value = "";
     modoAtNote.value = "";
     modoAtReady = false;
+    guildLevel.value = "";
+    guildLevelNote.value = "";
+    guildLevelReady = false;
+    fundNote.value = "";
     return;
   }
   const data = await api("/api/daily");
@@ -234,6 +244,19 @@ async function refreshDaily() {
     modoAtReady = true;
     modoAtNote.value = data.modo_at ? "已设定每天 " + data.modo_at + "，刷完再领国家宝箱" : "";
   }
+  if (!guildLevelReady) {
+    guildLevel.value = data.guild_level == null ? "" : String(data.guild_level);
+    guildLevelReady = true;
+  }
+}
+
+async function saveGuildLevel() {
+  showErr("", "activity");
+  guildLevelNote.value = "";
+  const data = await api("/api/daily/guild-level", { level: guildLevel.value });
+  guildLevel.value = data.guild_level == null ? "" : String(data.guild_level);
+  guildLevelReady = true;
+  guildLevelNote.value = guildLevel.value ? "已保存，下次进攻用 " + guildLevel.value + " 级" : "";
 }
 
 async function saveDailySwitch(it, on) {
@@ -297,6 +320,7 @@ async function refreshBase() {
   baseCards.value = data.cards || emptyCards();
   resourceCatalog.value = data.resource_catalog || [];
   resourceCards.value = data.resource_cards || null;
+  applyEquipNote(data.equip_note || "", baseCards.value);
 }
 
 async function runBase(countOrBody) {
@@ -457,11 +481,11 @@ async function runLab50(count) {
 }
 
 async function runFund(building, times) {
-  showErr("");
-  baseNote.value = "";
+  showErr("", "activity");
+  fundNote.value = "";
   await api("/api/daily", { kind: "fund", building_id: building, times });
-  baseNote.value = "已交给绑定的攻打号";
-  await refreshBase();
+  fundNote.value = "已交给绑定的攻打号";
+  await refreshDaily();
   await refreshAttacks();
 }
 
@@ -486,6 +510,42 @@ function askAttackHere() {
   api("/api/attack-here", {}).catch(() => {});
 }
 
+const EQUIP_NOTES = ["正在等攻打线程", "正在读装备栏", "这次没读到装备栏"];
+let equipNoteAt = 0;
+
+function boxesRead(cards) {
+  if (!cards) return false;
+  return ["box_mid", "box_high", "box_mid_key", "box_high_key"].every(
+    (key) => cards[key] !== null && cards[key] !== undefined);
+}
+
+function applyEquipNote(text, cards) {
+  const cur = baseNote.value;
+  if (cur && !EQUIP_NOTES.includes(cur)) return;
+  if (boxesRead(cards)) {
+    if (EQUIP_NOTES.includes(cur)) baseNote.value = "";
+    return;
+  }
+  if (text && text === cur) return;
+  if (!text) {
+    if (cur && Date.now() - equipNoteAt < 12000) return;
+    if (cur) baseNote.value = "";
+    return;
+  }
+  equipNoteAt = Date.now();
+  baseNote.value = text;
+}
+
+async function askBaseEquip() {
+  try {
+    const data = await api("/api/base-equip", {});
+    applyEquipNote(data.note || "", baseCards.value);
+  } catch (e) {
+    if (EQUIP_NOTES.includes(baseNote.value)) baseNote.value = "";
+    showErr(e.message, "base");
+  }
+}
+
 function markAttackHere() {
   const on = !!(toolsOn.value && tab.value === "attack");
   if (on && !attackHereOn) askAttackHere();
@@ -495,9 +555,10 @@ function markAttackHere() {
 function pickTab(key) {
   tab.value = key;
   if (key === "daily") refreshDaily().catch((e) => showErr(e.message, "daily"));
+  if (key === "activity") refreshDaily().catch((e) => showErr(e.message, "activity"));
   if (key === "base") {
     refreshBase().catch((e) => showErr(e.message, "base"));
-    api("/api/base-equip", {}).catch(() => {});
+    askBaseEquip();
   }
   if (key === "attack") attackHereOn = false;
   markAttackHere();
@@ -637,8 +698,9 @@ async function loadMe() {
 
 function takeUser(user) {
   me.value = user;
-  if (!user.base_war && tab.value === "base") tab.value = "attack";
+  if (!user.base_war && (tab.value === "base" || tab.value === "activity")) tab.value = "attack";
   pveStagesReady = false;
+  guildLevelReady = false;
   dailyAtReady = false;
   modoAtReady = false;
   qqTarget.value = user.qq_target || "";
@@ -1040,6 +1102,9 @@ async function logout() {
   modoAt.value = "";
   modoAtNote.value = "";
   modoAtReady = false;
+  guildLevel.value = "";
+  guildLevelNote.value = "";
+  guildLevelReady = false;
   holdNote.value = "";
   offAt.value = "";
   offNote.value = "";
@@ -1108,7 +1173,7 @@ onMounted(async () => {
   atkTimer = setInterval(() => {
     if (!me.value) return;
     refreshAttacks().catch(() => {});
-    if (tab.value === "daily") refreshDaily().catch(() => {});
+    if (tab.value === "daily" || tab.value === "activity") refreshDaily().catch(() => {});
     if (tab.value === "base") refreshBase().catch(() => {});
   }, 2000);
   clockTimer = setInterval(() => {
@@ -1181,6 +1246,7 @@ onUnmounted(() => {
         <el-menu-item index="attack">国战助手</el-menu-item>
         <el-menu-item index="daily">日常任务</el-menu-item>
         <el-menu-item v-if="me && me.base_war" index="base">基地战助手</el-menu-item>
+        <el-menu-item v-if="me && me.base_war" index="activity">活动助手</el-menu-item>
         <el-menu-item index="watch">监控敌人</el-menu-item>
       </el-menu>
       <ProfilePage
@@ -1191,6 +1257,24 @@ onUnmounted(() => {
         :save-password="savePassword"
         :load-fail-library="loadFailLibrary"
         :reset-fail-library="resetFailLibrary"
+        :show-err="showErr"
+      />
+      <ActivityPage
+        v-show="toolsOn && me && me.base_war && tab === 'activity'"
+        v-model:guild-level="guildLevel"
+        v-model:fund-building="fundBuilding"
+        v-model:fund-times="fundTimes"
+        :daily-qq="dailyQq"
+        :tasks="dailyTasks"
+        :daily-switching="dailySwitching"
+        :note="guildLevelNote"
+        :fund-buildings="fundBuildings"
+        :fund-note="fundNote"
+        :err="err"
+        :err-at="errAt"
+        :save-level="saveGuildLevel"
+        :save-daily-switch="saveDailySwitch"
+        :run-fund="runFund"
         :show-err="showErr"
       />
       <DailyPage

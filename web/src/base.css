@@ -1,5 +1,25 @@
 body { margin: 0; font: 15px/1.5 sans-serif; color: #1a1a1a; background: #f6f6f4; }
 main { max-width: 880px; margin: 0 auto; padding: 24px 16px 48px; }
+main.admin-log { max-width: 1100px; }
+.qq-log-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.qq-log-head h2 { margin: 0; }
+.qq-days { display: flex; gap: 8px; margin: 8px 0; }
+.qq-days button.ghost.here { background: #e7e7e3; border-color: #1a1a1a; }
+.qq-orders { max-height: 360px; overflow: auto; }
+.qq-orders table { min-width: 920px; }
+.qq-orders td.reason { white-space: normal; min-width: 14em; }
+.qq-log, .qq-task {
+  background: #fff;
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow: auto;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+}
+.qq-log { max-height: 520px; }
+.qq-task { max-height: 280px; }
+details.qq-task-file { margin: 8px 0; }
+details.qq-task-file summary { cursor: pointer; }
 h1 { font-size: 22px; margin: 0 0 8px; }
 h2 { font-size: 16px; margin: 28px 0 8px; }
 h3 { font-size: 14px; margin: 16px 0 8px; }
@@ -140,6 +160,7 @@ button.sort {
 button.sort:hover, button.sort.on { color: #1a1a1a; text-decoration: underline; }
 table.members { min-width: 860px; }
 table.members td.member-ops { white-space: nowrap; }
+table.fighters button.ghost { padding: 4px 10px; }
 table.members button.ghost { padding: 4px 10px; }
 table.members button.ghost + button.ghost { margin-left: 8px; }
 table.members td.member-cfg { background: #fafaf7; }

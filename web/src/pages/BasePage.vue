@@ -144,7 +144,7 @@ function resText(n) {
     <h2>基地战</h2>
     <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
     <p v-else class="muted">还没绑定攻打 QQ。按页面上方的步骤点登录并扫码。一个登录账号只绑一个攻打号，这里的制造用那个号做。</p>
-    <p class="muted">由这个账号的攻打线程执行，不另开连接。基地战、国战助手和日常任务同时做。兵营、战车工厂和开资源卡也同时做，不等另一边做完。</p>
+    <p class="muted">由这个账号的攻打线程执行，不另开连接。兵营和战车工厂按剩余时间排下一次快速制造，免费线默认 600 秒。开资源卡也在这条线程上做。</p>
     <h2>基地内资源</h2>
     <p>金属 {{ resText(metal) }} · 石油 {{ resText(oil) }}</p>
     <p>勋章 {{ resText(credit) }} · 人口 {{ resText(pop) }}</p>

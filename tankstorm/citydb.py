@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS daily_job (
     params      TEXT NOT NULL DEFAULT '{}',
     status      TEXT NOT NULL,
     detail      TEXT NOT NULL DEFAULT '',
+    ready_at    TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -514,6 +515,11 @@ def connect(readonly=False, timeout=15):
                 setup.commit()
             _assign_legacy_fails(setup)
             setup.commit()
+            jcols = {r[1] for r in setup.execute("PRAGMA table_info(daily_job)")}
+            if jcols and "ready_at" not in jcols:
+                setup.execute(
+                    "ALTER TABLE daily_job ADD COLUMN ready_at TEXT NOT NULL DEFAULT ''")
+                setup.commit()
             _schema_ready = True
         finally:
             setup.close()
@@ -1000,15 +1006,19 @@ def user_tier(user_id: int) -> str:
 
 
 def account_expired(expires_at: str) -> bool:
-    """有效期是北京时间的日期，这一天仍然有效。空表示不限期。"""
-    day = (expires_at or "").strip()[:10]
+    """有效期是北京时间的日期，这一天仍然有效。空表示不限期。
+
+    月和日可以不补零，例如 2026-11-9。比较前先补成 2026-11-09，
+    否则没补零的日期用字符串比较会排错。写错的日期算过期。
+    """
+    day = (expires_at or "").strip()[:10].strip()
     if not day:
         return False
     try:
-        datetime.strptime(day, "%Y-%m-%d")
+        parsed = datetime.strptime(day, "%Y-%m-%d").date()
     except ValueError:
         return True
-    return day < beijing_day()
+    return parsed.isoformat() < beijing_day()
 
 
 def expiry_deadline_ms(expires_at: str):
@@ -1016,7 +1026,7 @@ def expiry_deadline_ms(expires_at: str):
 
     库存的是北京时间日期，这一天仍然有效，到次日 0 点才算过。
     """
-    day = (expires_at or "").strip()[:10]
+    day = (expires_at or "").strip()[:10].strip()
     if not day:
         return None
     try:
@@ -2273,7 +2283,7 @@ def bind_attack_account(user_id: int, account: str) -> str:
     return ""
 
 
-_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "hereask", "pageqr", "qrpath", "resume")
+_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "hereask", "equipask", "pageqr", "qrpath", "resume")
 
 
 def clear_attack_binding(user_id: int) -> str:
@@ -2938,11 +2948,11 @@ def clear_retreat_on(user_id: int = 0) -> bool:
 
 
 def schedule_empty_order(order_id: int, minutes: int, beats=None, stuck=False,
-                         note="") -> bool:
+                         cleared=False, note="") -> bool:
     """同一条清城订单过这么多分钟再排队。已经不在打的返回 False。
 
-    stuck 为真表示城里还留着打不过的人。否则是这几页没人。
-    note 是这一轮后退的说明，接到倒计时后面。
+    stuck 为真表示城里还留着打不过的人。cleared 为真表示这几页已经打完。
+    两者都不是时，是这几页没人。note 是这一轮后退的说明，接到倒计时后面。
     """
     minutes = int(minutes or 0)
     if minutes <= 0:
@@ -2951,6 +2961,8 @@ def schedule_empty_order(order_id: int, minutes: int, beats=None, stuck=False,
     run_at = due.strftime("%Y-%m-%dT%H:%M:%SZ")
     if stuck:
         reason = f"还有打不过的人，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
+    elif cleared:
+        reason = f"这几页打完了，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
     else:
         reason = f"这座城是空的，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
     extra = str(note or "").strip()
@@ -3295,6 +3307,126 @@ def list_attack_orders(user_id: int, limit: int = 3) -> list:
     rows = list(valid) + list(done)
     rows.sort(key=_order_list_key)
     return [_order_row(r) for r in rows]
+
+
+def _order_label(kind: str, uid: str, auto) -> str:
+    if str(kind or "") == "modo":
+        return "摩多"
+    if not str(uid or "").strip():
+        return "清城"
+    if int(auto or 0):
+        return "自动锁敌"
+    return "打人"
+
+
+def _attack_log_order(raw, names, cities, conn) -> dict:
+    kind = str(raw[8] or "")
+    uid = str(raw[3] or "")
+    status = str(raw[4] or "")
+    city_id = int(raw[2] or 0)
+    if kind == "modo":
+        city = ""
+    elif city_id in cities:
+        city = cities[city_id]
+    else:
+        city = city_name(city_id, conn)
+        cities[city_id] = city
+    user_id = int(raw[1])
+    beats = raw[7]
+    run_at = str(raw[9] or "") if status == "wait" else ""
+    return {
+        "id": int(raw[0]),
+        "user_id": user_id,
+        "username": names.get(user_id) or "",
+        "city_id": city_id,
+        "city_name": city,
+        "uid": uid,
+        "name": str(raw[10] or ""),
+        "status": status,
+        "reason": str(raw[5] or ""),
+        "created_at": beijing_ts(str(raw[6] or "")),
+        "beats": None if beats is None else int(beats),
+        "kind": kind,
+        "label": _order_label(kind, uid, raw[11]),
+        "run_at": beijing_ts(run_at) if run_at else "",
+    }
+
+
+def _orders_for_attack_qq(user_ids, names) -> list:
+    """还没打完的和最近打完的。同一条清城反复空城再打时，这条会一直留在还没打完里。"""
+    slot = ",".join("?" * len(user_ids))
+    cols = ("id, user_id, city_id, IFNULL(uid,''), status, IFNULL(reason,''), "
+            "created_at, beats, IFNULL(kind,''), IFNULL(run_at,''), IFNULL(name,''), "
+            "IFNULL(auto,0)")
+    args = tuple(int(item) for item in user_ids)
+    conn = connect(readonly=True)
+    try:
+        open_rows = conn.execute(
+            f"SELECT {cols} FROM atk_order WHERE user_id IN ({slot}) "
+            "AND status IN ('pending','running','blocked','wait') "
+            "ORDER BY id DESC LIMIT 40",
+            args).fetchall()
+        done_rows = conn.execute(
+            f"SELECT {cols} FROM atk_order WHERE user_id IN ({slot}) "
+            "AND status NOT IN ('pending','running','blocked','wait') "
+            "ORDER BY id DESC LIMIT 40",
+            args).fetchall()
+        cities = {}
+        rows = []
+        seen = set()
+        for raw in list(open_rows) + list(done_rows):
+            if raw[0] in seen:
+                continue
+            seen.add(raw[0])
+            rows.append(_attack_log_order(raw, names, cities, conn))
+    finally:
+        conn.close()
+    rows.sort(key=lambda row: (_OPEN_ORDER_RANK.get(row["status"], 10), -int(row["id"])))
+    return rows
+
+
+def attack_qq_detail(qq: str, days=3):
+    """管理员按攻打 QQ 看提交的攻打，以及运行日志里对得上的行。
+
+    没有这个攻打 QQ 返回 None。QQ 不是 5 到 12 位数字则抛 ValueError。
+    """
+    raw = str(qq or "").strip()
+    if not raw.isdigit() or not 5 <= len(raw) <= 12:
+        raise ValueError("攻打 QQ 不对")
+    try:
+        span = int(days)
+    except (TypeError, ValueError):
+        span = 3
+    if span not in (1, 3, 7):
+        span = 3
+    user_ids = users_bound_to_qq(raw)
+    if not user_ids:
+        return None
+    names = {}
+    accounts = []
+    for user_id in user_ids:
+        name = username_of(user_id)
+        names[user_id] = name
+        accounts.append({
+            "id": user_id,
+            "username": name,
+            "clear_wait": int(clear_settings(user_id).get("wait_min") or 0),
+        })
+    orders = _orders_for_attack_qq(user_ids, names)
+    from .log import qq_log_lines, qq_task_logs
+    lines, lines_cut = qq_log_lines(
+        [item["username"] for item in accounts],
+        [item["id"] for item in orders],
+        raw, span)
+    return {
+        "qq": raw,
+        "days": span,
+        "accounts": accounts,
+        "orders": orders,
+        "lines": lines,
+        "lines_cut": bool(lines_cut),
+        "tasks": qq_task_logs(raw, span),
+    }
 
 
 def set_page_qr(on: bool, user_id: int = 0) -> None:
@@ -4034,7 +4166,8 @@ def attack_cards(user_id: int) -> dict:
     parsed, _seen, _online = _read_user_proc(int(user_id))
     raw = parsed.get("cards") if isinstance(parsed.get("cards"), dict) else {}
     return {key: _kept_int(raw, key)
-            for key in ("general", "staff", "lab", "auto", "drink", "recruit", "explore")}
+            for key in ("general", "staff", "lab", "auto", "drink", "recruit", "explore",
+                        "box_mid", "box_high", "box_mid_key", "box_high_key")}
 
 
 def attack_wallet(user_id: int) -> dict:
@@ -4151,8 +4284,87 @@ def take_attack_here() -> bool:
     return True
 
 
+_EQUIP_CARD_KEYS = ("box_mid", "box_high", "box_mid_key", "box_high_key")
+# 点进基地战助手读装备栏。一次请求超过 10 秒还没读到就作废，不再占着信号。
+# 失败后再隔 10 秒试下一次，一共最多 3 次。读到箱子和钥匙就停，不为了刷新再读。
+EQUIP_ASK_TIMEOUT = 10
+EQUIP_ASK_GAP = 10
+EQUIP_ASK_TRIES = 3
+_equip_lock = threading.Lock()
+
+
+def _equip_boxes_known(user_id: int) -> bool:
+    cards = attack_cards(int(user_id))
+    return all(cards.get(key) is not None for key in _EQUIP_CARD_KEYS)
+
+
+def _equip_load(user_id: int) -> dict:
+    raw = _signal_value(_mark_name("equipask", user_id)).strip()
+    if not raw:
+        return {}
+    if raw == "1":
+        return {"old": True}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"old": True}
+    if not isinstance(data, dict):
+        return {"old": True}
+    n, at, st = data.get("n"), data.get("at"), data.get("st")
+    if (isinstance(n, bool) or not isinstance(n, int) or n < 1
+            or isinstance(at, bool) or not isinstance(at, int) or at < 0
+            or st not in ("wait", "send", "miss")):
+        return {"old": True}
+    return {"n": n, "at": at, "st": st}
+
+
+def _equip_save(user_id: int, data: dict) -> None:
+    _upsert_signal(
+        _mark_name("equipask", user_id),
+        json.dumps({"n": int(data["n"]), "at": int(data["at"]), "st": data["st"]}))
+
+
+def _equip_clear(user_id: int) -> None:
+    _delete_signal(_mark_name("equipask", user_id))
+
+
+def _equip_phrase(data: dict) -> str:
+    st = data.get("st")
+    if st == "send":
+        return "正在读装备栏"
+    if st == "wait":
+        return "正在等攻打线程"
+    if st == "miss" and int(data.get("n") or 0) < EQUIP_ASK_TRIES:
+        return "正在等攻打线程"
+    if st == "miss":
+        return "这次没读到装备栏"
+    return ""
+
+
+def _equip_settle(user_id: int) -> dict:
+    """超时的这次作废。间隔到了、次数还没用完，就再挂一次。调用方已持有 _equip_lock。"""
+    data = _equip_load(user_id)
+    if not data:
+        return {}
+    if shutdown_due(user_id) or data.get("old") or _equip_boxes_known(user_id):
+        _equip_clear(user_id)
+        return {}
+    now = int(time.time())
+    if data["st"] in ("wait", "send") and now - int(data["at"]) >= EQUIP_ASK_TIMEOUT:
+        log.info("装备栏第 %s 次超过 %s 秒，这次作废", data["n"], EQUIP_ASK_TIMEOUT)
+        data = {"n": int(data["n"]), "at": now, "st": "miss"}
+        _equip_save(user_id, data)
+    if (data["st"] == "miss" and int(data["n"]) < EQUIP_ASK_TRIES
+            and now - int(data["at"]) >= EQUIP_ASK_GAP):
+        nxt = int(data["n"]) + 1
+        log.info("装备栏再读一次，第 %s/%s 次", nxt, EQUIP_ASK_TRIES)
+        data = {"n": nxt, "at": now, "st": "wait"}
+        _equip_save(user_id, data)
+    return data
+
+
 def request_equip_bag(user_id: int) -> str:
-    """进基地战助手时读一次装备栏，用来显示补给箱和钥匙。"""
+    """进基地战助手时读一次装备栏。已经有箱子和钥匙就不再读。"""
     user_id = int(user_id or 0)
     if shutdown_due(user_id):
         return "已定时关闭，不再执行任务"
@@ -4163,22 +4375,79 @@ def request_equip_bag(user_id: int) -> str:
         return "攻打没在跑"
     if status.get("phase") == "login" or status.get("need_login"):
         return "还在登录，连上后再看装备栏"
-    _upsert_signal(_mark_name("equipask", user_id), "1")
+    with _equip_lock:
+        if _equip_boxes_known(user_id):
+            _equip_clear(user_id)
+            return ""
+        data = _equip_settle(user_id)
+        if shutdown_due(user_id) or _equip_boxes_known(user_id):
+            return ""
+        st = data.get("st")
+        now = int(time.time())
+        if st in ("wait", "send"):
+            return ""
+        if st == "miss" and (
+                now - int(data["at"]) < EQUIP_ASK_GAP
+                or int(data["n"]) < EQUIP_ASK_TRIES):
+            return ""
+        _equip_save(user_id, {"n": 1, "at": now, "st": "wait"})
     return ""
 
 
-def take_equip_bag() -> bool:
-    """领走这一次查看。领过就不再读第二次。"""
+def equip_bag_note(user_id: int) -> str:
+    """页面上一句。正在等、正在读，或这次没读到。已经有数量就是空。"""
+    user_id = int(user_id or 0)
+    if not user_id:
+        return ""
+    with _equip_lock:
+        return _equip_phrase(_equip_settle(user_id))
+
+
+def equip_bag_ready() -> bool:
+    """攻打循环里还有一次没超时的读取。没有就返回 False，不要去占收发锁。"""
     user_id = attack_context_user()
     if not user_id:
         return False
-    if shutdown_due(user_id) and shutdown_covers_context():
+    with _equip_lock:
+        return _equip_settle(user_id).get("st") == "wait"
+
+
+def take_equip_bag() -> bool:
+    """领走还没超时的这一次，标成正在读。超时就作废，不发包。"""
+    user_id = attack_context_user()
+    if not user_id:
         return False
-    name = _mark_name("equipask", user_id)
-    if _signal_value(name).strip() != "1":
+    with _equip_lock:
+        if shutdown_due(user_id) or _equip_boxes_known(user_id):
+            _equip_clear(user_id)
+            return False
+        data = _equip_load(user_id)
+        if not data or data.get("old") or data.get("st") != "wait":
+            return False
+        now = int(time.time())
+        if now - int(data["at"]) >= EQUIP_ASK_TIMEOUT:
+            log.info("装备栏第 %s 次超过 %s 秒，这次作废", data["n"], EQUIP_ASK_TIMEOUT)
+            _equip_save(user_id, {"n": int(data["n"]), "at": now, "st": "miss"})
+            return False
+        _equip_save(user_id, {"n": int(data["n"]), "at": int(data["at"]), "st": "send"})
+        return True
+
+
+def finish_equip_bag() -> bool:
+    """这一次读完。读到箱子和钥匙就清掉信号并返回 True，否则记下失败。"""
+    user_id = attack_context_user()
+    if not user_id:
         return False
-    _delete_signal(name)
-    return True
+    with _equip_lock:
+        if _equip_boxes_known(user_id):
+            _equip_clear(user_id)
+            return True
+        data = _equip_load(user_id)
+        if data.get("st") == "wait":
+            return False
+        n = int(data["n"]) if data and not data.get("old") else 1
+        _equip_save(user_id, {"n": n if n > 0 else 1, "at": int(time.time()), "st": "miss"})
+        return False
 
 
 def note_attack_link(interval: float) -> None:
@@ -4794,13 +5063,12 @@ _DAILY_STATUS = {
 }
 RECOVERING_TEXT = "功能尚在恢复中..."
 # 还没和这次抓包对上的入口。页面上不能打开，整轮日常也会跳过。
-LOCKED_DAILY_KINDS = frozenset({
-    "fund",
-})
+# 2026-10-24 成就拨款对上了：RceBuildingModify type=70，第 27 号=1。
+LOCKED_DAILY_KINDS = frozenset()
 LOCKED_DAILY_TASKS = frozenset({
-    "每日资源", "修复坦克", "战功排名", "英雄开采",
+    "修复坦克", "战功排名", "英雄开采",
     "技能书将领", "技能书参谋", "配件探索",
-    "公会战参加", "公会战", "周任务",
+    "周任务",
 })
 
 
@@ -5350,6 +5618,45 @@ def set_open_cards(user_id: int, ids) -> str:
     return ""
 
 
+_GUILD_LEVEL = "_公会战役等级"
+
+
+def guild_camp_level(user_id: int):
+    """这个登录账号记下的公会战役敌方等级。没记过返回 None。"""
+    conn = connect(readonly=True)
+    try:
+        saved = _saved_daily_switches(conn, user_id) or {}
+    finally:
+        conn.close()
+    raw = saved.get(_GUILD_LEVEL)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        return None
+    return raw
+
+
+def set_guild_camp_level(user_id: int, raw) -> str:
+    """记下公会战役敌方等级。成功返回空字符串。"""
+    text = str(raw if raw is not None else "").strip()
+    if not text.isdigit():
+        return "等级要是数字"
+    level = int(text)
+    if level <= 0 or level > 999:
+        return "等级要是 1 到 999"
+    conn = connect()
+    try:
+        saved = _saved_daily_switches(conn, user_id) or {}
+        saved[_GUILD_LEVEL] = level
+        cur = conn.execute(
+            "UPDATE app_user SET daily_switch=? WHERE id=?",
+            (json.dumps(saved, ensure_ascii=False), int(user_id)))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "账号不存在"
+        return ""
+    finally:
+        conn.close()
+
+
 def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
     """排一项日常。成功返回空字符串。只排给这个登录账号绑定的攻打号。"""
     user_id = int(user_id)
@@ -5466,7 +5773,9 @@ def claim_daily_job(kinds=None):
     if not ids:
         return None
     slot = ",".join("?" * len(ids))
+    now = now_ts()
     args = list(ids)
+    args.append(now)
     kind_sql = ""
     if kinds:
         kind_sql = " AND kind IN (" + ",".join("?" * len(kinds)) + ")"
@@ -5476,15 +5785,16 @@ def claim_daily_job(kinds=None):
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT id, kind, params, user_id FROM daily_job "
-            "WHERE user_id IN (" + slot + ") AND status='pending'"
+            "WHERE user_id IN (" + slot + ") AND status='pending' "
+            "AND IFNULL(ready_at,'')<=?"
             + kind_sql + " ORDER BY id LIMIT 1",
             tuple(args)).fetchone()
         if not row:
             conn.rollback()
             return None
         conn.execute(
-            "UPDATE daily_job SET status='running', updated_at=? WHERE id=?",
-            (now_ts(), row[0]))
+            "UPDATE daily_job SET status='running', ready_at='', updated_at=? WHERE id=?",
+            (now, row[0]))
         conn.commit()
     finally:
         conn.close()
@@ -5515,6 +5825,24 @@ def touch_daily_job(job_id: int, detail: str) -> None:
         conn.execute(
             "UPDATE daily_job SET detail=?, updated_at=? WHERE id=? AND status='running'",
             (text, now_ts(), int(job_id)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def defer_daily_job(job_id: int, delay: float, detail: str, params: dict) -> None:
+    """先放回排队。delay 秒后再领，已经造完的数量写在 params 里。"""
+    delay = max(1.0, float(delay or 0))
+    ready = (datetime.now(timezone.utc) + timedelta(seconds=delay)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    text = _job_detail(detail)
+    blob = json.dumps(params if isinstance(params, dict) else {}, ensure_ascii=False)
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE daily_job SET status='pending', detail=?, params=?, "
+            "ready_at=?, updated_at=? WHERE id=? AND status='running'",
+            (text, blob, ready, now_ts(), int(job_id)))
         conn.commit()
     finally:
         conn.close()

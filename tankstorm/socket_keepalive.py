@@ -178,28 +178,15 @@ def install_login_refresh() -> None:
 
 
 def bind_login_session(qq) -> None:
-    """这个会话活着的时候，定期去游戏页续一下网页票据。"""
+    """登记这个会话。网页票据由会话脉冲去续，进程退出时再刷一次。"""
     install_login_refresh()
     with _login_sessions_guard:
         if qq not in _login_sessions:
             _login_sessions.append(qq)
-    if getattr(qq, "_touch_stop", None):
-        return
-    stop = threading.Event()
-    qq._touch_stop = stop
-
-    def loop():
-        while not stop.wait(LOGIN_TOUCH_SEC):
-            try:
-                qq.touch_login()
-            except Exception:
-                log.debug("网页票据保活没做成", exc_info=True)
-
-    threading.Thread(target=loop, name="login-touch", daemon=True).start()
 
 
 def unbind_login_session(qq) -> None:
-    """这条会话不再用了就停掉保活，避免旧线程继续往同一份 cookie 里写。"""
+    """这条会话不再用了，就从退出刷新名单里拿掉。"""
     stop = getattr(qq, "_touch_stop", None)
     if stop is not None:
         stop.set()
@@ -473,7 +460,7 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
         # 需要"连上顺便领一轮"时显式传 with_daily=True（或 --keepalive --daily）。
         # 心跳包提前构造好：任务执行期间也要发，不能等进了心跳循环才开始
         hb = protocol.build_heartbeat(spec, ctx)
-        heart = _Beater(sock, hb, interval)
+        heart = _open_heart(sock, hb, interval)
         restore_beat = daily.bind_beat(heart)
 
         if with_daily:
@@ -757,6 +744,195 @@ class _Beater:
     def stop(self):
         self._stop.set()
         self._th.join(timeout=2)
+
+
+_pulse_local = threading.local()
+
+
+class _Heart:
+    """这条连接的心跳句柄。停掉只卸下连接，会话脉冲还在。"""
+
+    def __init__(self, pulse):
+        self._pulse = pulse
+
+    def __call__(self) -> None:
+        return
+
+    def stop(self) -> None:
+        self._pulse.detach()
+
+    @property
+    def count(self):
+        return self._pulse.count
+
+    @property
+    def interval(self):
+        return self._pulse.interval
+
+
+class _Pulse:
+    """一条线程做三件事：游戏心跳、网页票据、每 10 秒写一次在线状态。"""
+
+    def __init__(self, qq, user_id: int, uin: str, attack: bool):
+        self.qq = qq
+        self.user_id = int(user_id or 0)
+        self.uin = str(uin or "")
+        self.attack = bool(attack)
+        self.interval = 10.0
+        self.count = 0
+        self.last = 0.0
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._sock = None
+        self._hb = b""
+        self._hb_at = 0.0
+        now = time.monotonic()
+        self._status_at = now
+        self._touch_at = now
+        self._th = threading.Thread(
+            target=self._loop, name="session-pulse", daemon=True)
+
+    def start(self) -> None:
+        self._th.start()
+
+    def alive(self) -> bool:
+        return self._th.is_alive()
+
+    def attach(self, sock, hb: bytes, interval: float):
+        with self._lock:
+            self._sock = sock
+            self._hb = hb
+            self.interval = max(1.0, float(interval) or 10.0)
+            self.count = 0
+            self.last = 0.0
+            self._hb_at = time.monotonic()
+        return _Heart(self)
+
+    def detach(self) -> None:
+        with self._lock:
+            self._sock = None
+            self._hb = b""
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._th.join(timeout=2)
+
+    def _loop(self) -> None:
+        from . import citydb
+        if self.user_id or self.uin:
+            citydb.set_attack_context(self.user_id, self.uin)
+        while not self._stop.is_set():
+            self._beat()
+            if self.attack:
+                self._status()
+            self._touch()
+            if self._stop.wait(1.0):
+                return
+
+    def _beat(self) -> None:
+        with self._lock:
+            sock = self._sock
+            hb = self._hb
+            interval = self.interval
+            hb_at = self._hb_at
+        if sock is None or not hb:
+            return
+        if time.monotonic() - hb_at < interval:
+            return
+        try:
+            sock.sendall(hb)
+        except (TimeoutError, socket.timeout):
+            return
+        except OSError:
+            self.detach()
+            return
+        with self._lock:
+            self._hb_at = time.monotonic()
+            self.last = time.time()
+            self.count += 1
+            count = self.count
+            interval = self.interval
+        try:
+            from . import citydb
+            citydb.note_attack_link(interval)
+        except Exception:
+            log.debug("游戏心跳时间没写上", exc_info=True)
+        if count % 10 == 1:
+            log.info("心跳運行中（第 %d 次，每 %.0fs）", count, interval)
+        else:
+            log.debug("心跳 #%d", count)
+
+    def _status(self) -> None:
+        if time.monotonic() - self._status_at < 10:
+            return
+        self._status_at = time.monotonic()
+        from . import citydb
+        try:
+            citydb.touch_attack_status()
+        except Exception:
+            log.debug("攻打进程心跳没写上", exc_info=True)
+        if not self.user_id:
+            return
+        try:
+            st = citydb.attack_status(self.user_id)
+            if (st.get("online") and not st.get("keepalive")
+                    and st.get("phase") in (
+                        "hold", "paused", "running", "daily", "queue")):
+                if _drop_live_sock(self.user_id):
+                    log.info("挂机保活游戏心跳没了，掐掉旧连接")
+        except Exception:
+            log.debug("旧游戏连接没掐掉", exc_info=True)
+
+    def _touch(self) -> None:
+        if self.qq is None:
+            return
+        if time.monotonic() - self._touch_at < LOGIN_TOUCH_SEC:
+            return
+        self._touch_at = time.monotonic()
+        try:
+            self.qq.touch_login(block=False)
+        except Exception:
+            log.debug("网页票据保活没做成", exc_info=True)
+
+
+def _open_heart(sock, hb: bytes, interval: float):
+    pulse = getattr(_pulse_local, "pulse", None)
+    if pulse is not None and pulse.alive():
+        return pulse.attach(sock, hb, interval)
+    return _Beater(sock, hb, interval)
+
+
+def _start_pulse(qq, *, attack: bool):
+    from . import citydb
+    user_id = citydb.attack_context_user()
+    uin = citydb.attack_context_qq()
+    if attack:
+        if user_id and not citydb.attack_qq_blocked(user_id):
+            citydb.set_attack_paused(False, user_id)
+        citydb.set_attack_status("login")
+    pulse = _Pulse(qq, user_id, uin, attack)
+    pulse.start()
+    _pulse_local.pulse = pulse
+    return pulse
+
+
+def _stop_pulse(pulse) -> None:
+    if getattr(_pulse_local, "pulse", None) is pulse:
+        _pulse_local.pulse = None
+    if pulse is None:
+        return
+    pulse.stop()
+    if not pulse.attack:
+        return
+    from . import citydb
+    try:
+        citydb.clear_attack_hold()
+        user_id = citydb.attack_context_user()
+        if not citydb.attack_qq_blocked(user_id):
+            citydb.set_attack_paused(False, user_id)
+        citydb.set_attack_status("offline")
+    except Exception:
+        log.debug("攻打进程收尾状态没写上", exc_info=True)
 
 
 def _watch_city_ids(config):
@@ -1172,55 +1348,6 @@ def run_move_once(qq, config: dict, city_id, sweep=False, country=0) -> int:
     return _connect_and(qq, config, _work)
 
 
-def _attack_status_beater(stop: threading.Event, user_id: int, qq: str) -> None:
-    from . import citydb
-
-    citydb.set_attack_context(user_id, qq)
-    while not stop.wait(10):
-        try:
-            citydb.touch_attack_status()
-        except Exception:
-            log.debug("攻打进程心跳没写上", exc_info=True)
-        try:
-            st = citydb.attack_status(user_id)
-            if (st.get("online") and not st.get("keepalive")
-                    and st.get("phase") in (
-                        "hold", "paused", "running", "daily", "queue")):
-                if _drop_live_sock(user_id):
-                    log.info("挂机保活游戏心跳没了，掐掉旧连接")
-        except Exception:
-            log.debug("旧游戏连接没掐掉", exc_info=True)
-
-
-def _start_attack_status() -> threading.Event:
-    from . import citydb
-
-    stop = threading.Event()
-    user_id = citydb.attack_context_user()
-    qq = citydb.attack_context_qq()
-    if user_id and not citydb.attack_qq_blocked(user_id):
-        citydb.set_attack_paused(False, user_id)
-    citydb.set_attack_status("login")
-    threading.Thread(
-        target=_attack_status_beater, args=(stop, user_id, qq),
-        name=f"attack-status-{qq or user_id}", daemon=True).start()
-    return stop
-
-
-def _stop_attack_status(stop: threading.Event) -> None:
-    from . import citydb
-
-    stop.set()
-    try:
-        citydb.clear_attack_hold()
-        user_id = citydb.attack_context_user()
-        if not citydb.attack_qq_blocked(user_id):
-            citydb.set_attack_paused(False, user_id)
-        citydb.set_attack_status("offline")
-    except Exception:
-        log.debug("攻打进程收尾状态没写上", exc_info=True)
-
-
 def _cards_used_up(reason: str) -> bool:
     """这一单的恢复卡额度用完了，或者背包里已经没有。算打完，不算没打成。"""
     text = str(reason or "")
@@ -1369,6 +1496,15 @@ def _clear_cycle(reason: str, out) -> bool:
     return _empty_city(reason) or _clear_stuck(reason, out)
 
 
+def _clear_finished(status: str, reason: str) -> bool:
+    """这几页打完了。空城再打开着时，过一会儿再来看有没有新人。"""
+    if str(status or "") != "done":
+        return False
+    if _clear_hard_stop(reason):
+        return False
+    return str(reason or "") in ("", "这座城打完了")
+
+
 def _order_result(job, out) -> tuple:
     """这一单打完怎么收。返回 (动作, 状态, 原因)。
 
@@ -1394,6 +1530,8 @@ def _order_result(job, out) -> tuple:
         return "finish", "failed", reason or "没打完，等下一次索敌"
     if not uid and _defeated(reason):
         return "finish", "ended", reason or "被别人打败，已回到首都"
+    if not uid and reason == "这座城打完了":
+        return "finish", "done", ""
     if reason and not _cards_used_up(reason) and _person_blocking(reason):
         return "park", "", reason
     if reason and _cards_used_up(reason):
@@ -1451,11 +1589,11 @@ def _fight_modo(rec, sock, config, beater, job) -> None:
         note = str(out.get("说明") or "").strip()
         hits = int(out.get("攻击") or 0)
         beats = int(tally.get("n") or 0)
-        log.info("―― 摩多军团 ―― 打 %d 次，召唤 %d 次，用卡 %d 张，补支援兵 %d 个",
-                 hits, int(out.get("召唤") or 0), int(out.get("用卡") or 0),
+        log.info("―― 摩多军团 订单 %s ―― 打 %d 次，召唤 %d 次，用卡 %d 张，补支援兵 %d 个",
+                 job["id"], hits, int(out.get("召唤") or 0), int(out.get("用卡") or 0),
                  int(out.get("补兵") or 0))
         if why:
-            log.info("   结束原因：%s", why)
+            log.info("订单 %s 结束原因：%s", job["id"], why)
         if why in ("已暂停", "已定时关闭"):
             citydb.defer_attack_order(job["id"])
             log.info("订单 %s %s，放回排队", job["id"], why)
@@ -1668,6 +1806,7 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
         beats = int(tally.get("n") or 0)
         cycle_min = 0
         cycle_stuck = False
+        cycle_cleared = False
         if skipped:
             status, why = "failed", _LOCK_LEFT
             here = citydb.attack_here_id()
@@ -1682,20 +1821,21 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
                 return result
         else:
             if uid:
-                log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
-                         uid, job["city_id"], out.get("移动") or 0, out.get("走到"),
+                log.info("―― 打 UID %s 城 %s 订单 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                         uid, job["city_id"], job["id"], out.get("移动") or 0, out.get("走到"),
                          out.get("攻击") if out.get("攻击") is not None else "未打")
             else:
-                log.info("―― 清城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
-                         job["city_id"], out.get("移动") or 0, out.get("走到"),
+                log.info("―― 清城 %s 订单 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                         job["city_id"], job["id"], out.get("移动") or 0, out.get("走到"),
                          out.get("攻击") if out.get("攻击") is not None else "未打")
             action, status, why = _order_result(job, out)
             if why:
-                log.info("   结束原因：%s", why)
+                log.info("订单 %s 结束原因：%s", job["id"], why)
             if (not uid and not job.get("auto") and action == "finish"
-                    and _clear_cycle(why, out)):
+                    and (_clear_cycle(why, out) or _clear_finished(status, why))):
                 cycle_min = citydb.clear_wait_minutes()
                 cycle_stuck = _clear_stuck(why, out)
+                cycle_cleared = _clear_finished(status, why) and not cycle_stuck
             if action == "defer":
                 citydb.defer_attack_order(job["id"])
                 log.info("订单 %s %s，放回排队", job["id"], why or "已暂停")
@@ -1837,9 +1977,12 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
                 if finished:
                     citydb.append_order_reason(last_id, note)
         if cycle_min > 0 and citydb.schedule_empty_order(
-                job["id"], cycle_min, beats=beats, stuck=cycle_stuck, note=back_note):
+                job["id"], cycle_min, beats=beats, stuck=cycle_stuck,
+                cleared=cycle_cleared, note=back_note):
             if cycle_stuck:
                 log.info("订单 %s 还有打不过的人，%d 分钟后再打", job["id"], cycle_min)
+            elif cycle_cleared:
+                log.info("订单 %s 这几页打完了，%d 分钟后再打", job["id"], cycle_min)
             else:
                 log.info("订单 %s 这座城是空的，%d 分钟后再打", job["id"], cycle_min)
             return _cut()
@@ -2010,20 +2153,27 @@ def _refresh_asked_here(rec, sock, config) -> bool:
 
 
 def _refresh_equip_bag(rec, sock) -> None:
-    """页面刚进入基地战助手。读一次装备栏。没有请求就什么都不做。"""
+    """页面刚进入基地战助手。读一次装备栏。没有请求就什么都不做。
+
+    线程正忙或超过 10 秒还没读到，这次作废。再试隔 10 秒，一共最多 3 次。
+    取信号和发包都在收发锁里，避免和别的路同时 recv。
+    """
     from . import citydb, daily
 
-    if not citydb.take_equip_bag():
+    if not citydb.equip_bag_ready():
         return
     try:
         with daily.lane_hold():
-            got = daily.refresh_virtual_items(rec, sock)
+            if not citydb.take_equip_bag():
+                return
+            daily.refresh_virtual_items(rec, sock)
     except OSError:
+        citydb.finish_equip_bag()
         raise
-    if not isinstance(got, dict):
-        log.info("页面要看补给箱，没读到装备栏")
+    if citydb.finish_equip_bag():
+        log.info("页面读了一次装备栏")
         return
-    log.info("页面读了一次装备栏")
+    log.info("页面要看补给箱，没读到装备栏")
 
 
 def _run_requested_move(rec, sock, config, beater) -> bool:
@@ -2193,6 +2343,13 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 if user_id:
                     block["任务"] = citydb.daily_switches(
                         user_id, (config.get("每日任务") or {}).get("任务") or {})
+                    level = citydb.guild_camp_level(user_id)
+                    if level is not None:
+                        camp = cfg.get("公会战役")
+                        if not isinstance(camp, dict):
+                            camp = {}
+                            cfg["公会战役"] = camp
+                        camp["敌方等级"] = level
                 cfg.setdefault("征战", {})["终点"] = _campaign_end(params, user_id)
                 path = daily.state_path_for_qq(citydb.attack_context_qq())
                 with daily.using_state(path):
@@ -2246,7 +2403,7 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                     return
                 ok, why = daily.daily_blast(
                     rec, sock, config, count=params.get("count") or 1,
-                    on_progress=_show)
+                    on_progress=_show, done=params.get("done") or 0)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "factory":
@@ -2255,7 +2412,8 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                     return
                 ok, why = daily.daily_factory(
                     rec, sock, config, count=params.get("count") or 1,
-                    army=params.get("army") or 0, on_progress=_show)
+                    army=params.get("army") or 0, on_progress=_show,
+                    done=params.get("done") or 0)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "cards":
@@ -2317,6 +2475,12 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
             else:
                 citydb.finish_daily_job(job["id"], "failed", "没有这项日常")
                 task_log(citydb.attack_context_qq(), label, "没有这项日常")
+    except daily.Later as wait:
+        params = dict(job.get("params") or {})
+        params["done"] = int(wait.done or 0)
+        _show(wait.text)
+        citydb.defer_daily_job(job["id"], wait.delay, wait.text, params)
+        log.info("%s 排到 %d 秒后再做", label, int(wait.delay))
     except daily.Stopped:
         if citydb.shutdown_due():
             citydb.shelve_shutdown_work()
@@ -2364,58 +2528,10 @@ def _shutdown_stop() -> bool:
     return True
 
 
-def _sync_build_lane(kind, user, qq, rec, sock, spec, ctx, config, beater, stop) -> None:
-    """兵营或战车工厂单独一路。发包时占着连接，空等加速窗口时放开，另一边就能造。"""
-    from . import citydb, daily
-
-    label = citydb.DAILY_KIND_LABEL.get(kind, kind)
-    citydb.set_attack_context(user, qq)
-    daily.bind_sock(sock)
-    daily.bind_rec(rec)
-    daily.bind_stop(stop)
-    daily.bind_on_recv(lambda data: _reply_online(sock, spec, ctx, data))
-    while not stop.is_set():
-        try:
-            if citydb.attack_paused():
-                if stop.wait(0.4):
-                    return
-                continue
-            try:
-                job = citydb.claim_daily_job((kind,))
-            except sqlite3.Error:
-                log.info("%s没领成", label, exc_info=True)
-                if stop.wait(0.5):
-                    return
-                continue
-            if not job:
-                if stop.wait(0.4):
-                    return
-                continue
-            citydb.set_lane(kind)
-            try:
-                with _order_account(int(job.get("user_id") or 0)):
-                    _run_one_daily(rec, sock, config, beater, job)
-            finally:
-                citydb.set_lane(kind)
-                try:
-                    citydb.set_attack_status("hold")
-                except sqlite3.Error:
-                    log.info("%s状态没写上", label, exc_info=True)
-        except OSError:
-            log.info("%s这一路连接中断", label)
-            stop.set()
-            return
-        except Exception:
-            log.info("%s这一轮没做成", label, exc_info=True)
-            if stop.wait(1):
-                return
-
-
 def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     """同一条游戏连接上处理国战、日常、兵营、工厂和开卡。
 
-    兵营和战车工厂各走一路，空等加速窗口时把连接让出来，两边一起造。
-    这条循环先领国战，没有再领其余任务。心跳仍在独立线程发。
+    兵营和战车工厂按剩余时间排下次加速，到点再领。心跳在会话脉冲里发。
     """
     from . import citydb
 
@@ -2428,6 +2544,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     path_box = [0.0]
     hold_closed = False
     side_kinds = (
+        "blast", "factory",
         "daily", "pve", "fund", "chest", "cards",
         "haoyin", "admiral", "admiral10", "box_mid", "box_high",
         "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
@@ -2489,20 +2606,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     prev_pump = daily.bind_idle_pump(_pump)
     prev_recv = daily.bind_on_recv(
         lambda data: _reply_online(sock, spec, ctx, data))
-    lane_user = citydb.attack_context_user()
-    lane_qq = citydb.attack_context_qq()
-    build_lanes = []
     try:
-        for kind in ("blast", "factory"):
-            th = threading.Thread(
-                target=_sync_build_lane,
-                args=(kind, lane_user, lane_qq, rec, sock, spec, ctx, config, beater, stop),
-                name=f"build-{kind}",
-                daemon=True,
-            )
-            th.start()
-            build_lanes.append(th)
-        log.info("兵营和战车工厂各走一路，不等另一边做完")
         while not stop.is_set():
             try:
                 if _shutdown_stop():
@@ -2604,8 +2708,6 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 return 0
     finally:
         stop.set()
-        for th in build_lanes:
-            th.join(timeout=3)
         daily.bind_on_recv(prev_recv)
         daily.bind_idle_pump(prev_pump)
         daily.bind_rec(prev_rec)
@@ -2663,7 +2765,7 @@ def run_remote_orders(qq, config: dict) -> int:
     citydb.set_attack_context(user_id, citydb.attack_qq_of(user_id))
     who = "、".join(citydb.username_of(i) for i in citydb.attack_context_users()) or citydb.username_of(user_id)
     log.info("开始领取远程扫码攻打，攻打号「%s」打登录账号 %s 的订单", name, who)
-    stop = _start_attack_status()
+    pulse = _start_pulse(qq, attack=True)
     login_checked = [0.0]
 
     def _skey_alive() -> bool:
@@ -2773,7 +2875,7 @@ def run_remote_orders(qq, config: dict) -> int:
         log.info("停止领取远程扫码攻打")
         return 0
     finally:
-        _stop_attack_status(stop)
+        _stop_pulse(pulse)
 
 
 _PAGE_ACCOUNT = "网页"
@@ -3120,13 +3222,13 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
     def _owner() -> int:
         return citydb.attack_context_user() or user_id
 
-    stop = None
+    pulse = None
     try:
         _drop_expired_limit()
         with _login_limits_guard:
             seen_gen = _login_gen.get(limit_key, 0)
         bind_login_session(qq)
-        stop = _start_attack_status()
+        pulse = _start_pulse(qq, attack=True)
         if citydb.manual_orders_running():
             citydb.mark_attack_resume()
             log.info("登录账号 %s 有订单还在打，重新登录接着做", who)
@@ -3229,8 +3331,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
     finally:
         if on_page:
             citydb.set_page_qr(False, user_id)
-        if stop is not None:
-            _stop_attack_status(stop)
+        _stop_pulse(pulse)
         citydb.set_attack_context(0, "")
         cli.release_qq_lock(getattr(qq, "cookie_file", "") or "")
         unbind_login_session(qq)
@@ -3440,7 +3541,7 @@ def _connect_and(qq, config: dict, work) -> int:
 
         interval = float(config.get("保持活跃", {}).get("心跳间隔秒")
                          or protocol.heartbeat_interval(spec))
-        heart = _Beater(sock, protocol.build_heartbeat(spec, ctx), interval)
+        heart = _open_heart(sock, protocol.build_heartbeat(spec, ctx), interval)
 
         # 只收到 RseAuthState 就开打，后面一律是「读不到自己的国家ID」。
         # 保活连上前会走 loadIdInfo.war，这里以前漏了，服务端有时只回认证包、不推 RseLoad。
@@ -3779,6 +3880,7 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
     # 启动时若未登录（如服务器首次部署），也走"推送二维码"流程
     install_login_refresh()
     bind_login_session(qq)
+    pulse = _start_pulse(qq, attack=False)
     if not qq.is_valid():
         relogin_with_push(qq, config)
 
@@ -3803,6 +3905,7 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
     except KeyboardInterrupt:
         log.info("手动停止保持活跃")
     finally:
+        _stop_pulse(pulse)
         unbind_login_session(qq)
         rec.close()
         if rec.counts:

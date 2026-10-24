@@ -39,6 +39,11 @@ const sheet = ref("members");
 const showExpired = ref(false);
 const memberPage = ref(1);
 const fighterPage = ref(1);
+const logQq = ref("");
+const logDays = ref("3");
+const logView = ref(null);
+const logBusy = ref(false);
+const logErr = ref("");
 const PAGE = 20;
 let fighterTimer = 0;
 const TIER_RANK = { 初级: 1, 中级: 2, 高级: 3 };
@@ -336,6 +341,81 @@ async function refreshFighters() {
   fighters.value = data.fighters || [];
 }
 
+function orderStatus(status) {
+  return {
+    pending: "排队",
+    running: "正在打",
+    blocked: "等通路",
+    wait: "等再打",
+    done: "已打完",
+    failed: "没打成",
+    ended: "已结束",
+  }[status] || status || "—";
+}
+
+function orderWho(it) {
+  if (!it || it.label === "清城") return "清城";
+  const name = it.name ? it.name + " " : "";
+  return (name + (it.uid || "")).trim() || "—";
+}
+
+function orderWhere(it) {
+  if (!it) return "—";
+  if (it.kind === "modo") return "摩多";
+  if (it.city_name) return it.city_name;
+  return it.city_id ? String(it.city_id) : "—";
+}
+
+function beatText(it) {
+  if (!it || it.beats == null || it.beats === "") return "—";
+  return String(it.beats);
+}
+
+function accountLine(accounts) {
+  const names = (accounts || []).map((item) => item.username).filter(Boolean);
+  return names.length ? names.join("、") : "—";
+}
+
+function clearWaitLine(accounts) {
+  return (accounts || []).map((item) => {
+    const wait = item.clear_wait ? item.clear_wait + " 分钟后再打" : "空了就结束";
+    return (item.username || "这个账号") + " " + wait;
+  }).join("，");
+}
+
+async function loadQqLog() {
+  if (!logQq.value) return;
+  logBusy.value = true;
+  logErr.value = "";
+  try {
+    logView.value = await api(
+      "/api/admin/qq-log?qq=" + encodeURIComponent(logQq.value)
+      + "&days=" + encodeURIComponent(logDays.value));
+  } catch (e) {
+    logErr.value = e.message;
+  } finally {
+    logBusy.value = false;
+  }
+}
+
+function openQqLog(row) {
+  logQq.value = String((row && row.qq) || "");
+  logView.value = null;
+  logErr.value = "";
+  loadQqLog();
+}
+
+function closeQqLog() {
+  logQq.value = "";
+  logView.value = null;
+  logErr.value = "";
+}
+
+function pickLogDays(days) {
+  logDays.value = days;
+  loadQqLog();
+}
+
 function paintMembers(rows) {
   members.value = (rows || []).map((m) => ({
     ...m,
@@ -510,7 +590,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main>
+  <main :class="{ 'admin-log': !!logQq }">
     <h1>管理</h1>
     <p class="lead" v-if="!me">
       管理员登录后，在这里查看成员配置、安排扫描，并查看每个攻打 QQ 的状态。
@@ -661,8 +741,67 @@ onUnmounted(() => {
       <p v-if="!members.length" class="muted">还没有登录账号。</p>
       <p v-else-if="!shownMembers.length" class="muted">{{ hiddenExpiredMembers && !memberFilterOn ? "过期账号已隐藏。" : "没有符合筛选的账号。" }}</p>
       </template>
+      <template v-else-if="logQq">
+        <div class="qq-log-head">
+          <button type="button" class="ghost" @click="closeQqLog">返回攻打 QQ</button>
+          <h2>攻打 QQ {{ logQq }}</h2>
+          <button type="button" class="ghost" :disabled="logBusy" @click="loadQqLog">{{ logBusy ? "正在读" : "刷新" }}</button>
+        </div>
+        <div class="qq-days" role="tablist" aria-label="日志范围">
+          <button type="button" class="ghost" :class="{ here: logDays === '1' }" @click="pickLogDays('1')">今天</button>
+          <button type="button" class="ghost" :class="{ here: logDays === '3' }" @click="pickLogDays('3')">近 3 天</button>
+          <button type="button" class="ghost" :class="{ here: logDays === '7' }" @click="pickLogDays('7')">近 7 天</button>
+        </div>
+        <p v-if="logErr" class="err">{{ logErr }}</p>
+        <p v-else-if="logBusy && !logView" class="muted">正在读日志。</p>
+        <template v-if="logView">
+          <p>登录账号：{{ accountLine(logView.accounts) }}</p>
+          <p class="muted">留空 UID 的是清城。同一条过了分钟再排队，就是空城再打。当前说明写在订单上，每一次再打写在运行日志里。空城再打：{{ clearWaitLine(logView.accounts) }}。</p>
+          <h3>提交的攻打</h3>
+          <div class="wide qq-orders" v-if="logView.orders.length">
+            <table>
+              <thead>
+                <tr>
+                  <th>提交</th>
+                  <th>登录账号</th>
+                  <th>类型</th>
+                  <th>城市</th>
+                  <th>对象</th>
+                  <th>状态</th>
+                  <th>打中</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="it in logView.orders" :key="it.id">
+                  <td>{{ it.created_at || "—" }}</td>
+                  <td>{{ it.username || "—" }}</td>
+                  <td>{{ it.label }}</td>
+                  <td>{{ orderWhere(it) }}</td>
+                  <td>{{ orderWho(it) }}</td>
+                  <td>{{ orderStatus(it.status) }}<template v-if="it.run_at"> · {{ it.run_at }}</template></td>
+                  <td>{{ beatText(it) }}</td>
+                  <td class="reason">{{ it.reason || "—" }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-else class="muted">还没有提交过攻打。</p>
+          <h3>运行日志</h3>
+          <p v-if="logView.lines_cut" class="muted">行数比较多，这里只留最近的一部分。</p>
+          <pre v-if="logView.lines.length" class="qq-log">{{ logView.lines.join("\n") }}</pre>
+          <p v-else class="muted">这几天的运行日志里没有对得上的行。</p>
+          <h3>任务日志</h3>
+          <p v-if="!(logView.tasks || []).length" class="muted">没有按任务分开的日志。</p>
+          <details v-for="task in logView.tasks" :key="task.name" class="qq-task-file" open>
+            <summary>{{ task.name }}<span v-if="task.cut" class="muted"> · 只留末尾</span></summary>
+            <pre v-if="task.lines.length" class="qq-task">{{ task.lines.join("\n") }}</pre>
+            <p v-else class="muted">这个任务这几天没有新行。</p>
+          </details>
+        </template>
+      </template>
       <template v-else>
-      <p class="muted">每 5 秒刷新。每个攻打 QQ 一条线程，票据在对应的 cookie 文件里。登录账号过期后，这条默认也不显示。每页 20 个，点表头可以排序。</p>
+      <p class="muted">每 5 秒刷新。每个攻打 QQ 一条线程，票据在对应的 cookie 文件里。登录账号过期后，这条默认也不显示。每页 20 个，点表头可以排序。点「日志」看这个号提交的攻打和对应日志。</p>
       <form class="filters" @submit.prevent>
         <label>搜索<input v-model="fighterQ" placeholder="账号或 QQ" /></label>
         <label>区服
@@ -694,7 +833,7 @@ onUnmounted(() => {
         </template>
       </p>
       <div class="wide" v-if="fighterView.rows.length">
-        <table>
+        <table class="fighters">
           <thead>
             <tr>
               <th><button type="button" class="sort" :class="{ on: fighterSort === 'username' }" title="点击排序" @click="toggleSort('f', 'username')">登录账号{{ sortHint('username', fighterSort, fighterDir) }}</button></th>
@@ -703,6 +842,7 @@ onUnmounted(() => {
               <th><button type="button" class="sort" :class="{ on: fighterSort === 'online' }" title="点击排序" @click="toggleSort('f', 'online')">状态{{ sortHint('online', fighterSort, fighterDir) }}</button></th>
               <th><button type="button" class="sort" :class="{ on: fighterSort === 'here' }" title="点击排序" @click="toggleSort('f', 'here')">人在{{ sortHint('here', fighterSort, fighterDir) }}</button></th>
               <th>cookie</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -713,6 +853,7 @@ onUnmounted(() => {
               <td :class="f.online ? 'on' : 'off'">{{ procText(f) }}</td>
               <td>{{ f.here || "—" }}</td>
               <td><code>{{ f.cookie }}</code></td>
+              <td><button type="button" class="ghost" @click="openQqLog(f)">日志</button></td>
             </tr>
           </tbody>
         </table>
@@ -720,8 +861,8 @@ onUnmounted(() => {
       <p v-if="!fighters.length" class="muted">还没有绑定攻打 QQ。</p>
       <p v-else-if="!shownFighters.length" class="muted">{{ hiddenExpiredFighters && !fighterFilterOn ? "过期账号的攻打 QQ 已隐藏。" : "没有符合筛选的攻打 QQ。" }}</p>
       </template>
-      <h2>扫描安排</h2>
-      <form class="stack scan-form" @submit.prevent="saveScan().catch((e) => (err = e.message))">
+      <h2 v-if="sheet === 'members' || !logQq">扫描安排</h2>
+      <form v-if="sheet === 'members' || !logQq" class="stack scan-form" @submit.prevent="saveScan().catch((e) => (err = e.message))">
         <label>间隔秒<input v-model="scanGap" inputmode="numeric" required /></label>
         <label>停扫开始<input v-model="quietStart" type="time" /></label>
         <label>停扫结束<input v-model="quietEnd" type="time" /></label>

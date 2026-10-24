@@ -10,9 +10,10 @@ import logging
 import logging.handlers
 import os
 import queue
+import re
 import sys
 import threading
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from .paths import user_path                      # noqa: E402
 
@@ -144,3 +145,215 @@ def get_logger(name: str = "tankstorm") -> logging.Logger:
     _log_listener = logging.handlers.QueueListener(q, console)
     _log_listener.start()
     return logger
+
+
+_DAY_LOG_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.log$")
+_ORDER_ID_RE = re.compile(r"订单\s+(\d{1,12})\b")
+_TASK_ROTATED_RE = re.compile(r"^(.+)\.log\.(\d{4}-\d{2}-\d{2})$")
+_LOG_LINE_MAX = 500
+_DAY_LOG_BYTES = 8_000_000
+_TASK_LOG_BYTES = 1_500_000
+
+
+def _log_start(days: int) -> date:
+    """近几天的起点。日志文件名用机器本地日期，页面按北京时间理解，两边都算上。"""
+    days = max(1, min(int(days or 1), 7))
+    today_local = date.today()
+    today_bj = datetime.now(timezone(timedelta(hours=8))).date()
+    return min(today_local, today_bj) - timedelta(days=days - 1)
+
+
+def _inside_logs(path: str) -> str:
+    """只读 logs 目录里面的普通文件。指到外面的路径丢掉。"""
+    root = os.path.realpath(LOG_DIR)
+    full = os.path.realpath(path)
+    if full != root and not full.startswith(root + os.sep):
+        return ""
+    if not os.path.isfile(full):
+        return ""
+    return full
+
+
+def _tail_lines(path: str, max_bytes: int):
+    """从文件末尾最多读这么多字节，按行往外给。开头被截断的半行丢掉。"""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            if size > max_bytes:
+                handle.seek(max(0, size - max_bytes))
+                handle.readline()
+            for line in handle:
+                text = line.rstrip("\n\r")
+                if text.strip():
+                    yield text
+    except OSError:
+        return
+
+
+def _clip_line(text: str) -> str:
+    if len(text) <= _LOG_LINE_MAX:
+        return text
+    return text[:_LOG_LINE_MAX] + "…"
+
+
+def _names_mentioned(line: str, names: set) -> bool:
+    """一行里「登录账号 甲、乙 后面的话」有没有这些名字。"""
+    key = "登录账号 "
+    start = 0
+    while True:
+        at = line.find(key, start)
+        if at < 0:
+            return False
+        chunk = line[at + len(key):].split(" ", 1)[0]
+        for part in chunk.split("、"):
+            if part in names:
+                return True
+        start = at + len(key)
+
+
+def _qq_mentioned(line: str, qq: str) -> bool:
+    key = "攻打 QQ " + qq
+    start = 0
+    size = len(key)
+    while True:
+        at = line.find(key, start)
+        if at < 0:
+            return False
+        after = line[at + size:at + size + 1]
+        if not after.isdigit():
+            return True
+        start = at + size
+
+
+def _order_mentioned(line: str, order_ids: set) -> bool:
+    for match in _ORDER_ID_RE.finditer(line):
+        if int(match.group(1)) in order_ids:
+            return True
+    return False
+
+
+def _dated_log_files(days: int) -> list:
+    """近几天的 logs/YYYY-MM-DD.log，按日期从旧到新。"""
+    start = _log_start(days)
+    folder = LOG_DIR
+    if not os.path.isdir(folder):
+        return []
+    found = []
+    for name in os.listdir(folder):
+        match = _DAY_LOG_RE.fullmatch(name)
+        if not match:
+            continue
+        try:
+            day = date.fromisoformat(match.group(1))
+        except ValueError:
+            continue
+        if day < start:
+            continue
+        path = _inside_logs(os.path.join(folder, name))
+        if path:
+            found.append((day, path))
+    found.sort()
+    return [path for _day, path in found]
+
+
+def qq_log_lines(usernames, order_ids, qq: str, days: int, limit: int = 800) -> tuple:
+    """运行日志里和这个攻打 QQ 对得上的行。返回 (行, 是否被截断)。
+
+    对得上是指：写了这些登录账号、写了「攻打 QQ 号」、或写了这些订单号。
+    """
+    names = {str(name).strip() for name in usernames if str(name or "").strip()}
+    ids = {int(item) for item in order_ids}
+    qq = "".join(ch for ch in str(qq or "") if ch.isdigit())
+    kept = []
+    cut = False
+    limit = max(1, min(int(limit or 800), 800))
+    for path in _dated_log_files(days):
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            continue
+        if size > _DAY_LOG_BYTES:
+            cut = True
+        for line in _tail_lines(path, _DAY_LOG_BYTES):
+            hit = _order_mentioned(line, ids) or _names_mentioned(line, names)
+            if not hit and qq:
+                hit = _qq_mentioned(line, qq)
+            if not hit:
+                continue
+            clipped = _clip_line(line)
+            if clipped != line:
+                cut = True
+            kept.append(clipped)
+    if len(kept) > limit:
+        kept = kept[-limit:]
+        cut = True
+    return kept, cut
+
+
+def qq_task_logs(qq: str, days: int, per_file: int = 160, max_tasks: int = 12) -> list:
+    """logs/task/攻打QQ/ 里近几天的任务日志。每个任务一份，只留末尾。"""
+    qq = "".join(ch for ch in str(qq or "") if ch.isdigit())
+    if not qq:
+        return []
+    folder = os.path.join(LOG_DIR, "task", qq)
+    root = os.path.realpath(LOG_DIR)
+    real_folder = os.path.realpath(folder)
+    if not os.path.isdir(real_folder):
+        return []
+    if real_folder != root and not real_folder.startswith(root + os.sep):
+        return []
+    start = _log_start(days)
+    groups = {}
+    try:
+        names = os.listdir(real_folder)
+    except OSError:
+        return []
+    for name in names:
+        if not name or name.startswith(".") or "/" in name or "\\" in name:
+            continue
+        path = _inside_logs(os.path.join(real_folder, name))
+        if not path:
+            continue
+        if name.endswith(".log") and ".log." not in name:
+            task = name[:-4] or name
+            key = "9999-99-99"
+        else:
+            match = _TASK_ROTATED_RE.fullmatch(name)
+            if not match:
+                continue
+            try:
+                when = date.fromisoformat(match.group(2))
+            except ValueError:
+                continue
+            if when < start:
+                continue
+            task = match.group(1) or name
+            key = match.group(2)
+        groups.setdefault(task, []).append((key, path))
+    ordered = sorted(groups)
+    extra = len(ordered) > max_tasks
+    per_file = max(1, min(int(per_file or 160), 200))
+    out = []
+    for task in ordered[:max_tasks]:
+        lines = []
+        cut = extra
+        for _key, path in sorted(groups[task]):
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            if size > _TASK_LOG_BYTES:
+                cut = True
+            for line in _tail_lines(path, _TASK_LOG_BYTES):
+                clipped = _clip_line(line)
+                if clipped != line:
+                    cut = True
+                lines.append(clipped)
+        if len(lines) > per_file:
+            lines = lines[-per_file:]
+            cut = True
+        out.append({"name": task, "lines": lines, "cut": cut})
+    return out

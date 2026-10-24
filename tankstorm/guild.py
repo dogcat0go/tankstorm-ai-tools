@@ -456,6 +456,80 @@ _STAR_IDS = frozenset({
 })
 _TASK_CAP = 5
 _TASK_REFRESH_MAX = 8
+# 名字、星级、说明。BaseGuildTask_2023071801.dat，列 VALUE / LEVEL / INSTRUCTIONS。
+# 协议里只有 nTaskType，客户端自己查这张表。
+_TASK_BOOK = {
+    1: ("摧毁基地", 1, "完全摧毁10个基地"),
+    2: ("摧毁基地", 2, "完全摧毁20个基地"),
+    3: ("摧毁基地", 3, "完全摧毁30个基地"),
+    4: ("摧毁基地", 4, "完全摧毁40个基地"),
+    5: ("摧毁基地", 5, "完全摧毁60个基地"),
+    6: ("国战进攻", 1, "国战进攻30次"),
+    7: ("国战进攻", 2, "国战进攻90次"),
+    8: ("国战进攻", 3, "国战进攻150次"),
+    9: ("国战进攻", 4, "国战进攻300次"),
+    10: ("国战进攻", 5, "国战进攻600次"),
+    11: ("高级招募", 1, "高级招募英雄、将领、参谋、火炮20次"),
+    12: ("高级招募", 2, "高级招募英雄、将领、参谋、火炮40次"),
+    13: ("高级招募", 3, "高级招募英雄、将领、参谋、火炮60次"),
+    14: ("高级招募", 4, "高级招募英雄、将领、参谋、火炮80次"),
+    15: ("高级招募", 5, "高级招募英雄、将领、参谋、火炮100次"),
+    16: ("征战世界", 1, "征战世界3次"),
+    17: ("征战世界", 2, "征战世界6次"),
+    18: ("征战世界", 3, "征战世界9次"),
+    19: ("征战世界", 4, "征战世界12次"),
+    20: ("征战世界", 5, "征战世界15次"),
+    21: ("战争令牌", 1, "获得战争令牌经验1200"),
+    22: ("战争令牌", 2, "获得战争令牌经验2400"),
+    23: ("战争令牌", 3, "获得战争令牌经验3600"),
+    24: ("战争令牌", 4, "获得战争令牌经验4800"),
+    25: ("战争令牌", 5, "获得战争令牌经验6500"),
+    26: ("消耗勋章", 1, "累计消耗500勋章"),
+    27: ("消耗勋章", 2, "累计消耗1000勋章"),
+    28: ("消耗勋章", 3, "累计消耗1500勋章"),
+    29: ("消耗勋章", 4, "累计消耗3000勋章"),
+    30: ("消耗勋章", 5, "累计消耗5000勋章"),
+    31: ("争霸战", 1, "争霸战10次"),
+    32: ("争霸战", 2, "争霸战20次"),
+    33: ("争霸战", 3, "争霸战30次"),
+    34: ("争霸战", 4, "争霸战40次"),
+    35: ("争霸战", 5, "争霸战60次"),
+    36: ("探索", 1, "实验室或自动化累计探索100次"),
+    37: ("探索", 2, "实验室或自动化累计探索200次"),
+    38: ("探索", 3, "实验室或自动化累计探索300次"),
+    39: ("探索", 4, "实验室或自动化累计探索800次"),
+    40: ("探索", 5, "实验室或自动化累计探索1500次"),
+    41: ("剿灭军阀", 1, "合成剿灭军阀1次"),
+    42: ("剿灭军阀", 2, "合成剿灭军阀2次"),
+    43: ("剿灭军阀", 3, "合成剿灭军阀3次"),
+    44: ("剿灭军阀", 4, "合成剿灭军阀4次"),
+    45: ("剿灭军阀", 5, "合成剿灭军阀10次"),
+    46: ("公会捐献", 1, "公会捐献15次"),
+    47: ("公会捐献", 2, "公会捐献30次"),
+    48: ("公会捐献", 3, "公会捐献45次"),
+    49: ("公会捐献", 4, "公会捐献60次"),
+    50: ("公会捐献", 5, "公会捐献100次"),
+    51: ("每日活跃度", 1, "领取每日100活跃度奖励1次"),
+    52: ("每日活跃度", 2, "领取每日100活跃度奖励2次"),
+    53: ("每日活跃度", 3, "领取每日100活跃度奖励3次"),
+    54: ("每日活跃度", 4, "领取每日100活跃度奖励4次"),
+    55: ("每日活跃度", 5, "领取每日100活跃度奖励5次"),
+    56: ("每日签到", 1, "每日签到1次"),
+    57: ("每日签到", 2, "每日签到2次"),
+    58: ("每日签到", 3, "每日签到3次"),
+    59: ("每日签到", 4, "每日签到4次"),
+    60: ("每日签到", 5, "每日签到5次"),
+    61: ("战略技能训练", 1, "战略技能训练10次"),
+    62: ("战略技能训练", 2, "战略技能训练20次"),
+    63: ("战略技能训练", 3, "战略技能训练30次"),
+    64: ("战略技能训练", 4, "战略技能训练40次"),
+    65: ("战略技能训练", 5, "战略技能训练55次"),
+    66: ("国家战功", 1, "国家累计获得战功50000"),
+    67: ("国家战功", 2, "国家累计获得战功100000"),
+    68: ("国家战功", 3, "国家累计获得战功150000"),
+    69: ("国家战功", 4, "国家累计获得战功200000"),
+    70: ("国家战功", 5, "国家累计获得战功300000"),
+}
 _ACT_OPEN = 350
 _ACT_CLAIM = 351
 
@@ -540,6 +614,84 @@ def guild_hour_plan(finish_num, held, reward_ready, cap=_TASK_CAP):
     return "idle"
 
 
+def _task_text(kind):
+    """名字、星级、说明。表里没有的不编一个名字。"""
+    row = _TASK_BOOK.get(kind)
+    if row:
+        return row
+    if isinstance(kind, int) and not isinstance(kind, bool) and kind > 0:
+        return ("类型%d" % kind, 0, "")
+    return ("任务", 0, "")
+
+
+def _progress_text(proc, need):
+    if isinstance(need, bool) or not isinstance(need, int) or need <= 0:
+        return ""
+    if isinstance(proc, bool) or not isinstance(proc, int) or proc < 0:
+        proc = 0
+    return "%d/%d" % (proc, need)
+
+
+def guild_panel_board(panel, just_claimed=()):
+    """面板上能看到的公会任务。给页面放在最近执行上面。
+
+    身上的记进行中或可领奖。这一轮刚领走、面板上已经没有的，记已领奖。
+    """
+    finish = _finish_num(panel) if isinstance(panel, dict) else 0
+    mine = _task_rows(panel, "field22") if isinstance(panel, dict) else []
+    tasks = []
+    left = {}
+    for _nid, kind, proc, need in mine:
+        name, star, detail = _task_text(kind)
+        ready = (isinstance(need, int) and not isinstance(need, bool) and need > 0
+                 and isinstance(proc, int) and not isinstance(proc, bool) and proc >= need)
+        tasks.append({
+            "name": name,
+            "star": star,
+            "state": "可领奖" if ready else "进行中",
+            "progress": _progress_text(proc, need),
+            "detail": detail,
+        })
+        left[kind] = left.get(kind, 0) + 1
+    for kind in just_claimed or ():
+        if isinstance(kind, bool) or not isinstance(kind, int):
+            continue
+        if left.get(kind, 0) > 0:
+            left[kind] -= 1
+            continue
+        name, star, detail = _task_text(kind)
+        tasks.append({
+            "name": name,
+            "star": star,
+            "state": "已领奖",
+            "progress": "",
+            "detail": detail,
+        })
+    from . import citydb
+    return {
+        "finish": finish,
+        "cap": _TASK_CAP,
+        "reward": guild_reward_ready(mine),
+        "read_at": citydb.beijing_now().strftime("%Y-%m-%d %H:%M:%S"),
+        "tasks": tasks,
+    }
+
+
+def _remember_guild_panel(panel, just_claimed=()):
+    """把这次读到的面板记在登录账号上。记失败不影响领任务。"""
+    if not isinstance(panel, dict):
+        return
+    try:
+        from . import citydb
+        user_id = citydb.attack_context_user()
+        if not user_id:
+            return
+        citydb.save_guild_task_board(
+            user_id, guild_panel_board(panel, just_claimed))
+    except Exception:
+        log.info("公会任务面板没记下", exc_info=True)
+
+
 _STAR5 = frozenset({
     5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70,
 })
@@ -584,6 +736,7 @@ def _claim_tasks(sock, rec, panel):
             return None, claimed
         claimed.append(kind)
         panel = got
+        _remember_guild_panel(panel, claimed)
         _nap(0.35)
 
 
@@ -597,6 +750,7 @@ def _guild_tasks(sock, rec):
     panel = _build_send(sock, rec, _TASK_OPEN)
     if not isinstance(panel, dict):
         return False, "失败：没收到公会任务面板"
+    _remember_guild_panel(panel)
     finish = _finish_num(panel)
     mine_rows = _task_rows(panel, "field22")
     plan = guild_hour_plan(finish, len(mine_rows), guild_reward_ready(mine_rows))
@@ -609,6 +763,7 @@ def _guild_tasks(sock, rec):
         noted = _note_guild_claims(len(claimed))
         if panel is None:
             return False, "失败：领取已完成任务没有成功（已领奖 %d/%d）" % (noted, _TASK_CAP)
+        _remember_guild_panel(panel, claimed)
         if not claimed:
             return True, "成功：今日已领满 %d/%d，没有可领的奖" % (_TASK_CAP, _TASK_CAP)
         return True, "成功：今日已领满，领奖 %d 个（已领奖 %d/%d）" % (
@@ -640,6 +795,7 @@ def _guild_tasks(sock, rec):
                 return False, "失败：参加类型 %d 被拒 nRet=%s" % (kind, ret)
             joined.append(kind)
             panel = got
+            _remember_guild_panel(panel)
             got_n += 1
             _nap(0.35)
             continue
@@ -655,6 +811,7 @@ def _guild_tasks(sock, rec):
                 return False, "失败：承接类型 %d 被拒 nRet=%s" % (kind, ret)
             taken.append(kind)
             panel = got
+            _remember_guild_panel(panel)
             got_n += 1
             _nap(0.35)
             continue
@@ -668,11 +825,13 @@ def _guild_tasks(sock, rec):
         if not isinstance(nxt, dict):
             return False, "失败：刷新没有回包"
         panel = nxt
+        _remember_guild_panel(panel)
         _nap(0.35)
     panel, claimed = _claim_tasks(sock, rec, panel)
     noted = _note_guild_claims(len(claimed))
     if panel is None:
         return False, "失败：领取已完成任务没有成功（已领奖 %d/%d）" % (noted, _TASK_CAP)
+    _remember_guild_panel(panel, claimed)
     bits = []
     if joined:
         bits.append("参加已有 %d 个" % len(joined))

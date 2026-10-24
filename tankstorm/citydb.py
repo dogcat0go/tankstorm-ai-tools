@@ -5504,6 +5504,7 @@ def enqueue_due_daily_jobs() -> list:
 
 
 _GUILD_HOUR_AT = "_公会任务于"
+_GUILD_BOARD = "_公会任务内容"
 _GUILD_TASK_KEY = "公会任务"
 
 
@@ -5618,6 +5619,77 @@ def enqueue_due_guild_tasks(defaults=None) -> list:
             log.info("公会任务：账号 %s 满一小时，已排队", name)
         conn.commit()
         return queued
+    finally:
+        conn.close()
+
+
+def _clean_guild_board(raw):
+    """页面用的公会任务快照。没读过或写坏了返回 None，不编任务。"""
+    if not isinstance(raw, dict):
+        return None
+    finish = raw.get("finish")
+    cap = raw.get("cap")
+    if isinstance(finish, bool) or not isinstance(finish, int) or finish < 0:
+        return None
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
+        return None
+    tasks = []
+    for row in raw.get("tasks") or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        state = str(row.get("state") or "")
+        if not name or state not in ("进行中", "可领奖", "已领奖"):
+            continue
+        star = row.get("star")
+        if isinstance(star, bool) or not isinstance(star, int) or star <= 0:
+            star = 0
+        tasks.append({
+            "name": name,
+            "star": star,
+            "state": state,
+            "progress": str(row.get("progress") or ""),
+            "detail": str(row.get("detail") or ""),
+        })
+    return {
+        "finish": finish,
+        "cap": cap,
+        "reward": raw.get("reward") is True,
+        "read_at": str(raw.get("read_at") or ""),
+        "tasks": tasks,
+    }
+
+
+def guild_task_board(user_id: int):
+    """这个登录账号上次读到的公会任务。没读过返回 None。"""
+    conn = connect(readonly=True)
+    try:
+        saved = _saved_daily_switches(conn, user_id) or {}
+    finally:
+        conn.close()
+    return _clean_guild_board(saved.get(_GUILD_BOARD))
+
+
+def save_guild_task_board(user_id: int, board) -> None:
+    """记下这次公会任务面板。跟每小时的时刻记在同一份开关里。"""
+    user_id = int(user_id or 0)
+    cleaned = _clean_guild_board(board)
+    if user_id <= 0 or cleaned is None:
+        return
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT id FROM app_user WHERE id=?", (user_id,)).fetchone()
+        if not row:
+            conn.rollback()
+            return
+        saved = _saved_daily_switches(conn, user_id) or {}
+        saved[_GUILD_BOARD] = cleaned
+        conn.execute(
+            "UPDATE app_user SET daily_switch=? WHERE id=?",
+            (json.dumps(saved, ensure_ascii=False), user_id))
+        conn.commit()
     finally:
         conn.close()
 

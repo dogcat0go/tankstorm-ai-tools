@@ -376,6 +376,7 @@ def _handler(config: dict):
                     "schedule": citydb.daily_schedule(user["id"]),
                     "modo_at": citydb.modo_schedule(user["id"]),
                     "guild_level": guild_level,
+                    "guild_tasks": citydb.guild_task_board(user["id"]),
                 })
                 return
             if path == "/api/admin/fighters":

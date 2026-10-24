@@ -79,6 +79,7 @@ const dailyTasks = ref([]);
 const campaignTasks = computed(() => dailyTasks.value.filter((it) => it.extra));
 const progressTasks = computed(() => dailyTasks.value.filter((it) => !it.extra));
 const dailyJobs = ref([]);
+const guildBoard = ref(null);
 const baseCount = ref("1");
 const baseArmy = ref("");
 const baseFactoryCount = ref("1");
@@ -212,6 +213,7 @@ async function refreshDaily() {
     dailyQq.value = "";
     dailyTasks.value = [];
     dailyJobs.value = [];
+    guildBoard.value = null;
     pveStages.value = "";
     pveStagesReady = false;
     dailyAt.value = "";
@@ -230,6 +232,7 @@ async function refreshDaily() {
   dailyQq.value = data.qq || "";
   dailyTasks.value = data.tasks || [];
   dailyJobs.value = data.jobs || [];
+  guildBoard.value = data.guild_tasks || null;
   if (!pveStagesReady) {
     pveStages.value = data.stages || "";
     pveStagesReady = true;
@@ -1094,6 +1097,7 @@ async function logout() {
   dailyQq.value = "";
   dailyTasks.value = [];
   dailyJobs.value = [];
+  guildBoard.value = null;
   pveStages.value = "";
   pveStagesReady = false;
   dailyAt.value = "";
@@ -1286,6 +1290,7 @@ onUnmounted(() => {
         :campaign-tasks="campaignTasks"
         :progress-tasks="progressTasks"
         :daily-jobs="dailyJobs"
+        :guild-board="guildBoard"
         v-model:modo-at="modoAt"
         :daily-at-note="dailyAtNote"
         :modo-at-note="modoAtNote"

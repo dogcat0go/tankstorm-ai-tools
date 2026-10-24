@@ -3974,7 +3974,8 @@ def set_attack_status(phase: str, task: str = "", note: str = "") -> None:
         here = _kept_here(prev)
         if here:
             data["here"] = here
-        for key in ("morale", "power", "blast", "pop", "metal", "oil", "credit"):
+        for key in ("morale", "power", "blast", "pop", "metal", "oil", "credit",
+                    "camp_thew", "camp_score"):
             val = _kept_int(prev, key)
             if val is not None:
                 data[key] = val

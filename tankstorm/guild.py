@@ -174,10 +174,10 @@ def daily_join(rec, sock, config):
 # 2026-10-24 13:18 抓包。公会战役进攻，不是上面的 type:70 报名。
 # 请求字段是 type / page / npcID / boxID / buffID / listCountryID，和报名那 7 个 0 不是同一套。
 # type:200 打开，type:208 进战场，type:217 按页读 npcList.lvl。
-# 对上等级后反复 type:203，npcID 用列表里的 baseid。回包是 type:251。
+# 对上等级后反复 type:203，npcID 用列表里的 baseid。回包是 type:251，紧跟着战报。
 # 体力是 thew（字段 44）。当前积分是 nowPersonMsg.point（字段 40 里的字段 1）。
-# 体力下降才算打上，同一据点打到体力不够、体力不再下降或被拒。
-# 不发 type:204 领奖，也不发打完之后那条 type:208。
+# 251 之后再发 type:208 回到战场，免得下一次 203 没有回包。这条没回到不算进攻失败。
+# 两次进攻至少隔开国战的第一档 6.5 秒。体力下降才算打上。不发 type:204 领奖。
 TYPE_CAMP_OPEN = 200
 TYPE_CAMP_ENTER = 208
 TYPE_CAMP_LIST = 217
@@ -310,6 +310,7 @@ def daily_campaign(rec, sock, config):
     if not found:
         return False, f"据点列表里没有 {level} 级，不打"
 
+    from .country_war import _CD_GEARS, _sleep_cd
     log.info("[公会战役] 打 %s 级据点 %s，当前体力 %s，积分 %s",
              level, found, thew, score if score is not None else "读不到")
     citydb.note_guild_camp(thew, score)
@@ -317,6 +318,8 @@ def daily_campaign(rec, sock, config):
     hits = 0
     cost = None
     why = ""
+    last_act = 0.0
+    gap = float(_CD_GEARS[0])
     while True:
         raise_if_stopped()
         if not _camp_window():
@@ -325,7 +328,8 @@ def daily_campaign(rec, sock, config):
         if thew <= 0 or (cost is not None and thew < cost):
             why = f"体力不够（剩余 {thew}），停手"
             break
-        _nap(0.6)
+        _sleep_cd(last_act, 0, gap, "公会战役")
+        last_act = time.time()
         r = _wait(sock, rec, _send(
             sock, rec, TYPE_CAMP_ATK, _camp_fields(TYPE_CAMP_ATK, 0, found)),
             TYPE_CAMP_RET)
@@ -341,7 +345,8 @@ def daily_campaign(rec, sock, config):
             why = "回包里读不到体力，停手"
             break
         got = _camp_score(r)
-        score = got
+        if got is not None:
+            score = got
         if now >= thew:
             why = f"体力没有下降（{thew}→{now}），停手"
             break
@@ -352,6 +357,19 @@ def daily_campaign(rec, sock, config):
                  score if score is not None else "读不到")
         thew = now
         citydb.note_guild_camp(thew, score)
+        back = _wait(sock, rec, _send(
+            sock, rec, TYPE_CAMP_ENTER, _camp_fields(TYPE_CAMP_ENTER)),
+            TYPE_CAMP_ENTER, timeout=8.0)
+        if isinstance(back, dict) and back.get("ret") in (0, None):
+            got = _camp_thew(back)
+            if got is not None:
+                thew = got
+            got = _camp_score(back)
+            if got is not None:
+                score = got
+            citydb.note_guild_camp(thew, score)
+        else:
+            log.info("[公会战役] 回到战场没有回包，这次进攻已经算上")
     point = (f"，当前积分 {score}（nowPersonMsg.point）" if score is not None
              else "，积分读不到")
     if hits <= 0:

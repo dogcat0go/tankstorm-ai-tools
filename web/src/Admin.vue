@@ -158,13 +158,22 @@ function beijingDay() {
   }).format(new Date());
 }
 
-function accountExpired(expiresAt) {
-  const day = String(expiresAt || "").trim().slice(0, 10);
-  if (!day) return false;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return true;
-  const [y, mo, d] = day.split("-").map((n) => Number(n));
+function expiryDay(expiresAt) {
+  const matched = String(expiresAt || "").trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)/);
+  if (!matched) return "";
+  const y = Number(matched[1]);
+  const mo = Number(matched[2]);
+  const d = Number(matched[3]);
   const dt = new Date(Date.UTC(y, mo - 1, d));
-  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return true;
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return "";
+  return y + "-" + String(mo).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+}
+
+function accountExpired(expiresAt) {
+  const text = String(expiresAt || "").trim();
+  if (!text) return false;
+  const day = expiryDay(text);
+  if (!day) return true;
   return day < beijingDay();
 }
 
@@ -191,7 +200,10 @@ function cmpVal(a, b, dir) {
 function memberKey(m, col) {
   if (col === "username") return m.username || "";
   if (col === "tier") return TIER_RANK[m.tier] || 0;
-  if (col === "expires") return (m.expires_at || "").trim() || "9999-99-99";
+  if (col === "expires") {
+    const raw = (m.expires_at || "").trim();
+    return expiryDay(raw) || raw || "9999-99-99";
+  }
   if (col === "qq") return m.attack_qq || "";
   if (col === "region") return regionOf(m) || 9999;
   if (col === "online") return onlineOf(m) ? 1 : 0;
@@ -485,8 +497,8 @@ function toggleExpiry(m) {
     return;
   }
   openExpiry.value = m.id;
-  const day = String(m.expires_at || "").trim().slice(0, 10);
-  if (!expiryDraft.value[m.id] && /^\d{4}-\d{2}-\d{2}$/.test(day)) {
+  const day = expiryDay(m.expires_at);
+  if (!expiryDraft.value[m.id] && day) {
     expiryDraft.value = { ...expiryDraft.value, [m.id]: day };
   }
 }

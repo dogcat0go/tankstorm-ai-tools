@@ -995,15 +995,19 @@ def user_tier(user_id: int) -> str:
 
 
 def account_expired(expires_at: str) -> bool:
-    """有效期是北京时间的日期，这一天仍然有效。空表示不限期。"""
-    day = (expires_at or "").strip()[:10]
+    """有效期是北京时间的日期，这一天仍然有效。空表示不限期。
+
+    月和日可以不补零，例如 2026-11-9。比较前先补成 2026-11-09，
+    否则没补零的日期用字符串比较会排错。写错的日期算过期。
+    """
+    day = (expires_at or "").strip()[:10].strip()
     if not day:
         return False
     try:
-        datetime.strptime(day, "%Y-%m-%d")
+        parsed = datetime.strptime(day, "%Y-%m-%d").date()
     except ValueError:
         return True
-    return day < beijing_day()
+    return parsed.isoformat() < beijing_day()
 
 
 def expiry_deadline_ms(expires_at: str):
@@ -1011,7 +1015,7 @@ def expiry_deadline_ms(expires_at: str):
 
     库存的是北京时间日期，这一天仍然有效，到次日 0 点才算过。
     """
-    day = (expires_at or "").strip()[:10]
+    day = (expires_at or "").strip()[:10].strip()
     if not day:
         return None
     try:

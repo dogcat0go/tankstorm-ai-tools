@@ -27,6 +27,8 @@ details.fold { margin: 28px 0 8px; }
 details.fold summary { font-size: 16px; font-weight: 700; cursor: pointer; }
 details.fold form { margin-top: 8px; }
 .lock-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.card-picks { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 8px 0; }
+.card-picks label.choice input { width: auto; min-width: 0; padding: 0; border: 0; }
 form.retreat-row { margin-top: 8px; }
 .advanced { margin-top: 8px; }
 .prio-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid #eee; }
@@ -236,6 +238,23 @@ form.campaign-line { margin: 0 0 10px; grid-template-columns: 1fr; }
 }
 .campaign-ops input { width: 14em; }
 .campaign-box > .muted { margin: 0 0 12px; }
+.guild-fold { margin: 28px 0 8px; }
+.guild-fold > summary {
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 700;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+}
+.guild-fold > summary::-webkit-details-marker { display: none; }
+.guild-fold > summary::marker { content: ""; }
+.guild-fold > summary::before { content: "▸"; color: #777; font-weight: 400; }
+.guild-fold[open] > summary::before { content: "▾"; }
+.guild-fold > summary .muted { font-size: 14px; font-weight: 400; }
+.guild-fold > .muted { margin: 8px 0 12px; }
 table.daily-jobs th,
 table.daily-jobs td { white-space: nowrap; }
 table.fail-list button.ghost { margin-left: 0; padding: 4px 10px; }

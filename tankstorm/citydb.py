@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     storm_cap       INTEGER,
     storm_used      INTEGER NOT NULL DEFAULT 0,
     storm_day       TEXT NOT NULL DEFAULT '',
+    open_cards      TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -151,6 +152,7 @@ CREATE TABLE IF NOT EXISTS daily_job (
     params      TEXT NOT NULL DEFAULT '{}',
     status      TEXT NOT NULL,
     detail      TEXT NOT NULL DEFAULT '',
+    ready_at    TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -435,6 +437,10 @@ def connect(readonly=False, timeout=15):
                     "WHERE id IN (SELECT user_id FROM storm_reject WHERE at>=?)",
                     (start_utc, day, start_utc))
                 setup.commit()
+            if ucols and "open_cards" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN open_cards TEXT NOT NULL DEFAULT ''")
+                setup.commit()
             _fix_region_face(setup)
             _forget_page_names(setup)
             _ensure_attack_qq_map(setup)
@@ -509,6 +515,11 @@ def connect(readonly=False, timeout=15):
                 setup.commit()
             _assign_legacy_fails(setup)
             setup.commit()
+            jcols = {r[1] for r in setup.execute("PRAGMA table_info(daily_job)")}
+            if jcols and "ready_at" not in jcols:
+                setup.execute(
+                    "ALTER TABLE daily_job ADD COLUMN ready_at TEXT NOT NULL DEFAULT ''")
+                setup.commit()
             _schema_ready = True
         finally:
             setup.close()
@@ -1314,7 +1325,8 @@ def reset_member_settings(user_id: int) -> str:
             "clear_mode='head', clear_from=1, clear_to=5, clear_wait=0, clear_scan=0, "
             "clear_retreat_mode='off', clear_retreat_hops=3, clear_retreat_city=0, "
             "clear_retreat_fail=0, modo_cards=0, away_morale=100, daily_switch=NULL, "
-            "daily_at='', daily_last='', modo_at='', modo_last='', off_at='' "
+            "daily_at='', daily_last='', modo_at='', modo_last='', off_at='', "
+            "open_cards='' "
             "WHERE id=?",
             (user_id,))
         if cur.rowcount != 1:
@@ -5450,8 +5462,13 @@ def set_daily_schedule(user_id: int, raw) -> str:
         conn.close()
 
 
-def enqueue_due_daily_jobs() -> list:
-    """到点且这一档今天还没排过的账号，排一轮日常。返回刚排上的 user_id。"""
+def enqueue_due_daily_jobs(guild_defaults=None) -> list:
+    """到点且这一档今天还没排过的账号，排一轮日常。
+
+    公会任务不另开线程干等。同一次定时醒来里，开关开着并且距上次已满一小时，
+    也在这里再排一次，只做公会任务。别的日常仍是每天一档。
+    返回刚排上的 user_id。
+    """
     if "daily" in LOCKED_DAILY_KINDS:
         return []
     clock = beijing_clock()
@@ -5522,7 +5539,202 @@ def enqueue_due_daily_jobs() -> list:
             queued.append(int(user_id))
             log.info("定时日常：账号 %s 到点 %s，已排队", name, at)
         conn.commit()
+    finally:
+        conn.close()
+    for user_id in enqueue_due_guild_tasks(guild_defaults):
+        if user_id not in queued:
+            queued.append(user_id)
+    return queued
+
+
+_GUILD_HOUR_AT = "_公会任务于"
+_GUILD_BOARD = "_公会任务内容"
+_GUILD_TASK_KEY = "公会任务"
+
+
+def _switch_blob(raw):
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _guild_switch_on(saved, defaults) -> bool:
+    """没单独存过时跟服务器配置。存过就只认这个账号的开关。"""
+    if _GUILD_TASK_KEY in saved:
+        return bool(saved.get(_GUILD_TASK_KEY))
+    if isinstance(defaults, dict) and _GUILD_TASK_KEY in defaults:
+        return bool(defaults.get(_GUILD_TASK_KEY))
+    return False
+
+
+def _unix_stamp(val) -> float:
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return 0.0
+    if val < 0:
+        return 0.0
+    return float(val)
+
+
+def _guild_last_run(qq) -> float:
+    """这个攻打号上次看公会任务的时刻。没看过是 0。"""
+    from . import daily
+    st = daily._load_state(daily.state_path_for_qq(qq))
+    return _unix_stamp((st.get("last") or {}).get(_GUILD_TASK_KEY, 0))
+
+
+def _daily_job_runs_guild(params_raw) -> bool:
+    """这一条日常会不会做到公会任务。没写只做，就是整轮，会做到。"""
+    try:
+        params = json.loads(params_raw or "{}")
+    except ValueError:
+        return True
+    if not isinstance(params, dict):
+        return True
+    only = params.get("only")
+    if isinstance(only, str):
+        only = [only]
+    if not isinstance(only, list) or not only:
+        return True
+    return _GUILD_TASK_KEY in {str(item).strip() for item in only}
+
+
+def enqueue_due_guild_tasks(defaults=None) -> list:
+    """给定时日常那一次醒来用，不自己开线程，也不睡到整点。
+
+    公会任务开关开着，并且距上次看过已经满一小时，就再排一次，只做这一项。
+    定时日常那一轮如果正排着或正在做，它自己会看公会任务，这里不重复排。
+    别的日常仍按原来的每天一档，不受这一小时影响。
+    """
+    if "daily" in LOCKED_DAILY_KINDS or _GUILD_TASK_KEY in LOCKED_DAILY_TASKS:
+        return []
+    from . import daily
+    hour = 3600
+    for task in daily.TASKS:
+        if task.key == _GUILD_TASK_KEY and task.cooldown_sec:
+            hour = int(task.cooldown_sec)
+            break
+    now = time.time()
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            "SELECT id, username, IFNULL(expires_at,''), IFNULL(attack_qq,''), daily_switch "
+            "FROM app_user WHERE IFNULL(attack_qq,'') != ''").fetchall()
+        queued = []
+        for user_id, name, expires, qq, switch_raw in rows:
+            qq = str(qq or "").strip()
+            if not qq or account_expired(expires) or shutdown_due(user_id):
+                continue
+            saved = _switch_blob(switch_raw)
+            if not _guild_switch_on(saved, defaults):
+                continue
+            if now - _guild_last_run(qq) < hour:
+                continue
+            if now - _unix_stamp(saved.get(_GUILD_HOUR_AT)) < hour:
+                continue
+            waiting = conn.execute(
+                "SELECT COUNT(*) FROM daily_job "
+                "WHERE user_id=? AND kind IN ('daily','pve','fund') "
+                "AND status IN ('pending','running')",
+                (user_id,)).fetchone()[0]
+            if int(waiting or 0) >= 3:
+                continue
+            open_rows = conn.execute(
+                "SELECT params FROM daily_job "
+                "WHERE user_id=? AND kind='daily' AND status IN ('pending','running')",
+                (user_id,)).fetchall()
+            if any(_daily_job_runs_guild(row[0]) for row in open_rows):
+                continue
+            stamp = int(now)
+            saved[_GUILD_HOUR_AT] = stamp
+            blob = json.dumps({"only": [_GUILD_TASK_KEY]}, ensure_ascii=False)
+            now_text = now_ts()
+            conn.execute(
+                "INSERT INTO daily_job(user_id, kind, params, status, detail, created_at, updated_at) "
+                "VALUES (?,'daily',?,'pending','',?,?)",
+                (user_id, blob, now_text, now_text))
+            conn.execute(
+                "UPDATE app_user SET daily_switch=? WHERE id=?",
+                (json.dumps(saved, ensure_ascii=False), int(user_id)))
+            queued.append(int(user_id))
+            log.info("公会任务：账号 %s 满一小时，已排队", name)
+        conn.commit()
         return queued
+    finally:
+        conn.close()
+
+
+def _clean_guild_board(raw):
+    """页面用的公会任务快照。没读过或写坏了返回 None，不编任务。"""
+    if not isinstance(raw, dict):
+        return None
+    finish = raw.get("finish")
+    cap = raw.get("cap")
+    if isinstance(finish, bool) or not isinstance(finish, int) or finish < 0:
+        return None
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
+        return None
+    tasks = []
+    for row in raw.get("tasks") or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        state = str(row.get("state") or "")
+        if not name or state not in ("进行中", "可领奖", "已领奖"):
+            continue
+        star = row.get("star")
+        if isinstance(star, bool) or not isinstance(star, int) or star <= 0:
+            star = 0
+        tasks.append({
+            "name": name,
+            "star": star,
+            "state": state,
+            "progress": str(row.get("progress") or ""),
+            "detail": str(row.get("detail") or ""),
+        })
+    return {
+        "finish": finish,
+        "cap": cap,
+        "reward": raw.get("reward") is True,
+        "read_at": str(raw.get("read_at") or ""),
+        "tasks": tasks,
+    }
+
+
+def guild_task_board(user_id: int):
+    """这个登录账号上次读到的公会任务。没读过返回 None。"""
+    conn = connect(readonly=True)
+    try:
+        saved = _saved_daily_switches(conn, user_id) or {}
+    finally:
+        conn.close()
+    return _clean_guild_board(saved.get(_GUILD_BOARD))
+
+
+def save_guild_task_board(user_id: int, board) -> None:
+    """记下这次公会任务面板。跟每小时的时刻记在同一份开关里。"""
+    user_id = int(user_id or 0)
+    cleaned = _clean_guild_board(board)
+    if user_id <= 0 or cleaned is None:
+        return
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT id FROM app_user WHERE id=?", (user_id,)).fetchone()
+        if not row:
+            conn.rollback()
+            return
+        saved = _saved_daily_switches(conn, user_id) or {}
+        saved[_GUILD_BOARD] = cleaned
+        conn.execute(
+            "UPDATE app_user SET daily_switch=? WHERE id=?",
+            (json.dumps(saved, ensure_ascii=False), user_id))
+        conn.commit()
     finally:
         conn.close()
 
@@ -5601,6 +5813,45 @@ def set_campaign_stages(user_id: int, raw) -> str:
         return ""
     finally:
         conn.close()
+
+
+def open_cards_of(user_id: int):
+    """这个账号勾选的资源卡物品号。没存过返回 None，调用方用默认全开。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(open_cards,'') FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    text = str(row[0] or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, list) else None
+
+
+def set_open_cards(user_id: int, ids) -> str:
+    """记下要开的资源卡。ids 已按面额排好。没有这个账号返回原因。"""
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return "没有这个账号"
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET open_cards=? WHERE id=?",
+            (json.dumps(list(ids), ensure_ascii=False), user_id))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "没有这个账号"
+    finally:
+        conn.close()
+    return ""
 
 
 _GUILD_LEVEL = "_公会战役等级"
@@ -5697,6 +5948,20 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         elif not (1 <= count <= 99999):
             return "数量要在 1 到 99999"
         clean["count"] = count
+    elif kind == "cards":
+        from . import fund
+        raw = params.get("ids")
+        if raw is None:
+            raw = open_cards_of(user_id)
+        if raw is None:
+            raw = fund.default_resource_ids()
+        ids, why = fund.normalize_resource_ids(raw)
+        if why:
+            return why
+        why = set_open_cards(user_id, ids)
+        if why:
+            return why
+        clean["ids"] = ids
     elif kind == "factory":
         from . import repair
         try:
@@ -5744,7 +6009,9 @@ def claim_daily_job(kinds=None):
     if not ids:
         return None
     slot = ",".join("?" * len(ids))
+    now = now_ts()
     args = list(ids)
+    args.append(now)
     kind_sql = ""
     if kinds:
         kind_sql = " AND kind IN (" + ",".join("?" * len(kinds)) + ")"
@@ -5754,15 +6021,16 @@ def claim_daily_job(kinds=None):
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT id, kind, params, user_id FROM daily_job "
-            "WHERE user_id IN (" + slot + ") AND status='pending'"
+            "WHERE user_id IN (" + slot + ") AND status='pending' "
+            "AND IFNULL(ready_at,'')<=?"
             + kind_sql + " ORDER BY id LIMIT 1",
             tuple(args)).fetchone()
         if not row:
             conn.rollback()
             return None
         conn.execute(
-            "UPDATE daily_job SET status='running', updated_at=? WHERE id=?",
-            (now_ts(), row[0]))
+            "UPDATE daily_job SET status='running', ready_at='', updated_at=? WHERE id=?",
+            (now, row[0]))
         conn.commit()
     finally:
         conn.close()
@@ -5793,6 +6061,24 @@ def touch_daily_job(job_id: int, detail: str) -> None:
         conn.execute(
             "UPDATE daily_job SET detail=?, updated_at=? WHERE id=? AND status='running'",
             (text, now_ts(), int(job_id)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def defer_daily_job(job_id: int, delay: float, detail: str, params: dict) -> None:
+    """先放回排队。delay 秒后再领，已经造完的数量写在 params 里。"""
+    delay = max(1.0, float(delay or 0))
+    ready = (datetime.now(timezone.utc) + timedelta(seconds=delay)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    text = _job_detail(detail)
+    blob = json.dumps(params if isinstance(params, dict) else {}, ensure_ascii=False)
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE daily_job SET status='pending', detail=?, params=?, "
+            "ready_at=?, updated_at=? WHERE id=? AND status='running'",
+            (text, blob, ready, now_ts(), int(job_id)))
         conn.commit()
     finally:
         conn.close()

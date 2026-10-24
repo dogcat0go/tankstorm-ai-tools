@@ -79,6 +79,7 @@ const dailyTasks = ref([]);
 const campaignTasks = computed(() => dailyTasks.value.filter((it) => it.extra));
 const progressTasks = computed(() => dailyTasks.value.filter((it) => !it.extra));
 const dailyJobs = ref([]);
+const guildBoard = ref(null);
 const baseCount = ref("1");
 const baseArmy = ref("");
 const baseFactoryCount = ref("1");
@@ -103,6 +104,8 @@ const emptyCards = () => ({
   box_mid: null, box_high: null, box_mid_key: null, box_high_key: null,
 });
 const baseCards = ref(emptyCards());
+const resourceCatalog = ref([]);
+const resourceCards = ref(null);
 const ask = ref("");
 let askDone = null;
 const baseJobs = ref([]);
@@ -212,6 +215,7 @@ async function refreshDaily() {
     dailyQq.value = "";
     dailyTasks.value = [];
     dailyJobs.value = [];
+    guildBoard.value = null;
     pveStages.value = "";
     pveStagesReady = false;
     dailyAt.value = "";
@@ -232,6 +236,7 @@ async function refreshDaily() {
   dailyQq.value = data.qq || "";
   dailyTasks.value = data.tasks || [];
   dailyJobs.value = data.jobs || [];
+  guildBoard.value = data.guild_tasks || null;
   if (!pveStagesReady) {
     pveStages.value = data.stages || "";
     pveStagesReady = true;
@@ -309,6 +314,8 @@ async function refreshBase() {
     baseCredit.value = null;
     basePop.value = null;
     baseCards.value = emptyCards();
+    resourceCatalog.value = [];
+    resourceCards.value = null;
     return;
   }
   const data = await api("/api/base");
@@ -320,6 +327,8 @@ async function refreshBase() {
   baseCredit.value = data.credit == null ? null : data.credit;
   basePop.value = data.pop == null ? null : data.pop;
   baseCards.value = data.cards || emptyCards();
+  resourceCatalog.value = data.resource_catalog || [];
+  resourceCards.value = data.resource_cards || null;
   applyEquipNote(data.equip_note || "", baseCards.value);
 }
 
@@ -330,11 +339,10 @@ async function runBase(countOrBody) {
     ? countOrBody
     : { kind: "blast", count: countOrBody };
   if (body.kind === "cards") {
-    const ok = await confirmUse("按顺序开这次抓到的资源卡，一次 1 张。10 万金属和石油、500 万石油和金属、50 万金属和石油、200 万石油和金属。1000 万的先不开。");
-    if (!ok) return;
+    return runCards(body.ids || resourceCards.value || []);
   }
   await api("/api/base", body);
-  baseNote.value = body.kind === "cards" ? "开资源卡已交给绑定的攻打号" : "爆破兵已交给绑定的攻打号";
+  baseNote.value = "爆破兵已交给绑定的攻打号";
   await refreshBase();
   await refreshAttacks();
 }
@@ -346,6 +354,31 @@ async function runSpread(x1, y1, x2, y2) {
   if (!ok) return;
   await api("/api/base", { kind: "spread", x1, y1, x2, y2 });
   baseNote.value = "布开爆破兵已交给绑定的攻打号";
+  await refreshBase();
+  await refreshAttacks();
+}
+
+async function saveResourceCards(ids) {
+  showErr("", "base");
+  const data = await api("/api/base/resource-cards", { ids });
+  resourceCards.value = data.resource_cards || ids;
+  return resourceCards.value;
+}
+
+async function runCards(ids) {
+  showErr("", "base");
+  baseNote.value = "";
+  const wanted = new Set(ids || []);
+  const chosen = resourceCatalog.value.filter((card) => wanted.has(card.id));
+  if (!chosen.length) throw new Error("至少选一种资源卡");
+  const ok = await confirmUse(
+    "按从小到大开：" + chosen.map((card) => card.name).join("、")
+      + "。一次一张。某种没有，或这一张没开成，这种就停，换下一种。"
+  );
+  if (!ok) return;
+  await api("/api/base", { kind: "cards", ids: chosen.map((card) => card.id) });
+  resourceCards.value = chosen.map((card) => card.id);
+  baseNote.value = "开资源卡已交给绑定的攻打号";
   await refreshBase();
   await refreshAttacks();
 }
@@ -1081,6 +1114,7 @@ async function logout() {
   dailyQq.value = "";
   dailyTasks.value = [];
   dailyJobs.value = [];
+  guildBoard.value = null;
   pveStages.value = "";
   pveStagesReady = false;
   dailyAt.value = "";
@@ -1277,6 +1311,7 @@ onUnmounted(() => {
         :campaign-tasks="campaignTasks"
         :progress-tasks="progressTasks"
         :daily-jobs="dailyJobs"
+        :guild-board="guildBoard"
         v-model:modo-at="modoAt"
         :daily-at-note="dailyAtNote"
         :modo-at-note="modoAtNote"
@@ -1414,13 +1449,16 @@ onUnmounted(() => {
         :credit="baseCredit"
         :pop="basePop"
         :cards="baseCards"
+        :resource-catalog="resourceCatalog"
+        :resource-cards="resourceCards"
         :note="baseNote"
         :err="err"
         :err-at="errAt"
         :run-blast="runBase"
         :run-spread="runSpread"
         :run-factory="runFactory"
-        :run-cards="() => runBase({ kind: 'cards' })"
+        :run-cards="runCards"
+        :save-resource-cards="saveResourceCards"
         :run-draw="runDraw"
         :run-box="runBox"
         :run-pick="runPick"

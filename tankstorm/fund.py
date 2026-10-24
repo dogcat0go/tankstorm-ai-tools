@@ -45,17 +45,22 @@ ITEM_METAL = 20817          # 1000 万金属卡
 ITEM_OIL = 20818            # 1000 万石油卡
 CARD_GAIN = 10_000_000
 # 2026-10-22 23:59 从资源卡包开出后用掉的卡。面额来自回包 medal/oil。
-# 1000 万的 20817、20818 先不开。旧的 30 万 20012、20019 不是这一批。
-BASE_CARDS = (
-    (20008, "10万金属"),
-    (20015, "10万石油"),
-    (20117, "500万石油"),
-    (20116, "500万金属"),
-    (20051, "50万金属"),
-    (20050, "50万石油"),
-    (20025, "200万石油"),
-    (20030, "200万金属"),
+# 按面额从小到大，同面额先金属后石油。1000 万也开，排在最后。
+# 旧的 30 万 20012、20019 不是这一批。
+RESOURCE_CARDS = (
+    (20008, 10, "10万金属"),
+    (20015, 10, "10万石油"),
+    (20051, 50, "50万金属"),
+    (20050, 50, "50万石油"),
+    (20030, 200, "200万金属"),
+    (20025, 200, "200万石油"),
+    (20116, 500, "500万金属"),
+    (20117, 500, "500万石油"),
+    (20817, 1000, "1000万金属"),
+    (20818, 1000, "1000万石油"),
 )
+_CARD_ORDER = {item: i for i, (item, _wan, _name) in enumerate(RESOURCE_CARDS)}
+BASE_CARDS = tuple((item, name) for item, _wan, name in RESOURCE_CARDS)
 
 HARD_MAX_TIMES = 999
 # 空仓库每种资源最多吃下 4 张 1000 万卡。一次只开 1 张，开满或被拒就停。
@@ -144,6 +149,47 @@ def _fund_value(got):
     return None
 
 
+def default_resource_ids():
+    """没配过时要开的资源卡，已经按面额从小到大。"""
+    return [item for item, _wan, _name in RESOURCE_CARDS]
+
+
+def resource_catalog():
+    """给页面勾选。顺序就是开卡顺序。"""
+    return [{"id": item, "wan": wan, "name": name} for item, wan, name in RESOURCE_CARDS]
+
+
+def normalize_resource_ids(raw):
+    """收成从小到大的物品号。不合法时返回 (None, 原因)。"""
+    if isinstance(raw, str):
+        raw = [part for part in raw.replace("，", ",").split(",") if part.strip()]
+    if not isinstance(raw, (list, tuple)):
+        return None, "要选择资源卡"
+    chosen = []
+    seen = set()
+    for item in raw:
+        try:
+            item_id = int(str(item).strip())
+        except (TypeError, ValueError):
+            return None, "资源卡编号不对"
+        if item_id not in _CARD_ORDER:
+            return None, "没有这张资源卡"
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        chosen.append(item_id)
+    if not chosen:
+        return None, "至少选一种资源卡"
+    chosen.sort(key=lambda item_id: _CARD_ORDER[item_id])
+    return chosen, ""
+
+
+def resource_card_rows(ids):
+    """物品号换成开卡用的 (物品号, 名字)，顺序跟传入的一致。"""
+    names = {item: name for item, _wan, name in RESOURCE_CARDS}
+    return [(item_id, names[item_id]) for item_id in ids]
+
+
 def open_resource_cards(rec, sock, bag=None, on_progress=None, label="开卡",
                         cards=None):
     """按顺序开资源卡。一次一张。某种没有或没开成就停这种，换下一种。
@@ -203,13 +249,20 @@ def open_resource_cards(rec, sock, bag=None, on_progress=None, label="开卡",
     return bag, rows
 
 
-def open_base_cards(rec, sock, on_progress=None):
-    """基地战开资源卡。先用光这次抓到的卡，一次一张。1000 万的先不开。"""
+def open_base_cards(rec, sock, on_progress=None, card_ids=None):
+    """基地战开资源卡。一次一张，按面额从小到大。card_ids 空着就全开，含 1000 万。"""
     from . import citydb
     if "cards" in citydb.LOCKED_DAILY_KINDS:
         return False, citydb.RECOVERING_TEXT
+    if card_ids is None:
+        cards = BASE_CARDS
+    else:
+        ids, why = normalize_resource_ids(card_ids)
+        if why:
+            return False, why
+        cards = resource_card_rows(ids)
     _bag, rows = open_resource_cards(
-        rec, sock, on_progress=on_progress, label="开卡", cards=BASE_CARDS)
+        rec, sock, on_progress=on_progress, label="开卡", cards=cards)
     if any(why == "没有背包" for _name, _opened, why in rows):
         return False, "登录包里没有背包，没有开卡"
     bits = []

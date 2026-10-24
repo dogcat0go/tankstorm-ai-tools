@@ -258,6 +258,15 @@ class Stopped(BaseException):
     """网页关停了正在做的这项。不继承 Exception，各项自己的异常处理接不住。"""
 
 
+class Later(Exception):
+    """这一项先排到以后。delay 是秒，done 是已经造完的数量。"""
+
+    def __init__(self, delay, text, done=0):
+        self.delay = max(1.0, float(delay or 0))
+        self.text = str(text or "")
+        self.done = int(done or 0)
+
+
 def raise_if_stopped() -> None:
     from . import citydb
     if citydb.shutdown_due() or citydb.daily_job_stopped():
@@ -274,7 +283,6 @@ def _nap(seconds: float) -> None:
 
     占着连接锁时先放开。等够 1 秒时，空档里可以先打国战；外层到点后国战停手，
     这次等待仍按原来的时刻结束。短于 1 秒的是在等紧跟着的回包，不插别的任务。
-    兵营和战车工厂在旁边的路上，锁一放开就能发。
     """
     depth = _lane.yield_for_wait()
     stack = getattr(_sock_local, "deadlines", None)
@@ -2507,30 +2515,29 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
 
     left, cost = medal_now()
     cap = _blast_cap(qq_hall, yellow, blue)
-    send_at = 595 if cap >= 600 else max(1, cap - 2)
-    if left > send_at:
-        gap = left - send_at
-        if gap > 900 or _blast_medal(send_at, qq_hall, yellow, blue) != 0:
+    if left > cap:
+        if _blast_medal(cap, qq_hall, yellow, blue) != 0:
             say(f"{place} {bid} 剩余 {left} 秒，加速要 {cost} 勋章，不发")
             return False, f"剩余 {left} 秒，加速要 {cost} 勋章，不加速"
-        if on_progress:
-            on_progress(f"剩余 {left} 秒，要 {cost} 勋章，等到 {send_at} 秒再加速")
+        delay = left - cap
         say(
             f"{place} {bid} 剩余 {left} 秒，要 {cost} 勋章，"
-            f"大厅={qq_hall} 黄钻={yellow} 蓝钻={blue}，等到 {send_at} 秒")
-        _nap(gap)
-        left, cost = send_at, 0
-    elif cost != 0:
+            f"大厅={qq_hall} 黄钻={yellow} 蓝钻={blue}，"
+            f"{int(delay)} 秒后剩余降到 {cap} 再加速")
+        if on_progress:
+            on_progress(f"剩余 {left} 秒，{int(delay)} 秒后降到 {cap} 秒再加速")
+        raise Later(
+            delay, f"剩余 {left} 秒，{int(delay)} 秒后降到 {cap} 秒再加速")
+    if cost != 0:
         say(f"{place} {bid} 剩余 {left} 秒，加速要 {cost} 勋章，不发")
         return False, f"剩余 {left} 秒，加速要 {cost} 勋章，不加速"
-    else:
-        _nap(0.4)
-        left, cost = medal_now()
-        if cost != 0:
-            say(f"{place} {bid} 等到发出时剩余 {left} 秒，要 {cost} 勋章，不发")
-            return False, f"剩余 {left} 秒，加速要 {cost} 勋章，不加速"
-        if left < 1:
-            left = 1
+    _nap(0.4)
+    left, cost = medal_now()
+    if cost != 0:
+        say(f"{place} {bid} 等到发出时剩余 {left} 秒，要 {cost} 勋章，不发")
+        return False, f"剩余 {left} 秒，加速要 {cost} 勋章，不加速"
+    if left < 1:
+        left = 1
     say(
         f"快速制造 {place} {bid} time={left} 勋章花费={cost} "
         f"大厅={qq_hall} 黄钻={yellow} 蓝钻={blue} 当前勋章={wallet}")
@@ -2557,17 +2564,25 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
 
 def daily_blast(rec, sock, config, count=1, on_progress=None, *,
                 building_type=_BLAST_BUILDING, army_type=_BLAST_ARMY,
-                place="兵营", unit="爆破兵", label="爆破兵", track=True):
-    """按数量循环造。每一只都要等到 0 勋章才加速。"""
+                place="兵营", unit="爆破兵", label="爆破兵", track=True,
+                done=0):
+    """按数量循环造。免费加速线默认 600 秒，没到就排下次，不在这里空等。"""
     try:
         count = int(count)
     except (TypeError, ValueError):
         return False, "数量不对"
     if not 1 <= count <= 399:
         return False, "数量要在 1 到 399"
+    try:
+        done = int(done or 0)
+    except (TypeError, ValueError):
+        done = 0
+    if done < 0:
+        done = 0
+    if done > count:
+        done = count
     if track:
         note_blast_count(rec)
-    done = 0
     assume_idle = False
 
     def progress(text=""):
@@ -2579,10 +2594,14 @@ def daily_blast(rec, sock, config, count=1, on_progress=None, *,
     progress()
     while done < count:
         raise_if_stopped()
-        ok, why = _blast_once(
-            rec, sock, config, assume_idle=assume_idle, on_progress=progress,
-            building_type=building_type, army_type=army_type, place=place,
-            unit=unit, label=label, track=track)
+        try:
+            ok, why = _blast_once(
+                rec, sock, config, assume_idle=assume_idle, on_progress=progress,
+                building_type=building_type, army_type=army_type, place=place,
+                unit=unit, label=label, track=track)
+        except Later as later:
+            later.done = done
+            raise
         if not ok:
             head = f"完成 {done}/{count}。" if done else ""
             return False, head + why
@@ -2592,8 +2611,9 @@ def daily_blast(rec, sock, config, count=1, on_progress=None, *,
     return True, f"成功：造了 {done} 个{unit}，都是 0 勋章加速"
 
 
-def daily_factory(rec, sock, config, count=1, army=0, on_progress=None):
-    """战车工厂按数量循环快速制造。和兵营各算各的，不等兵营做完。"""
+def daily_factory(rec, sock, config, count=1, army=0, on_progress=None, *,
+                  done=0):
+    """战车工厂按数量循环快速制造。免费加速线和兵营一样，到点再做。"""
     from . import repair
     try:
         army = int(army)
@@ -2605,7 +2625,7 @@ def daily_factory(rec, sock, config, count=1, army=0, on_progress=None):
     return daily_blast(
         rec, sock, config, count, on_progress,
         building_type=_FACTORY_BUILDING, army_type=army, place="战车工厂",
-        unit=unit, label="战车工厂", track=False)
+        unit=unit, label="战车工厂", track=False, done=done)
 
 
 # 2026-10-17 00:20 抓包。豪饮是英雄招募高级档，用背包里的 10061。

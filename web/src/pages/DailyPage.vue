@@ -1,4 +1,5 @@
 <script setup>
+import { computed } from "vue";
 import { ElSwitch } from "element-plus";
 import "element-plus/es/components/switch/style/css";
 
@@ -7,7 +8,7 @@ const pveStages = defineModel("pveStages", { type: String, required: true });
 const modoCards = defineModel("modoCards", { type: String, required: true });
 const modoAt = defineModel("modoAt", { type: String, required: true });
 
-defineProps({
+const props = defineProps({
   dailyQq: { type: String, default: "" },
   campaignTasks: { type: Array, required: true },
   progressTasks: { type: Array, required: true },
@@ -28,6 +29,9 @@ defineProps({
   addModo: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
+
+const guildClaimable = computed(() =>
+  (props.guildBoard?.tasks || []).filter((it) => it.state === "可领奖").length);
 </script>
 
 <template>
@@ -88,30 +92,36 @@ defineProps({
     <p class="muted">按攻打号的国家，去离自己最近的一座摩多军团。先走进那座城，召唤支援兵，再打。召唤失败时用功勋补一轮支援兵，再召唤一次；紧接着还失败就停。恢复卡都在这一座用完。0 表示不用卡，行动力不够就停。提交后跳到国战助手，订单和进度都在那里。击退数量按 4 次扫荡算 1 个。要这个号已经挂机保活。填了时间就每天到点按这里的恢复卡数量再刷一轮，刷完再领一次国家宝箱。正在打的那一单会先打完。留空不定时。</p>
     <p v-if="dailyNote" class="muted">{{ dailyNote }}</p>
     <p v-if="err && errAt === 'daily'" class="err">{{ err }}</p>
-    <h2>公会任务</h2>
-    <p v-if="!guildBoard" class="muted">还没读到公会任务</p>
-    <template v-else>
-      <p class="muted">今日已领奖 {{ guildBoard.finish }}/{{ guildBoard.cap }}。{{ guildBoard.reward ? "可以领奖。" : "现在不能领奖。" }}<span v-if="guildBoard.read_at"> {{ guildBoard.read_at }} 读到的。</span></p>
-      <p v-if="!guildBoard.tasks.length" class="muted">身上没有任务。</p>
-      <div v-else class="wide">
-        <table>
-          <thead>
-            <tr><th>任务</th><th>星</th><th>状态</th><th>进度</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="(it, i) in guildBoard.tasks" :key="i">
-              <td>
-                <div>{{ it.name }}</div>
-                <div v-if="it.detail" class="muted">{{ it.detail }}</div>
-              </td>
-              <td>{{ it.star ? it.star + "星" : "—" }}</td>
-              <td>{{ it.state }}</td>
-              <td>{{ it.progress || "—" }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </template>
+    <details class="guild-fold">
+      <summary>
+        公会任务
+        <span v-if="!guildBoard" class="muted">还没读到</span>
+        <span v-else class="muted">已领过 {{ guildBoard.finish }}/{{ guildBoard.cap }} · {{ guildClaimable ? "身上 " + guildClaimable + " 条可以领" : "现在不能领奖" }}</span>
+      </summary>
+      <p v-if="!guildBoard" class="muted">还没读到公会任务</p>
+      <template v-else>
+        <p class="muted">已领过是今天领走的次数。可以领是身上进度满了、奖还在。更早领走的任务服务器不再发回来，所以这里只留次数，不列名字。<span v-if="guildBoard.read_at"> {{ guildBoard.read_at }} 读到的。</span></p>
+        <p v-if="!guildBoard.tasks.length" class="muted">身上没有任务。</p>
+        <div v-else class="wide">
+          <table>
+            <thead>
+              <tr><th>任务</th><th>星</th><th>状态</th><th>进度</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(it, i) in guildBoard.tasks" :key="i">
+                <td>
+                  <div>{{ it.name }}</div>
+                  <div v-if="it.detail" class="muted">{{ it.detail }}</div>
+                </td>
+                <td>{{ it.star ? it.star + "星" : "—" }}</td>
+                <td>{{ it.state }}</td>
+                <td>{{ it.progress || "—" }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+    </details>
     <h2>最近执行</h2>
     <p v-if="!dailyJobs.length" class="muted">还没有执行记录。</p>
     <div v-else class="wide">

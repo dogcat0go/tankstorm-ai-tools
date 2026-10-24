@@ -20,6 +20,7 @@ import re
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 from . import citydb
 from .log import get_logger
@@ -366,6 +367,27 @@ def _handler(config: dict):
                     _json(self, 403, {"error": "只有管理员能看全部攻打 QQ"})
                     return
                 _json(self, 200, {"fighters": citydb.list_attack_fighters()})
+                return
+            if path == "/api/admin/qq-log":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能看攻打日志"})
+                    return
+                query = parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+                try:
+                    detail = citydb.attack_qq_detail(
+                        (query.get("qq") or [""])[0],
+                        (query.get("days") or ["3"])[0])
+                except ValueError as exc:
+                    _json(self, 400, {"error": str(exc)})
+                    return
+                if detail is None:
+                    _json(self, 404, {"error": "没有这个攻打 QQ"})
+                    return
+                _json(self, 200, detail)
                 return
             if path == "/api/admin/members":
                 user = self._user()

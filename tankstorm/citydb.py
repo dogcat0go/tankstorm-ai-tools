@@ -3291,6 +3291,126 @@ def list_attack_orders(user_id: int, limit: int = 3) -> list:
     return [_order_row(r) for r in rows]
 
 
+def _order_label(kind: str, uid: str, auto) -> str:
+    if str(kind or "") == "modo":
+        return "摩多"
+    if not str(uid or "").strip():
+        return "清城"
+    if int(auto or 0):
+        return "自动锁敌"
+    return "打人"
+
+
+def _attack_log_order(raw, names, cities, conn) -> dict:
+    kind = str(raw[8] or "")
+    uid = str(raw[3] or "")
+    status = str(raw[4] or "")
+    city_id = int(raw[2] or 0)
+    if kind == "modo":
+        city = ""
+    elif city_id in cities:
+        city = cities[city_id]
+    else:
+        city = city_name(city_id, conn)
+        cities[city_id] = city
+    user_id = int(raw[1])
+    beats = raw[7]
+    run_at = str(raw[9] or "") if status == "wait" else ""
+    return {
+        "id": int(raw[0]),
+        "user_id": user_id,
+        "username": names.get(user_id) or "",
+        "city_id": city_id,
+        "city_name": city,
+        "uid": uid,
+        "name": str(raw[10] or ""),
+        "status": status,
+        "reason": str(raw[5] or ""),
+        "created_at": beijing_ts(str(raw[6] or "")),
+        "beats": None if beats is None else int(beats),
+        "kind": kind,
+        "label": _order_label(kind, uid, raw[11]),
+        "run_at": beijing_ts(run_at) if run_at else "",
+    }
+
+
+def _orders_for_attack_qq(user_ids, names) -> list:
+    """还没打完的和最近打完的。同一条清城反复空城再打时，这条会一直留在还没打完里。"""
+    slot = ",".join("?" * len(user_ids))
+    cols = ("id, user_id, city_id, IFNULL(uid,''), status, IFNULL(reason,''), "
+            "created_at, beats, IFNULL(kind,''), IFNULL(run_at,''), IFNULL(name,''), "
+            "IFNULL(auto,0)")
+    args = tuple(int(item) for item in user_ids)
+    conn = connect(readonly=True)
+    try:
+        open_rows = conn.execute(
+            f"SELECT {cols} FROM atk_order WHERE user_id IN ({slot}) "
+            "AND status IN ('pending','running','blocked','wait') "
+            "ORDER BY id DESC LIMIT 40",
+            args).fetchall()
+        done_rows = conn.execute(
+            f"SELECT {cols} FROM atk_order WHERE user_id IN ({slot}) "
+            "AND status NOT IN ('pending','running','blocked','wait') "
+            "ORDER BY id DESC LIMIT 40",
+            args).fetchall()
+        cities = {}
+        rows = []
+        seen = set()
+        for raw in list(open_rows) + list(done_rows):
+            if raw[0] in seen:
+                continue
+            seen.add(raw[0])
+            rows.append(_attack_log_order(raw, names, cities, conn))
+    finally:
+        conn.close()
+    rows.sort(key=lambda row: (_OPEN_ORDER_RANK.get(row["status"], 10), -int(row["id"])))
+    return rows
+
+
+def attack_qq_detail(qq: str, days=3):
+    """管理员按攻打 QQ 看提交的攻打，以及运行日志里对得上的行。
+
+    没有这个攻打 QQ 返回 None。QQ 不是 5 到 12 位数字则抛 ValueError。
+    """
+    raw = str(qq or "").strip()
+    if not raw.isdigit() or not 5 <= len(raw) <= 12:
+        raise ValueError("攻打 QQ 不对")
+    try:
+        span = int(days)
+    except (TypeError, ValueError):
+        span = 3
+    if span not in (1, 3, 7):
+        span = 3
+    user_ids = users_bound_to_qq(raw)
+    if not user_ids:
+        return None
+    names = {}
+    accounts = []
+    for user_id in user_ids:
+        name = username_of(user_id)
+        names[user_id] = name
+        accounts.append({
+            "id": user_id,
+            "username": name,
+            "clear_wait": int(clear_settings(user_id).get("wait_min") or 0),
+        })
+    orders = _orders_for_attack_qq(user_ids, names)
+    from .log import qq_log_lines, qq_task_logs
+    lines, lines_cut = qq_log_lines(
+        [item["username"] for item in accounts],
+        [item["id"] for item in orders],
+        raw, span)
+    return {
+        "qq": raw,
+        "days": span,
+        "accounts": accounts,
+        "orders": orders,
+        "lines": lines,
+        "lines_cut": bool(lines_cut),
+        "tasks": qq_task_logs(raw, span),
+    }
+
+
 def set_page_qr(on: bool, user_id: int = 0) -> None:
     """这个攻打 QQ 的登录二维码显示在它自己的网页上。扫完或进程停了就关掉。"""
     _upsert_signal(_mark_name("pageqr", user_id), "1" if on else "0")

@@ -1050,6 +1050,8 @@ def _wake_attack_orders(config) -> None:
             citydb.shelve_due_accounts()
             citydb.enqueue_due_daily_jobs()
             citydb.enqueue_due_modo_orders()
+            citydb.enqueue_due_guild_tasks(
+                ((config or {}).get("每日任务") or {}).get("任务"))
             users = citydb.users_needing_attack()
         except Exception:
             log.info("自动拉起攻打没成", exc_info=True)

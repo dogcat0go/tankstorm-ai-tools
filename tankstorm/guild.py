@@ -502,6 +502,44 @@ def _finish_num(panel):
     return 0 if n is None else n
 
 
+def _as_count(val):
+    if isinstance(val, bool) or not isinstance(val, int) or val < 0:
+        return 0
+    return val
+
+
+def guild_reward_ready(rows):
+    """身上的任务进度满了，就可以领奖。没满的不算。"""
+    for row in rows or []:
+        if not isinstance(row, (list, tuple)) or len(row) < 4:
+            continue
+        proc, need = row[2], row[3]
+        if isinstance(need, bool) or not isinstance(need, int) or need <= 0:
+            continue
+        if isinstance(proc, bool) or not isinstance(proc, int):
+            continue
+        if proc >= need:
+            return True
+    return False
+
+
+def guild_hour_plan(finish_num, held, reward_ready, cap=_TASK_CAP):
+    """这一小时走哪一支。
+
+    finish_num 是面板上的 nFinishNum。held 是身上还没计入完成的任务。
+    加起来不到一天 5 个，去领任务。已经满了，有做完的才领奖，没有就不发。
+    """
+    finish = _as_count(finish_num)
+    holding = _as_count(held)
+    limit = _as_count(cap) or _TASK_CAP
+    full = finish >= limit or finish + holding >= limit
+    if not full:
+        return "accept"
+    if reward_ready:
+        return "reward"
+    return "idle"
+
+
 _STAR5 = frozenset({
     5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70,
 })
@@ -559,7 +597,25 @@ def _guild_tasks(sock, rec):
     panel = _build_send(sock, rec, _TASK_OPEN)
     if not isinstance(panel, dict):
         return False, "失败：没收到公会任务面板"
-    room = _TASK_CAP - _finish_num(panel)
+    finish = _finish_num(panel)
+    mine_rows = _task_rows(panel, "field22")
+    plan = guild_hour_plan(finish, len(mine_rows), guild_reward_ready(mine_rows))
+    # 领满之后不再参加、不再刷新。能领奖才发 ntype=7，没有可领的就不发。
+    if plan != "accept":
+        if plan == "idle":
+            _note_guild_claims(0)
+            return True, "成功：今日已领满 %d/%d，没有可领的奖" % (_TASK_CAP, _TASK_CAP)
+        panel, claimed = _claim_tasks(sock, rec, panel)
+        noted = _note_guild_claims(len(claimed))
+        if panel is None:
+            return False, "失败：领取已完成任务没有成功（已领奖 %d/%d）" % (noted, _TASK_CAP)
+        if not claimed:
+            return True, "成功：今日已领满 %d/%d，没有可领的奖" % (_TASK_CAP, _TASK_CAP)
+        return True, "成功：今日已领满，领奖 %d 个（已领奖 %d/%d）" % (
+            len(claimed), noted, _TASK_CAP)
+    # 没领满：原来的领任务。身上已经有的占名额，这一轮只补到 5 个。
+    # 接上的任务如果这一轮已经做完，顺手领掉，完成数才会涨。
+    room = _TASK_CAP - finish - len(mine_rows)
     if room < 0:
         room = 0
     joined = []
@@ -644,6 +700,14 @@ def _note_guild_claims(n):
     return total
 
 
+def _touch_guild_hour():
+    """这一轮已经看过面板。一小时内不再排，也不在日常轮次里再做一遍。"""
+    from .daily import _load_state, _save_state
+    st = _load_state()
+    st.setdefault("last", {})["公会任务"] = time.time()
+    _save_state(st)
+
+
 def _flag_list(val):
     if isinstance(val, bool) or val is None:
         return []
@@ -696,8 +760,10 @@ def _guild_activity(sock, rec):
 
 
 def daily_guild_task(rec, sock, config):
-    """参加或发布 4 星、5 星公会任务，并领取公会活跃。"""
+    """没领满就领 4 星、5 星任务。领满了，能领奖才领。并领取公会活跃。"""
     ok, why = _guild_tasks(sock, rec)
+    if ok:
+        _touch_guild_hour()
     act_ok, act_why = _guild_activity(sock, rec)
     text = why + "。" + act_why
     if not ok and not act_ok:

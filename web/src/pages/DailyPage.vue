@@ -114,7 +114,10 @@ defineProps({
         </thead>
         <tbody>
           <tr v-for="it in progressTasks" :key="it.key">
-            <td>{{ it.name }}</td>
+            <td>
+              <div>{{ it.name }}</div>
+              <div v-if="it.key === '公会任务'" class="muted">{{ it.hint || "开着时每小时看一次。还没领满 5 个就去领任务。已经领满，能领奖才去领，没有可领的就不动。" }}</div>
+            </td>
             <td>
               <el-switch
                 class="daily-switch"

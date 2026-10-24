@@ -2270,6 +2270,23 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                     on_progress=_show)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind == "guild_camp":
+                from . import guild
+                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                    citydb.finish_daily_job(job["id"], "failed", "活动助手需要高级pro订阅")
+                    return
+                cfg = copy.deepcopy(config)
+                user_id = citydb.attack_context_user()
+                level = citydb.guild_camp_level(user_id) if user_id else None
+                if level is not None:
+                    camp = cfg.get("公会战役")
+                    if not isinstance(camp, dict):
+                        camp = {}
+                        cfg["公会战役"] = camp
+                    camp["敌方等级"] = level
+                ok, why = guild.daily_campaign(rec, sock, cfg)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "blast":
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
                     citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
@@ -2457,13 +2474,13 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     path_box = [0.0]
     hold_closed = False
     side_kinds = (
-        "daily", "pve", "fund", "chest", "cards",
+        "daily", "pve", "fund", "guild_camp", "chest", "cards",
         "haoyin", "admiral", "admiral10", "box_mid", "box_high",
         "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
     )
 
     def _lane_for(kind):
-        if kind in ("daily", "pve", "fund", "chest"):
+        if kind in ("daily", "pve", "fund", "guild_camp", "chest"):
             return "daily"
         if kind == "blast":
             return "blast"

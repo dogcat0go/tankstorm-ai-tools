@@ -116,6 +116,8 @@ const pveStages = ref("");
 let pveStagesReady = false;
 const guildLevel = ref("");
 const guildLevelNote = ref("");
+const guildThew = ref(null);
+const guildScore = ref(null);
 let guildLevelReady = false;
 const fundBuilding = ref("");
 const fundTimes = ref("1");
@@ -221,6 +223,8 @@ async function refreshDaily() {
     guildLevel.value = "";
     guildLevelNote.value = "";
     guildLevelReady = false;
+    guildThew.value = null;
+    guildScore.value = null;
     fundNote.value = "";
     return;
   }
@@ -246,6 +250,8 @@ async function refreshDaily() {
     guildLevel.value = data.guild_level == null ? "" : String(data.guild_level);
     guildLevelReady = true;
   }
+  guildThew.value = data.guild_thew == null ? null : data.guild_thew;
+  guildScore.value = data.guild_score == null ? null : data.guild_score;
 }
 
 async function saveGuildLevel() {
@@ -450,6 +456,17 @@ async function runLab50(count) {
   await refreshAttacks();
 }
 
+async function runGuildCamp() {
+  showErr("", "activity");
+  guildLevelNote.value = "";
+  const level = String(guildLevel.value || "").trim();
+  const ok = await confirmUse(`按体力进攻 ${level} 级据点，直到体力不够。`);
+  if (!ok) return;
+  await api("/api/daily", { kind: "guild_camp" });
+  guildLevelNote.value = "已交给绑定的攻打号";
+  await refreshDaily();
+  await refreshAttacks();
+}
 async function runFund(building, times) {
   showErr("", "activity");
   fundNote.value = "";
@@ -1236,8 +1253,12 @@ onUnmounted(() => {
         v-model:fund-times="fundTimes"
         :daily-qq="dailyQq"
         :tasks="dailyTasks"
+        :jobs="dailyJobs"
+        :run-guild-camp="runGuildCamp"
         :daily-switching="dailySwitching"
         :note="guildLevelNote"
+        :thew="guildThew"
+        :score="guildScore"
         :fund-buildings="fundBuildings"
         :fund-note="fundNote"
         :err="err"

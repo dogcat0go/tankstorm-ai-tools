@@ -312,6 +312,7 @@ def daily_campaign(rec, sock, config):
 
     log.info("[公会战役] 打 %s 级据点 %s，当前体力 %s，积分 %s",
              level, found, thew, score if score is not None else "读不到")
+    citydb.note_guild_camp(thew, score)
     start = thew
     hits = 0
     cost = None
@@ -350,6 +351,7 @@ def daily_campaign(rec, sock, config):
                  hits, level, thew, now,
                  score if score is not None else "读不到")
         thew = now
+        citydb.note_guild_camp(thew, score)
     point = (f"，当前积分 {score}（nowPersonMsg.point）" if score is not None
              else "，积分读不到")
     if hits <= 0:

@@ -4117,6 +4117,41 @@ def note_attack_wallet(metal=None, oil=None, credit=None) -> bool:
             return False
 
 
+def note_guild_camp(thew=None, score=None) -> bool:
+    """记下这一场公会战役的体力和当前积分。没读到的那一项不写。"""
+    vals = {}
+    if isinstance(thew, int) and not isinstance(thew, bool) and thew >= 0:
+        vals["camp_thew"] = thew
+    if isinstance(score, int) and not isinstance(score, bool) and score >= 0:
+        vals["camp_score"] = score
+    if not vals:
+        return False
+    if not attack_context_user() and not attack_context_qq():
+        return False
+    with _proc_lock:
+        name = _mark_name("proc")
+        try:
+            data = _proc_payload(_signal_value(name))
+            if not data or data.get("phase") == "offline":
+                return False
+            if all(data.get(key) == val for key, val in vals.items()):
+                return True
+            data.update(vals)
+            _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+            return True
+        except sqlite3.Error:
+            return False
+
+
+def guild_camp_live(user_id: int) -> dict:
+    """页面上的公会战役体力和当前积分。还没读到是 None，可以是 0。"""
+    parsed, _seen, _online = _read_user_proc(int(user_id))
+    return {
+        "thew": _kept_int(parsed, "camp_thew"),
+        "score": _kept_int(parsed, "camp_score"),
+    }
+
+
 def note_attack_cards(counts) -> bool:
     """记下攻打号背包里这几种卡的张数。没变就不写库。"""
     if not isinstance(counts, dict) or not counts:
@@ -5035,6 +5070,7 @@ DAILY_KIND_LABEL = {
     "lab50": "实验室探索50连",
     "auto50": "自动化探索50连",
     "chest": "国家宝箱",
+    "guild_camp": "公会战役",
 }
 _BASE_LANE = (
     "blast", "factory", "cards", "haoyin", "admiral", "admiral10",
@@ -5438,7 +5474,7 @@ def enqueue_due_daily_jobs() -> list:
                 continue
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job "
-                "WHERE user_id=? AND kind IN ('daily','pve','fund') "
+                "WHERE user_id=? AND kind IN ('daily','pve','fund','guild_camp') "
                 "AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
             if int(waiting or 0) >= 3:
@@ -5684,7 +5720,7 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         else:
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job WHERE user_id=? "
-                "AND kind IN ('daily','pve','fund') AND status IN ('pending','running')",
+                "AND kind IN ('daily','pve','fund','guild_camp') AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
         if int(waiting or 0) >= 3:
             return "还有没做完的，先等这几项"

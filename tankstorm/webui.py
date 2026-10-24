@@ -362,6 +362,8 @@ def _handler(config: dict):
                     "schedule": citydb.daily_schedule(user["id"]),
                     "modo_at": citydb.modo_schedule(user["id"]),
                     "guild_level": guild_level,
+                    "guild_thew": citydb.guild_camp_live(user["id"])["thew"],
+                    "guild_score": citydb.guild_camp_live(user["id"])["score"],
                 })
                 return
             if path == "/api/admin/fighters":
@@ -607,6 +609,8 @@ def _handler(config: dict):
                 elif path == "/api/daily":
                     if citydb.account_expired(user.get("expires_at") or ""):
                         raise ValueError("账号已过期")
+                    if str(data.get("kind") or "") == "guild_camp" and not citydb.base_tier(user.get("tier") or ""):
+                        raise ValueError("活动助手需要高级pro订阅")
                     why = citydb.enqueue_daily_job(user["id"], data.get("kind"), data)
                     if why:
                         raise ValueError(why)

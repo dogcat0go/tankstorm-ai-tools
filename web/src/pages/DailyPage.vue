@@ -100,7 +100,7 @@ const guildClaimable = computed(() =>
       </summary>
       <p v-if="!guildBoard" class="muted">还没读到公会任务</p>
       <template v-else>
-        <p class="muted">已领过是今天领走的次数。可以领是身上进度满了、奖还在。更早领走的任务服务器不再发回来，所以这里只留次数，不列名字。<span v-if="guildBoard.read_at"> {{ guildBoard.read_at }} 读到的。</span></p>
+        <p class="muted">已领过是今天领走的次数。可领奖是整队都完成，游戏里按钮是领取。自己做完、队友还没齐是等队友，游戏里是强制完成，这里不强制完成。更早领走的任务服务器不再发回来，所以这里只留次数，不列名字。<span v-if="guildBoard.read_at"> {{ guildBoard.read_at }} 读到的。</span></p>
         <p v-if="!guildBoard.tasks.length" class="muted">身上没有任务。</p>
         <div v-else class="wide">
           <table>

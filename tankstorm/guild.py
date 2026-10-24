@@ -602,19 +602,22 @@ def _as_count(val):
     return val
 
 
-def guild_reward_ready(rows):
-    """身上的任务进度满了，就可以领奖。没满的不算。"""
-    for row in rows or []:
-        if not isinstance(row, (list, tuple)) or len(row) < 4:
-            continue
-        proc, need = row[2], row[3]
-        if isinstance(need, bool) or not isinstance(need, int) or need <= 0:
-            continue
-        if isinstance(proc, bool) or not isinstance(proc, int):
-            continue
-        if proc >= need:
+def _team_done(panel, nid):
+    """整队进度满了，游戏里才是「领取」。自己那一份满了仍是「强制完成」。
+
+    field21 是团队任务，nProcess 是大家加起来的进度，nTotalNeed 是整队需求。
+    """
+    for tid, _kind, proc, need in _task_rows(panel, "field21"):
+        if tid == nid and need > 0 and proc >= need:
             return True
     return False
+
+
+def guild_reward_ready(panel):
+    """身上有整队都做完、还没领的任务。"""
+    if not isinstance(panel, dict):
+        return False
+    return any(_team_done(panel, row[0]) for row in _task_rows(panel, "field22"))
 
 
 def guild_hour_plan(finish_num, held, reward_ready, cap=_TASK_CAP):
@@ -655,20 +658,27 @@ def _progress_text(proc, need):
 def guild_panel_board(panel, just_claimed=()):
     """面板上能看到的公会任务。给页面放在最近执行上面。
 
-    身上的记进行中或可领奖。这一轮刚领走、面板上已经没有的，记已领奖。
+    身上的记进行中、等队友或可领奖。这一轮刚领走、面板上已经没有的，记已领奖。
+    可领奖是整队都完成。自己做完、队友还没齐是等队友。
     """
     finish = _finish_num(panel) if isinstance(panel, dict) else 0
     mine = _task_rows(panel, "field22") if isinstance(panel, dict) else []
     tasks = []
     left = {}
-    for _nid, kind, proc, need in mine:
+    for nid, kind, proc, need in mine:
         name, star, detail = _task_text(kind)
-        ready = (isinstance(need, int) and not isinstance(need, bool) and need > 0
-                 and isinstance(proc, int) and not isinstance(proc, bool) and proc >= need)
+        mine_full = (isinstance(need, int) and not isinstance(need, bool) and need > 0
+                     and isinstance(proc, int) and not isinstance(proc, bool) and proc >= need)
+        if _team_done(panel, nid):
+            state = "可领奖"
+        elif mine_full:
+            state = "等队友"
+        else:
+            state = "进行中"
         tasks.append({
             "name": name,
             "star": star,
-            "state": "可领奖" if ready else "进行中",
+            "state": state,
             "progress": _progress_text(proc, need),
             "detail": detail,
         })
@@ -691,7 +701,7 @@ def guild_panel_board(panel, just_claimed=()):
     return {
         "finish": finish,
         "cap": _TASK_CAP,
-        "reward": guild_reward_ready(mine),
+        "reward": guild_reward_ready(panel),
         "read_at": citydb.beijing_now().strftime("%Y-%m-%d %H:%M:%S"),
         "tasks": tasks,
     }
@@ -737,13 +747,13 @@ def _best(rows, seen, mine):
 
 
 def _claim_tasks(sock, rec, panel):
-    """自己的任务进度满了就领。ntype=7，编号用大 id。"""
+    """整队做完的才领。ntype=7，编号用大 id。一条被拒就跳过，接着领下一条。"""
     claimed = []
     seen = set()
     while True:
         raise_if_stopped()
         mine = [row for row in _task_rows(panel, "field22")
-                if row[0] not in seen and row[3] > 0 and row[2] >= row[3]]
+                if row[0] not in seen and _team_done(panel, row[0])]
         if not mine:
             return panel, claimed
         nid, kind, _proc, _need = mine[0]
@@ -753,7 +763,8 @@ def _claim_tasks(sock, rec, panel):
             return None, claimed
         ret = got.get("nRet")
         if ret not in (0, None):
-            return None, claimed
+            log.info("[公会任务] 领奖被拒 nID=%s nRet=%s，跳过", nid, ret)
+            continue
         claimed.append(kind)
         panel = got
         _remember_guild_panel(panel, claimed)
@@ -773,7 +784,7 @@ def _guild_tasks(sock, rec):
     _remember_guild_panel(panel)
     finish = _finish_num(panel)
     mine_rows = _task_rows(panel, "field22")
-    plan = guild_hour_plan(finish, len(mine_rows), guild_reward_ready(mine_rows))
+    plan = guild_hour_plan(finish, len(mine_rows), guild_reward_ready(panel))
     # 领满之后不再参加、不再刷新。能领奖才发 ntype=7，没有可领的就不发。
     if plan != "accept":
         if plan == "idle":

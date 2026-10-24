@@ -5686,7 +5686,7 @@ def _clean_guild_board(raw):
             continue
         name = str(row.get("name") or "").strip()
         state = str(row.get("state") or "")
-        if not name or state not in ("进行中", "可领奖", "已领奖"):
+        if not name or state not in ("进行中", "等队友", "可领奖", "已领奖"):
             continue
         star = row.get("star")
         if isinstance(star, bool) or not isinstance(star, int) or star <= 0:

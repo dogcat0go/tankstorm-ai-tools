@@ -347,6 +347,10 @@ def _handler(config: dict):
                 uin = citydb.attack_qq_of(user["id"])
                 switches = citydb.daily_switches(
                     user["id"], (config.get("每日任务") or {}).get("任务") or {})
+                guild_level = citydb.guild_camp_level(user["id"])
+                if guild_level is None:
+                    raw = (config.get("公会战役") or {}).get("敌方等级")
+                    guild_level = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 51
                 _json(self, 200, {
                     "qq": uin,
                     "tasks": daily.task_board(uin, switches),
@@ -355,6 +359,7 @@ def _handler(config: dict):
                     "stages": citydb.campaign_stages(user["id"]),
                     "schedule": citydb.daily_schedule(user["id"]),
                     "modo_at": citydb.modo_schedule(user["id"]),
+                    "guild_level": guild_level,
                 })
                 return
             if path == "/api/admin/fighters":
@@ -529,6 +534,14 @@ def _handler(config: dict):
                     _json(self, 200, {
                         "ok": True,
                         "tasks": daily.task_board(uin, switches),
+                    })
+                elif path == "/api/daily/guild-level":
+                    why = citydb.set_guild_camp_level(user["id"], data.get("level"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {
+                        "ok": True,
+                        "guild_level": citydb.guild_camp_level(user["id"]),
                     })
                 elif path == "/api/daily/cancel":
                     try:

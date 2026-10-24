@@ -4715,13 +4715,12 @@ _DAILY_STATUS = {
 }
 RECOVERING_TEXT = "功能尚在恢复中..."
 # 还没和这次抓包对上的入口。页面上不能打开，整轮日常也会跳过。
-LOCKED_DAILY_KINDS = frozenset({
-    "fund",
-})
+# 2026-10-24 成就拨款对上了：RceBuildingModify type=70，第 27 号=1。
+LOCKED_DAILY_KINDS = frozenset()
 LOCKED_DAILY_TASKS = frozenset({
-    "每日资源", "修复坦克", "战功排名", "英雄开采",
+    "修复坦克", "战功排名", "英雄开采",
     "技能书将领", "技能书参谋", "配件探索",
-    "公会战参加", "公会战", "周任务",
+    "公会战参加", "周任务",
 })
 
 
@@ -5221,6 +5220,45 @@ def set_campaign_stages(user_id: int, raw) -> str:
             saved[_CAMPAIGN_END] = text
         else:
             saved.pop(_CAMPAIGN_END, None)
+        cur = conn.execute(
+            "UPDATE app_user SET daily_switch=? WHERE id=?",
+            (json.dumps(saved, ensure_ascii=False), int(user_id)))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "账号不存在"
+        return ""
+    finally:
+        conn.close()
+
+
+_GUILD_LEVEL = "_公会战役等级"
+
+
+def guild_camp_level(user_id: int):
+    """这个登录账号记下的公会战役敌方等级。没记过返回 None。"""
+    conn = connect(readonly=True)
+    try:
+        saved = _saved_daily_switches(conn, user_id) or {}
+    finally:
+        conn.close()
+    raw = saved.get(_GUILD_LEVEL)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        return None
+    return raw
+
+
+def set_guild_camp_level(user_id: int, raw) -> str:
+    """记下公会战役敌方等级。成功返回空字符串。"""
+    text = str(raw if raw is not None else "").strip()
+    if not text.isdigit():
+        return "等级要是数字"
+    level = int(text)
+    if level <= 0 or level > 999:
+        return "等级要是 1 到 999"
+    conn = connect()
+    try:
+        saved = _saved_daily_switches(conn, user_id) or {}
+        saved[_GUILD_LEVEL] = level
         cur = conn.execute(
             "UPDATE app_user SET daily_switch=? WHERE id=?",
             (json.dumps(saved, ensure_ascii=False), int(user_id)))

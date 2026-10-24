@@ -2193,6 +2193,13 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 if user_id:
                     block["任务"] = citydb.daily_switches(
                         user_id, (config.get("每日任务") or {}).get("任务") or {})
+                    level = citydb.guild_camp_level(user_id)
+                    if level is not None:
+                        camp = cfg.get("公会战役")
+                        if not isinstance(camp, dict):
+                            camp = {}
+                            cfg["公会战役"] = camp
+                        camp["敌方等级"] = level
                 cfg.setdefault("征战", {})["终点"] = _campaign_end(params, user_id)
                 path = daily.state_path_for_qq(citydb.attack_context_qq())
                 with daily.using_state(path):

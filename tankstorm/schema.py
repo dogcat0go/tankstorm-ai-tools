@@ -86,6 +86,11 @@ _NESTED = {
         "5": ("defName", "string"),
         "6": ("defCountry", "int32"),
     },
+    # RseGuildOpt.npcList，CountryUser。2026-10-24 公会战役据点：baseid 是进攻用的 npcID，lvl 是等级。
+    "npcList": {
+        "3": ("baseid", "string"),
+        "6": ("lvl", "int32"),
+    },
 }
 
 

@@ -358,7 +358,7 @@ _DUMP_NAMES = (
     "addmetal|jungong|trainExp|nAddRes|bSignIn|nSignInDays|nReplenishDays|"
     "logonDays|nRankSelf|nRankSelfLast|nIntegralScore|nCanFightTimes|"
     "nJoinPlayers|bScoreGiftGain|bLastRankGet|ngetdailyawd|ncangetCnt|"
-    "dayHasPK|lastBtlRank|curSesionBtlOver|bRankGet|field\\d+"
+    "dayHasPK|field\\d+"
 )
 _DUMP_ASSIGN = (
     rf"(?:{_DUMP_NAMES})(?:\[[^\]]*\])?(?:\.field\d+(?:\[[^\]]*\])?)*"
@@ -1189,6 +1189,95 @@ class Task:
         return bad
 
 
+_FRAG_CAP = 10
+
+
+def _frag_send(rec, sock, typ, tank=0, skill=0):
+    fields = {1: ("int32", typ)}
+    if tank:
+        fields[2] = ("int32", tank)
+    if skill:
+        fields[3] = ("int32", skill)
+    mark = rec.seq_mark() if rec else 0
+    sender.send_frame(
+        sock, "04d3", encode_message(fields, omit_zero=False), rec.rc4_c2s)
+    return _await_response(
+        sock, rec, "RseWarTankResearchOpt", mark, 6.0,
+        want=lambda d, typ=typ: isinstance(d, dict) and d.get("type") == typ)
+
+
+def _finished_research(data):
+    raw = data.get("field4") if isinstance(data, dict) else None
+    rows = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+    now = int(time.time())
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        tank, skill, end = row.get("field1"), row.get("field2"), row.get("field3")
+        if any(isinstance(v, bool) or not isinstance(v, int) for v in (tank, skill, end)):
+            continue
+        if tank > 0 and skill > 0 and 0 < end <= now:
+            out.append((tank, skill))
+    return out
+
+
+def daily_tank_fragment(rec, sock, config):
+    """军备研究碎片。2026-10-24 12:43：完成时间已到就 type=3 领取，再 type=1 接着研究。
+
+    一天最多 10 次。还在研究的不发。次数自己记，没到点就留着下次再看。
+    """
+    st = _load_state()
+    prev = st.get("done", {}).get("碎片获取", 0)
+    if not isinstance(prev, int) or isinstance(prev, bool) or prev < 0:
+        prev = 0
+    room = _FRAG_CAP - prev
+    if room <= 0:
+        return True, "成功：今日已领取 %d 次" % prev
+    for kind in (21, 0, 21):
+        mark = rec.seq_mark() if rec else 0
+        sender.send_frame(
+            sock, "04e1",
+            encode_message({1: ("int32", kind)}, omit_zero=False),
+            rec.rc4_c2s)
+        _await_response(
+            sock, rec, "RseJunBeiOpt", mark, 4.0,
+            want=lambda d, kind=kind: isinstance(d, dict) and d.get("type") == kind)
+    panel = _frag_send(rec, sock, 0)
+    if not isinstance(panel, dict):
+        return False, "失败：没打开军备研究"
+    done = 0
+    seen = set()
+    stopped = False
+    while done < room:
+        raise_if_stopped()
+        ready = [row for row in _finished_research(panel) if row not in seen]
+        if not ready:
+            break
+        tank, skill = ready[0]
+        seen.add((tank, skill))
+        got = _frag_send(rec, sock, 3, tank, skill)
+        if not isinstance(got, dict) or got.get("ret") not in (0, None):
+            stopped = True
+            break
+        done += 1
+        nxt = _frag_send(rec, sock, 1, tank, skill)
+        if not isinstance(nxt, dict) or nxt.get("ret") not in (0, None):
+            break
+        panel = nxt
+        _nap(0.35)
+    if done:
+        st = _load_state()
+        st.setdefault("done", {})["碎片获取"] = prev + done
+        _save_state(st)
+    if not done:
+        if stopped:
+            return False, "失败：领取研究没有成功"
+        return True, "成功：没有到点的研究，不领"
+    return True, "成功：领取并重新研究 %d 次，今日 %d/%d" % (
+        done, prev + done, _FRAG_CAP)
+
+
 # ---------------------------------------------------------------- 任务表
 #
 # fields 形如 {字段号: ("int32"|"string", 值)}；字段号来自 docs/redwar.proto。
@@ -1238,13 +1327,12 @@ TASKS = [
        # "数组里第 day-1 格"，要补得先扩 success_flag 的写法。
        report=("logonDays", "field3")),
 
-    # 2026-10-11 19:33 满仓时客户端发 time=0，能收。没满时 time 是
-    # (容量-已攒)×周期/产量，数字来自建筑表，不是按仓库涨速倒推。
+    # 2026-10-24 12:52 抓包。5 座金属厂、5 座油井都是 type=12、time=0。
+    # 9 级油井只攒了 96228（容量 213840），照样发 0，回包 error=0，cB 变 0。
     _t("每日资源", "每日免费资源", "0414", "RceBuildingModify",
        {}, "实测",
-       "2026-10-11：类型 1 金属厂、类型 2 油井。field6=0 发 time=0；"
-       "field6=1 时 field7 是已攒量，time=(容量-已攒)×15/产量。"
-       "到手看 resources。不花点券",
+       "2026-10-24：类型 1 金属厂、类型 2 油井，没满也发 time=0。"
+       "回包 error=0。到手看 resources。不花点券",
        runner=lambda rec, sock, config: daily_collect_res(rec, sock, config)),
 
     # 2026-10-11 19:44 抓包。5 个工程师先修猛犸再修 T99。
@@ -1546,6 +1634,15 @@ TASKS = [
        gate=Gate("RseJunBeiOpt", "field14[].field1"),
        tiers=Tiers(5, [1, 4])),
 
+    # 2026-10-24 12:43。到点的研究用 type=3 领取，再用 type=1 接着研究同一项。
+    _t("碎片获取", "军备研究·碎片获取", "04d3", "RceWarTankResearchOpt",
+       {}, "实测",
+       "2026-10-24：先开军备面板，再 RceWarTankResearchOpt type=0。"
+       "完成时间已到的用 type=3 领取，type=1 重新研究。一天最多 10 次。没到点的不发",
+       max_per_day=10,
+       counts_itself=True,
+       runner=lambda rec, sock, config: daily_tank_fragment(rec, sock, config)),
+
     # 开面板响应里的 skilltraintimes 就是剩余训练次数（实测 5→4→…→0）。
     # 次数用完后服务器直接回 ret=11 拒绝，**不会扣费**（要加次数得自己去买），
     # 所以这里本来就是安全的；加闸门只是别再发那两个注定失败的包。
@@ -1639,24 +1736,17 @@ TASKS = [
            "tankstorm.guild", fromlist=["daily_join"]
        ).daily_join(rec, sock, config)),
 
-    # 顺序按抓包来。抓包里每个 RceGuildOpt 都带着这一串 0，照抄。
-    # 这一项只打开战报面板（type:14 回包是 userGuild + log），不参战、不领奖。
-    _t("公会战", "公会战·看战报", "0479", "RceGuildOpt",
-       {2: ("int32", 14), 4: ("int32", 0), 13: ("int32", 0), 17: ("int32", 0),
-        18: ("int32", 0), 22: ("int32", 0), 23: ("int32", 0)},
-       "实测", "8/10 抓包：type:0 → type:2 → type:73 → type:14。"
-               "type:73 的回包带 dayHasPK＝今天有没有公会战活动。"
-               "这一项只是看战报；「参加」是单独的『公会战参加』任务（type:70）",
-       prelude=[("0479", {2: ("int32", 0), 4: ("int32", 0), 13: ("int32", 0),
-                          17: ("int32", 0), 18: ("int32", 0),
-                          22: ("int32", 0), 23: ("int32", 0)}),
-                ("0479", {2: ("int32", 2), 4: ("int32", 0), 13: ("int32", 0),
-                          17: ("int32", 0), 18: ("int32", 0),
-                          22: ("int32", 0), 23: ("int32", 0)}),
-                ("0479", {2: ("int32", 73), 4: ("int32", 0), 13: ("int32", 0),
-                          17: ("int32", 0), 18: ("int32", 0),
-                          22: ("int32", 0), 23: ("int32", 0)})],
-       report=("dayHasPK", "lastBtlRank", "curSesionBtlOver", "bRankGet")),
+    # 2026-10-24 13:18–13:19 抓包。公会战役进攻，不是上面的 type:70 报名。
+    # type:200 打开，type:208 进战场，type:217 按页读 npcList.lvl，
+    # 对上等级才发 type:203。回包是 type:251，体力下降才算打上。
+    _t("公会战役", "公会战役·进攻据点", "0479", "RceGuildOpt",
+       {}, "实测",
+       "2026-10-24：type:200 打开，type:208 进战场，type:217 读据点等级。"
+       "对上「公会战役.敌方等级」才发 type:203。回包 type:251 且体力下降才算打上。"
+       "只在周五 10:00 到周六 10:00（本机时间）。不领奖、不刷新",
+       runner=lambda rec, sock, config: __import__(
+           "tankstorm.guild", fromlist=["daily_campaign"]
+       ).daily_campaign(rec, sock, config)),
 
     # 2026-10-04 抓包是一键：金属石油、功勋、军令各捐到当天上限，不是只发一次。
     _t("公会捐献", "公会·捐献", "0479", "RceGuildOpt",
@@ -1673,10 +1763,9 @@ TASKS = [
     # 2026-10-23 23:14 抓包。4 星、5 星参加或发布，并领公会活跃。
     _t("公会任务", "公会·参加任务", "04f3", "RceGuildBuildOpt",
        {}, "实测",
-       "2026-10-23：ntype=3 开面板，9 参加已发布的 4 星或 5 星，"
-       "6 发布候选里的 4 星或 5 星，7 领已完成的。一天最多 5 个。"
-       "公会活跃是 RceGuildOpt type=350 开面板、type=351 按档领取。"
-       "付费刷新不发",
+       "2026-10-24：一天最多再接 5 减已经接收的个数。"
+       "先参加已有的 4 星、5 星团队任务，再从候选承接，5 星优先于 4 星。"
+       "付费刷新不发。做完的另领。公会活跃 type=350 开面板、type=351 按档领",
        runner=lambda rec, sock, config: __import__(
            "tankstorm.guild", fromlist=["daily_guild_task"]
        ).daily_guild_task(rec, sock, config)),
@@ -3392,49 +3481,22 @@ def daily_collect_res(rec, sock, config):
     """一键收取金属厂和油井。不花点券，不花勋章。
 
     建筑从登录的 RseLoad 里取：field5=1 金属厂，2 油井，field4 是 id。
-    field6=0 表示已经装满，发 time=0。
-    field6=1 时 field7 是已攒数量。time 用建筑表：
-    (容量[等级-1] - 已攒) * 周期 / 产量，取整。金属厂和油井是同一套数。
+    2026-10-24：没装满也发 time=0。回包 error=0，建筑里的已攒量清掉。
     """
-    # RedWar_2026100801 建筑表，等级 1 到 12。周期每级都是 15 秒。
-    cap = (10800, 14520, 21600, 32760, 48720, 74880,
-           110160, 156000, 213840, 285120, 420000, 640000)
-    produce = (9, 11, 15, 21, 29, 39, 51, 65, 81, 99, 125, 167)
-
-    def collect_time(level, state, stored):
-        if state == 0:
-            return 0
-        if not isinstance(level, int) or level < 1 or level > len(cap):
-            return None
-        if stored is None or stored < 0:
-            return None
-        room = cap[level - 1] - stored
-        if room <= 0:
-            return 0
-        return room * 15 // produce[level - 1]
-
     load = (rec.latest.get("RseLoad") or (None, None))[1] if rec else None
     buildings = _rows(load.get("buildingdata")) if isinstance(load, dict) else None
     if not buildings:
         return False, "失败：读不到基地建筑"
     targets = []
-    unknown = []
     for b in buildings:
         kind = b.get("field5")
         if kind not in (1, 2):
             continue
         bid = _one(b.get("field4"))
-        level = _one(b.get("field1"))
-        state = _one(b.get("field6"))
-        stored = _one(b.get("field7"))
-        if not bid or bid <= 0 or state is None:
+        if not bid or bid <= 0:
             continue
-        wait = collect_time(level, state, stored)
-        if wait is None:
-            unknown.append(bid)
-            continue
-        targets.append((bid, wait))
-    if not targets and not unknown:
+        targets.append(bid)
+    if not targets:
         return False, "失败：读不到金属厂或油井"
 
     def num(v):
@@ -3465,13 +3527,13 @@ def daily_collect_res(rec, sock, config):
     got_n = refused = 0
     bad = ""
     after = None
-    for bid, wait in targets:
+    for bid in targets:
         raise_if_stopped()
         mark = rec.seq_mark()
         sender.send_frame(
             sock, "0414",
             encode_message({2: ("int32", bid), 3: ("int32", 12),
-                            11: ("int32", wait)}, omit_zero=False),
+                            11: ("int32", 0)}, omit_zero=False),
             rec.rc4_c2s)
         got = _await_response(
             sock, rec, "RseBuildingModify", mark, 6,
@@ -3480,10 +3542,8 @@ def daily_collect_res(rec, sock, config):
         err = got.get("error") if isinstance(got, dict) else None
         if not isinstance(err, int) or isinstance(err, bool):
             bad = bad or f"建筑 {bid} 没有回包"
-        elif err == 27:
-            refused += 1
-            bad = bad or f"建筑 {bid} time={wait} 被拒 error=27"
         elif err != 0:
+            refused += 1
             bad = bad or f"建筑 {bid} 被拒 error={err}"
         else:
             got_n += 1
@@ -3496,8 +3556,6 @@ def daily_collect_res(rec, sock, config):
         parts.append(f"收了 {got_n} 座")
     if refused:
         parts.append(f"{refused} 座被拒")
-    if unknown:
-        parts.append(f"{len(unknown)} 座等级没有产量数据")
     if before and after and after != before:
         parts.append(f"金属 {after[0] - before[0]:+}、石油 {after[1] - before[1]:+}")
     text = "，".join(parts)
@@ -3506,8 +3564,8 @@ def daily_collect_res(rec, sock, config):
         if text:
             why = why + "。" + text
         return False, "失败：" + why
-    if bad or unknown:
-        return False, f"失败：{bad or '有的楼没发'}。{text}"
+    if bad:
+        return False, f"失败：{bad}。{text}"
     return True, "成功：" + text
 
 
@@ -4511,7 +4569,7 @@ def _do_once(task, sock, rec, st, results, details, field_names,
                     panel_note = " ".join(bits)
                     log.info("[%s] 面板：%s", task.key, panel_note)
 
-        # 没有闸门的任务也要能报面板（公会战就靠它把 dayHasPK 读出来）。
+        # 没有闸门的任务也要能报面板。
         # 闸门那条路已经顺手取过了，这里只补没闸门的情形。
         if task.report and not panel_note and task.prelude:
             pop, pfields = task.prelude[-1]

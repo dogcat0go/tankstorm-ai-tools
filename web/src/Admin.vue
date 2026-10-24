@@ -452,9 +452,9 @@ async function saveStormCap(m) {
     const saved = members.value.find((row) => row.id === m.id);
     stormNotes.value = {
       ...stormNotes.value,
-      [m.id]: saved && saved.storm_cap != null
+      [m.id]: saved && Number(saved.storm_cap) > 0
         ? "已保存，每天上限 " + saved.storm_cap + " 次"
-        : "已保存，不限制",
+        : "已保存，不拒绝",
     };
   } catch (e) {
     const message = e.message || "请求失败";
@@ -732,18 +732,18 @@ onUnmounted(() => {
                   <p>刷摩多定时：{{ m.modo_at || "未设" }} · 恢复卡 {{ m.modo_cards || 0 }}</p>
                   <p>
                     超级强攻：今日已拒绝 {{ m.storm_used || 0 }} 次
-                    <template v-if="m.storm_cap == null">· 不限制</template>
+                    <template v-if="!(Number(m.storm_cap) > 0)">· 不拒绝</template>
                     <template v-else>· 上限 {{ m.storm_cap }} 次<template v-if="(m.storm_used || 0) >= m.storm_cap">，已停</template></template>
                   </p>
                   <form class="storm-cap" @submit.prevent="saveStormCap(m)">
                     <label>每日上限
-                      <input v-model="m.storm_cap_text" inputmode="numeric" placeholder="不限制" />
+                      <input v-model="m.storm_cap_text" inputmode="numeric" placeholder="不拒绝" />
                     </label>
                     <button type="submit">保存</button>
                     <span v-if="stormErr[m.id]" class="err">{{ stormErr[m.id] }}</span>
                     <span v-else class="muted">{{ stormNotes[m.id] }}</span>
                   </form>
-                  <p class="muted">按北京时间每天 0 点重新计算。留空则一直拒绝。填 0 则这个登录账号绑定的攻打 QQ 不再自动拒绝。成功发出拒绝才算一次，达到上限后这个登录账号今天不再自动拒绝。</p>
+                  <p class="muted">登录账号默认不拒绝。留空或填 0 都不自动拒绝；填 0 时，这个登录账号绑定的攻打 QQ 一律不拒绝。只有这里填了大于 0 的次数才会拒绝，按北京时间每天 0 点重新计算。成功发出拒绝才算一次，达到上限后这个登录账号今天不再自动拒绝。</p>
                 </td>
               </tr>
             </template>

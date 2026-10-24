@@ -211,9 +211,9 @@ def refresh_login_sessions() -> None:
 def _arm_super_storm(rec, sock, config, qq=None) -> None:
     """这条连接收到超级强攻就拒绝。拒绝发出去之后，记到对应登录账号的页面上。
 
-    管理员给这个登录账号填了拒绝上限，并且今天成功拒绝已经达到这个数时，这次不发拒绝包。
+    登录账号默认不拒绝。管理员填了大于 0 的每日上限，并且今天还没到这个数，才发拒绝包。
     同一个攻打 QQ 上有账号把上限填成 0 时，这条连接不再自动拒绝。
-    次数按北京时间每天 0 点重新计算。没填上限就一直拒绝。
+    次数按北京时间每天 0 点重新计算。没填上限也不拒绝。
     """
     if not rec or not getattr(rec, "auto_reject", False):
         return

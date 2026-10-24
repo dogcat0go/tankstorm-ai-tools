@@ -2553,10 +2553,10 @@ def lock_cards_active() -> bool:
 
 
 def set_storm_cap(user_id: int, cap) -> str:
-    """这个登录账号每天最多自动拒绝几次超级强攻。空着表示不限制。
+    """这个登录账号每天最多自动拒绝几次超级强攻。空着和 0 都不拒绝。
 
-    次数按北京时间自然日计算，过了 0 点从 0 再计。
-    0 表示一次都不拒绝。成功返回空字符串。
+    只有管理员填了大于 0 的次数，这个账号才会自动拒绝。
+    次数按北京时间自然日计算，过了 0 点从 0 再计。成功返回空字符串。
     """
     user_id = int(user_id or 0)
     if user_id <= 0:
@@ -2580,7 +2580,7 @@ def set_storm_cap(user_id: int, cap) -> str:
     finally:
         conn.close()
     if value is None:
-        log.info("登录账号 %s 的超级强攻拒绝不限次数", username_of(user_id))
+        log.info("登录账号 %s 的超级强攻不自动拒绝", username_of(user_id))
     else:
         log.info("登录账号 %s 的超级强攻最多拒绝 %s 次", username_of(user_id), value)
     return ""
@@ -2611,15 +2611,15 @@ def reserve_storm_reject(user_id: int, day: str = "", qq: str = "") -> str:
     """占用今天的一次拒绝额度。空字符串表示可以发拒绝包。
 
     次数按北京时间自然日计算。storm_day 不是今天时，这次从 1 重新计。
+    没填上限、上限是 0，或没绑到登录账号时，这次不拒绝。
     同一个攻打 QQ 上只要有一个登录账号把上限填成 0，这条连接就不拒绝。
-    没绑到登录账号时不加，仍然可以拒绝。
     """
     day = str(day or beijing_day())
     qq = str(qq or "").strip()
     ids = storm_accounts(user_id, qq)
     if not ids:
-        log.info("超级强攻拒绝没对上登录账号，次数上限不生效")
-        return ""
+        log.info("超级强攻拒绝没对上登录账号，这次不拒绝")
+        return "超级强攻拒绝没对上登录账号，这次不拒绝"
     primary = storm_subject(user_id, qq)
     conn = connect()
     try:
@@ -2637,21 +2637,22 @@ def reserve_storm_reject(user_id: int, day: str = "", qq: str = "") -> str:
             "UPDATE app_user SET "
             "storm_used=CASE WHEN IFNULL(storm_day,'')!=? THEN 1 "
             "ELSE IFNULL(storm_used,0)+1 END, storm_day=? "
-            "WHERE id=? AND (storm_cap IS NULL OR "
+            "WHERE id=? AND IFNULL(storm_cap,0)>0 AND "
             "CASE WHEN IFNULL(storm_day,'')!=? THEN 0 "
-            "ELSE IFNULL(storm_used,0) END < storm_cap)",
+            "ELSE IFNULL(storm_used,0) END < storm_cap",
             (day, day, primary, day))
         conn.commit()
         if cur.rowcount == 1:
             return ""
         row = conn.execute(
-            "SELECT storm_cap, IFNULL(storm_used,0), IFNULL(storm_day,'') "
-            "FROM app_user WHERE id=?",
+            "SELECT storm_cap, IFNULL(storm_used,0), IFNULL(storm_day,''), "
+            "IFNULL(username,'') FROM app_user WHERE id=?",
             (primary,)).fetchone()
     finally:
         conn.close()
-    if not row or row[0] is None:
-        return ""
+    if not row or row[0] is None or int(row[0]) <= 0:
+        who = str((row[3] if row else "") or primary)
+        return f"登录账号 {who} 没有开启超级强攻拒绝"
     used = int(row[1] or 0) if str(row[2] or "") == day else 0
     return f"超级强攻今日已拒绝 {used} 次，达到上限 {int(row[0])}，这次不拒绝"
 

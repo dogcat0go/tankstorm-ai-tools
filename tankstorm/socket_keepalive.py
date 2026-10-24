@@ -1451,11 +1451,11 @@ def _fight_modo(rec, sock, config, beater, job) -> None:
         note = str(out.get("说明") or "").strip()
         hits = int(out.get("攻击") or 0)
         beats = int(tally.get("n") or 0)
-        log.info("―― 摩多军团 ―― 打 %d 次，召唤 %d 次，用卡 %d 张，补支援兵 %d 个",
-                 hits, int(out.get("召唤") or 0), int(out.get("用卡") or 0),
+        log.info("―― 摩多军团 订单 %s ―― 打 %d 次，召唤 %d 次，用卡 %d 张，补支援兵 %d 个",
+                 job["id"], hits, int(out.get("召唤") or 0), int(out.get("用卡") or 0),
                  int(out.get("补兵") or 0))
         if why:
-            log.info("   结束原因：%s", why)
+            log.info("订单 %s 结束原因：%s", job["id"], why)
         if why in ("已暂停", "已定时关闭"):
             citydb.defer_attack_order(job["id"])
             log.info("订单 %s %s，放回排队", job["id"], why)
@@ -1682,16 +1682,16 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
                 return result
         else:
             if uid:
-                log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
-                         uid, job["city_id"], out.get("移动") or 0, out.get("走到"),
+                log.info("―― 打 UID %s 城 %s 订单 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                         uid, job["city_id"], job["id"], out.get("移动") or 0, out.get("走到"),
                          out.get("攻击") if out.get("攻击") is not None else "未打")
             else:
-                log.info("―― 清城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
-                         job["city_id"], out.get("移动") or 0, out.get("走到"),
+                log.info("―― 清城 %s 订单 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                         job["city_id"], job["id"], out.get("移动") or 0, out.get("走到"),
                          out.get("攻击") if out.get("攻击") is not None else "未打")
             action, status, why = _order_result(job, out)
             if why:
-                log.info("   结束原因：%s", why)
+                log.info("订单 %s 结束原因：%s", job["id"], why)
             if (not uid and not job.get("auto") and action == "finish"
                     and _clear_cycle(why, out)):
                 cycle_min = citydb.clear_wait_minutes()

@@ -756,7 +756,7 @@ onUnmounted(() => {
         <p v-else-if="logBusy && !logView" class="muted">正在读日志。</p>
         <template v-if="logView">
           <p>登录账号：{{ accountLine(logView.accounts) }}</p>
-          <p class="muted">留空 UID 的是清城。同一条过了分钟再排队，就是空城再打。当前说明写在订单上，每一次再打写在运行日志里。空城再打：{{ clearWaitLine(logView.accounts) }}。</p>
+          <p class="muted">留空 UID 的是清城。同一条过了分钟再排队，就是空城再打。打完、空了、还有打不过的人，都按这个分钟再来。当前说明写在订单上，每一次再打写在运行日志里。空城再打：{{ clearWaitLine(logView.accounts) }}。</p>
           <h3>提交的攻打</h3>
           <div class="wide qq-orders" v-if="logView.orders.length">
             <table>

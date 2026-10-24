@@ -1369,6 +1369,15 @@ def _clear_cycle(reason: str, out) -> bool:
     return _empty_city(reason) or _clear_stuck(reason, out)
 
 
+def _clear_finished(status: str, reason: str) -> bool:
+    """这几页打完了。空城再打开着时，过一会儿再来看有没有新人。"""
+    if str(status or "") != "done":
+        return False
+    if _clear_hard_stop(reason):
+        return False
+    return str(reason or "") in ("", "这座城打完了")
+
+
 def _order_result(job, out) -> tuple:
     """这一单打完怎么收。返回 (动作, 状态, 原因)。
 
@@ -1394,6 +1403,8 @@ def _order_result(job, out) -> tuple:
         return "finish", "failed", reason or "没打完，等下一次索敌"
     if not uid and _defeated(reason):
         return "finish", "ended", reason or "被别人打败，已回到首都"
+    if not uid and reason == "这座城打完了":
+        return "finish", "done", ""
     if reason and not _cards_used_up(reason) and _person_blocking(reason):
         return "park", "", reason
     if reason and _cards_used_up(reason):
@@ -1668,6 +1679,7 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
         beats = int(tally.get("n") or 0)
         cycle_min = 0
         cycle_stuck = False
+        cycle_cleared = False
         if skipped:
             status, why = "failed", _LOCK_LEFT
             here = citydb.attack_here_id()
@@ -1693,9 +1705,10 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
             if why:
                 log.info("订单 %s 结束原因：%s", job["id"], why)
             if (not uid and not job.get("auto") and action == "finish"
-                    and _clear_cycle(why, out)):
+                    and (_clear_cycle(why, out) or _clear_finished(status, why))):
                 cycle_min = citydb.clear_wait_minutes()
                 cycle_stuck = _clear_stuck(why, out)
+                cycle_cleared = _clear_finished(status, why) and not cycle_stuck
             if action == "defer":
                 citydb.defer_attack_order(job["id"])
                 log.info("订单 %s %s，放回排队", job["id"], why or "已暂停")
@@ -1837,9 +1850,12 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
                 if finished:
                     citydb.append_order_reason(last_id, note)
         if cycle_min > 0 and citydb.schedule_empty_order(
-                job["id"], cycle_min, beats=beats, stuck=cycle_stuck, note=back_note):
+                job["id"], cycle_min, beats=beats, stuck=cycle_stuck,
+                cleared=cycle_cleared, note=back_note):
             if cycle_stuck:
                 log.info("订单 %s 还有打不过的人，%d 分钟后再打", job["id"], cycle_min)
+            elif cycle_cleared:
+                log.info("订单 %s 这几页打完了，%d 分钟后再打", job["id"], cycle_min)
             else:
                 log.info("订单 %s 这座城是空的，%d 分钟后再打", job["id"], cycle_min)
             return _cut()

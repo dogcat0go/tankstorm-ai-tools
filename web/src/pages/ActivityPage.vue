@@ -51,7 +51,7 @@ const guildTask = computed(() => props.tasks.find((it) => it.key === "公会战�
         <button type="submit">保存</button>
       </form>
       <p v-if="note" class="muted">{{ note }}</p>
-      <p class="muted">只在周五 10:00 到周六 10:00（本机时间）执行。等级记在这个登录账号上，没改过就用配置里的等级。保存后，下次进攻按这个等级打。</p>
+      <p class="muted">只在周五 10:00 到周六 22:00（本机时间）执行。等级记在这个登录账号上，没改过就用配置里的等级。保存后，下次进攻按这个等级打。</p>
     </details>
     <p v-if="err && errAt === 'activity'" class="err">{{ err }}</p>
   </section>

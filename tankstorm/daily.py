@@ -1743,7 +1743,7 @@ TASKS = [
        {}, "实测",
        "2026-10-24：type:200 打开，type:208 进战场，type:217 读据点等级。"
        "对上「公会战役.敌方等级」才发 type:203。回包 type:251 且体力下降才算打上。"
-       "只在周五 10:00 到周六 10:00（本机时间）。不领奖、不刷新",
+       "只在周五 10:00 到周六 22:00（本机时间）。不领奖、不刷新",
        runner=lambda rec, sock, config: __import__(
            "tankstorm.guild", fromlist=["daily_campaign"]
        ).daily_campaign(rec, sock, config)),
@@ -1763,9 +1763,11 @@ TASKS = [
     # 2026-10-23 23:14 抓包。4 星、5 星参加或发布，并领公会活跃。
     _t("公会任务", "公会·参加任务", "04f3", "RceGuildBuildOpt",
        {}, "实测",
-       "2026-10-24：一天最多再接 5 减已经接收的个数。"
-       "先参加已有的 4 星、5 星团队任务，再从候选承接，5 星优先于 4 星。"
-       "付费刷新不发。做完的另领。公会活跃 type=350 开面板、type=351 按档领",
+       "2026-10-24：一天 5 个。先参加已有的 4 星、5 星，再从候选承接。"
+       "接上还没做完的不计完成，领奖之后才计入今日 5 个。"
+       "付费刷新不发。公会活跃 type=350 开面板、type=351 按档领",
+       max_per_day=5,
+       counts_itself=True,
        runner=lambda rec, sock, config: __import__(
            "tankstorm.guild", fromlist=["daily_guild_task"]
        ).daily_guild_task(rec, sock, config)),

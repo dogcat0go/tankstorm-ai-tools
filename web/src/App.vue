@@ -628,7 +628,7 @@ async function loadMe() {
 
 function takeUser(user) {
   me.value = user;
-  if (!user.base_war && tab.value === "base") tab.value = "attack";
+  if (!user.base_war && (tab.value === "base" || tab.value === "activity")) tab.value = "attack";
   pveStagesReady = false;
   guildLevelReady = false;
   dailyAtReady = false;
@@ -1176,7 +1176,7 @@ onUnmounted(() => {
         <el-menu-item index="attack">国战助手</el-menu-item>
         <el-menu-item index="daily">日常任务</el-menu-item>
         <el-menu-item v-if="me && me.base_war" index="base">基地战助手</el-menu-item>
-        <el-menu-item index="activity">活动助手</el-menu-item>
+        <el-menu-item v-if="me && me.base_war" index="activity">活动助手</el-menu-item>
         <el-menu-item index="watch">监控敌人</el-menu-item>
       </el-menu>
       <ProfilePage
@@ -1190,7 +1190,7 @@ onUnmounted(() => {
         :show-err="showErr"
       />
       <ActivityPage
-        v-show="toolsOn && tab === 'activity'"
+        v-show="toolsOn && me && me.base_war && tab === 'activity'"
         v-model:guild-level="guildLevel"
         :daily-qq="dailyQq"
         :tasks="dailyTasks"

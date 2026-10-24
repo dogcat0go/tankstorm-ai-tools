@@ -540,6 +540,8 @@ def _handler(config: dict):
                     })
                 elif path == "/api/daily/switch":
                     from . import daily
+                    if str(data.get("key") or "") == "公会战役" and not citydb.base_tier(user.get("tier") or ""):
+                        raise ValueError("活动助手需要高级pro订阅")
                     on = data.get("on")
                     if isinstance(on, str):
                         on = on.strip().lower() in ("1", "true", "on", "开")
@@ -558,6 +560,8 @@ def _handler(config: dict):
                         "tasks": daily.task_board(uin, switches),
                     })
                 elif path == "/api/daily/guild-level":
+                    if not citydb.base_tier(user.get("tier") or ""):
+                        raise ValueError("活动助手需要高级pro订阅")
                     why = citydb.set_guild_camp_level(user["id"], data.get("level"))
                     if why:
                         raise ValueError(why)

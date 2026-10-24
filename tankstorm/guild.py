@@ -191,12 +191,12 @@ def _camp_fields(type_, page=0, npc="0"):
 
 
 def _camp_window(now=None):
-    """周五 10:00 到周六 10:00，按本机时区。周六 10:00 整点已经出窗口。"""
+    """周五 10:00 到周六 22:00，按本机时区。周六 22:00 整点已经出窗口。"""
     lt = time.localtime(now if now is not None else time.time())
     mins = lt.tm_hour * 60 + lt.tm_min
     if lt.tm_wday == 4 and mins >= 10 * 60:
         return True
-    return lt.tm_wday == 5 and mins < 10 * 60
+    return lt.tm_wday == 5 and mins < 22 * 60
 
 
 def _camp_npcs(data):
@@ -237,8 +237,11 @@ def _camp_thew(data):
 
 def daily_campaign(rec, sock, config):
     """窗口内先读据点等级，对上配置才进攻。窗口外不发包。"""
+    from . import citydb
+    if not citydb.base_tier(citydb.user_tier(citydb.attack_context_user() or 0)):
+        return False, "活动助手需要高级pro订阅"
     if not _camp_window():
-        return False, "不在周五 10:00 到周六 10:00（本机时间），跳过"
+        return False, "不在周五 10:00 到周六 22:00（本机时间），跳过"
     level = (config.get("公会战役") or {}).get("敌方等级")
     if isinstance(level, bool) or not isinstance(level, int) or level <= 0:
         return False, "没配敌方等级（公会战役.敌方等级），不打"
@@ -563,19 +566,34 @@ def _guild_tasks(sock, rec):
         panel = nxt
         _nap(0.35)
     panel, claimed = _claim_tasks(sock, rec, panel)
+    noted = _note_guild_claims(len(claimed))
     if panel is None:
-        return False, "失败：领取已完成任务没有成功"
+        return False, "失败：领取已完成任务没有成功（已领奖 %d/%d）" % (noted, _TASK_CAP)
     bits = []
     if joined:
         bits.append("参加已有 %d 个" % len(joined))
     if taken:
         bits.append("承接 %d 个" % len(taken))
     if claimed:
-        bits.append("领取 %d 个" % len(claimed))
-    head = "今日可再接 %d 个" % room
+        bits.append("领奖 %d 个" % len(claimed))
+    head = "已领奖 %d/%d" % (noted, _TASK_CAP)
     if not bits:
         return True, "成功：%s，没有可参加或可承接的 4 星、5 星，刷新 %d 次" % (head, refreshes)
     return True, "成功：%s，" % head + "，".join(bits) + "，刷新 %d 次" % refreshes
+
+
+def _note_guild_claims(n):
+    """领奖才计入今日完成。没领奖不记，下次接着看。"""
+    from .daily import _load_state, _save_state
+    st = _load_state()
+    prev = st.get("done", {}).get("公会任务", 0)
+    if not isinstance(prev, int) or isinstance(prev, bool) or prev < 0:
+        prev = 0
+    total = prev if n <= 0 else min(_TASK_CAP, prev + n)
+    if total != prev:
+        st.setdefault("done", {})["公会任务"] = total
+        _save_state(st)
+    return total
 
 
 def _flag_list(val):

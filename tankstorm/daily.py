@@ -1771,12 +1771,16 @@ TASKS = [
        ).daily_donate(rec, sock, config)),
 
     # 2026-10-23 23:14 抓包。4 星、5 星参加或发布，并领公会活跃。
+    # 跟定时执行同一条醒来线程。那次醒来里开关开着、并且距上次已满一小时，才再排一次。
+    # 不另开线程干等。冷却记在每日状态的 last 里，整轮日常碰到一小时内看过的就跳过。
     _t("公会任务", "公会·参加任务", "04f3", "RceGuildBuildOpt",
        {}, "实测",
-       "2026-10-24：一天 5 个。先参加已有的 4 星、5 星，再从候选承接。"
+       "开关开着时每小时看一次。今日没领满 5 个，就参加或承接 4 星、5 星。"
+       "已经领满，身上的任务做完了才领奖，没有可领的就不发。"
        "接上还没做完的不计完成，领奖之后才计入今日 5 个。"
        "付费刷新不发。公会活跃 type=350 开面板、type=351 按档领",
        max_per_day=5,
+       cooldown_sec=3600,
        counts_itself=True,
        runner=lambda rec, sock, config: __import__(
            "tankstorm.guild", fromlist=["daily_guild_task"]
@@ -1921,14 +1925,20 @@ def task_board(uin: str, switches: dict) -> list:
         if task.key in HELD_TASKS:
             name = name + "（暂不执行）"
         locked = task.key in citydb.LOCKED_DAILY_TASKS
-        rows.append({
+        row = {
             "key": task.key,
             "name": name,
             "on": False if task.key in HELD_TASKS or locked else bool(switches.get(task.key)),
             "done": count,
             "max": int(task.max_per_day or 1),
             "locked": locked,
-        })
+        }
+        if task.key == "公会任务":
+            row["hint"] = (
+                "开着时每小时看一次。还没领满 5 个就去领任务。"
+                "已经领满，能领奖才去领，没有可领的就不动。"
+            )
+        rows.append(row)
     for key, name in CAMPAIGN_EXTRAS:
         try:
             count = int(done.get(key) or 0)
@@ -4288,6 +4298,12 @@ def _run(rec, sock, config, schema, on_fail=None):
         return {}, {}
 
     switches = conf.get("任务", {})
+    raw_only = conf.get("只做")
+    if isinstance(raw_only, str):
+        raw_only = [raw_only]
+    only = set()
+    if isinstance(raw_only, (list, tuple)):
+        only = {str(item).strip() for item in raw_only if str(item or "").strip()}
     ignore_done = bool(conf.get("忽略今日次数"))
     allow_unverified = conf.get("允许未实测参数", False)
     gap = float(conf.get("间隔秒", 3))
@@ -4303,11 +4319,15 @@ def _run(rec, sock, config, schema, on_fail=None):
     # 授勋排在第三次、第4次之后，加强授勋才有征战打出来的金属和石油。
     for task in iter_run():
         if task is None:
+            if only and not any(key in only for key, _name in CAMPAIGN_EXTRAS):
+                continue
             _run_campaign_extras(
                 rec, sock, switches, st, results,
                 stages=_campaign_goal(config) or "",
                 interval=_campaign_interval(config),
                 on_fail=on_fail)
+            continue
+        if only and task.key not in only:
             continue
         try:
             raise_if_stopped()
@@ -4321,7 +4341,9 @@ def _run(rec, sock, config, schema, on_fail=None):
 
             done = 0 if ignore_done else st["done"].get(task.key, 0)
             # 免费重开记满 2 次之后，填了终点仍要接着打，不能把整项跳过。
-            if done >= task.max_per_day and not (
+            # 公会任务的今日次数记的是领奖。到 5 仍要每小时看一眼：
+            # 没领满去领任务，领满了再判断能不能领奖。
+            if done >= task.max_per_day and task.key != "公会任务" and not (
                     task.key == "征战世界" and _campaign_goal(config)):
                 results[task.key] = f"今日已执行 {done}/{task.max_per_day} 次，跳过"
                 log.info("[%s] %s", task.key, results[task.key])

@@ -376,6 +376,7 @@ def _handler(config: dict):
                     "schedule": citydb.daily_schedule(user["id"]),
                     "modo_at": citydb.modo_schedule(user["id"]),
                     "guild_level": guild_level,
+                    "guild_tasks": citydb.guild_task_board(user["id"]),
                 })
                 return
             if path == "/api/admin/fighters":
@@ -1048,7 +1049,8 @@ def _wake_attack_orders(config) -> None:
     while not gap.wait(5):
         try:
             citydb.shelve_due_accounts()
-            citydb.enqueue_due_daily_jobs()
+            citydb.enqueue_due_daily_jobs(
+                ((config or {}).get("每日任务") or {}).get("任务"))
             citydb.enqueue_due_modo_orders()
             users = citydb.users_needing_attack()
         except Exception:

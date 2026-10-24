@@ -2339,6 +2339,13 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 cfg = copy.deepcopy(config)
                 block = cfg.setdefault("每日任务", {})
                 block["启用"] = True
+                only = params.get("only") if isinstance(params, dict) else None
+                if isinstance(only, str):
+                    only = [only]
+                if isinstance(only, list):
+                    picked = [str(item).strip() for item in only if str(item or "").strip()]
+                    if picked:
+                        block["只做"] = picked
                 user_id = citydb.attack_context_user()
                 if user_id:
                     block["任务"] = citydb.daily_switches(

@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS daily_job (
     params      TEXT NOT NULL DEFAULT '{}',
     status      TEXT NOT NULL,
     detail      TEXT NOT NULL DEFAULT '',
+    ready_at    TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -509,6 +510,11 @@ def connect(readonly=False, timeout=15):
                 setup.commit()
             _assign_legacy_fails(setup)
             setup.commit()
+            jcols = {r[1] for r in setup.execute("PRAGMA table_info(daily_job)")}
+            if jcols and "ready_at" not in jcols:
+                setup.execute(
+                    "ALTER TABLE daily_job ADD COLUMN ready_at TEXT NOT NULL DEFAULT ''")
+                setup.commit()
             _schema_ready = True
         finally:
             setup.close()
@@ -5708,7 +5714,9 @@ def claim_daily_job(kinds=None):
     if not ids:
         return None
     slot = ",".join("?" * len(ids))
+    now = now_ts()
     args = list(ids)
+    args.append(now)
     kind_sql = ""
     if kinds:
         kind_sql = " AND kind IN (" + ",".join("?" * len(kinds)) + ")"
@@ -5718,15 +5726,16 @@ def claim_daily_job(kinds=None):
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT id, kind, params, user_id FROM daily_job "
-            "WHERE user_id IN (" + slot + ") AND status='pending'"
+            "WHERE user_id IN (" + slot + ") AND status='pending' "
+            "AND IFNULL(ready_at,'')<=?"
             + kind_sql + " ORDER BY id LIMIT 1",
             tuple(args)).fetchone()
         if not row:
             conn.rollback()
             return None
         conn.execute(
-            "UPDATE daily_job SET status='running', updated_at=? WHERE id=?",
-            (now_ts(), row[0]))
+            "UPDATE daily_job SET status='running', ready_at='', updated_at=? WHERE id=?",
+            (now, row[0]))
         conn.commit()
     finally:
         conn.close()
@@ -5757,6 +5766,24 @@ def touch_daily_job(job_id: int, detail: str) -> None:
         conn.execute(
             "UPDATE daily_job SET detail=?, updated_at=? WHERE id=? AND status='running'",
             (text, now_ts(), int(job_id)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def defer_daily_job(job_id: int, delay: float, detail: str, params: dict) -> None:
+    """先放回排队。delay 秒后再领，已经造完的数量写在 params 里。"""
+    delay = max(1.0, float(delay or 0))
+    ready = (datetime.now(timezone.utc) + timedelta(seconds=delay)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    text = _job_detail(detail)
+    blob = json.dumps(params if isinstance(params, dict) else {}, ensure_ascii=False)
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE daily_job SET status='pending', detail=?, params=?, "
+            "ready_at=?, updated_at=? WHERE id=? AND status='running'",
+            (text, blob, ready, now_ts(), int(job_id)))
         conn.commit()
     finally:
         conn.close()

@@ -642,7 +642,8 @@ def _task_rows(data, key):
         kind = _as_int(row, "nTaskType", "field2")
         proc = _as_int(row, "nProcess", "field3") or 0
         need = _as_int(row, "nTotalNeed", "field4") or 0
-        got = row.get("bGetReward", row.get("field6")) is True
+        flag = row.get("bGetReward", row.get("field6"))
+        got = flag is True or flag == 1
         if nid and kind and nid > 0:
             out.append((nid, kind, proc, need, got))
     return out
@@ -1008,6 +1009,22 @@ def _guild_activity(sock, rec):
     if not claimed:
         return True, "公会活跃没有可领的"
     return True, "公会活跃领了第 %s 档" % "、".join(str(n) for n in claimed)
+
+
+def claim_guild_rewards(rec, sock):
+    """只领整队已完成、自己还没领过的奖。不参加、不承接。"""
+    panel = _build_send(sock, rec, _TASK_OPEN)
+    if not isinstance(panel, dict):
+        return False, "失败：没收到公会任务面板"
+    _remember_guild_panel(panel)
+    panel, claimed = _claim_tasks(sock, rec, panel)
+    noted = _note_guild_claims(len(claimed))
+    if panel is None:
+        return False, "失败：领取已完成任务没有成功（已领奖 %d/%d）" % (noted, _TASK_CAP)
+    _remember_guild_panel(panel, claimed)
+    if not claimed:
+        return True, "成功：没有可领的奖（已领奖 %d/%d）" % (noted, _TASK_CAP)
+    return True, "成功：领奖 %d 个（已领奖 %d/%d）" % (len(claimed), noted, _TASK_CAP)
 
 
 def daily_guild_task(rec, sock, config):

@@ -5114,6 +5114,7 @@ DAILY_KIND_LABEL = {
     "auto50": "自动化探索50连",
     "chest": "国家宝箱",
     "guild_camp": "公会战役",
+    "guild_claim": "公会任务领奖",
 }
 _BASE_LANE = (
     "blast", "factory", "cards", "haoyin", "admiral", "admiral10",
@@ -5522,7 +5523,7 @@ def enqueue_due_daily_jobs(guild_defaults=None) -> list:
                 continue
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job "
-                "WHERE user_id=? AND kind IN ('daily','pve','fund','guild_camp') "
+                "WHERE user_id=? AND kind IN ('daily','pve','fund','guild_camp','guild_claim') "
                 "AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
             if int(waiting or 0) >= 3:
@@ -6016,7 +6017,7 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         else:
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job WHERE user_id=? "
-                "AND kind IN ('daily','pve','fund','guild_camp') AND status IN ('pending','running')",
+                "AND kind IN ('daily','pve','fund','guild_camp','guild_claim') AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
         if int(waiting or 0) >= 3:
             return "还有没做完的，先等这几项"

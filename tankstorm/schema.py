@@ -97,7 +97,25 @@ _NESTED = {
         "1": ("point", "int32"),
         "2": ("rank", "int32"),
     },
+    # RseGuildBuildOpt 的团队任务。field6 是自己领过没有，写出时是 0/1。
+    "lstHelper": {
+        "1": ("lUid", "string"),
+        "2": ("strName", "string"),
+        "3": ("nProcess", "int32"),
+        "4": ("nTotalNeed", "int32"),
+    },
+    "field21": {
+        "1": ("nID", "int32"),
+        "2": ("nTaskType", "int32"),
+        "3": ("nProcess", "int32"),
+        "4": ("nTotalNeed", "int32"),
+        "5": ("lholder", "string"),
+        "6": ("bGetReward", "bool"),
+        "7": ("lstHelper", "message"),
+    },
 }
+_NESTED["field22"] = _NESTED["field21"]
+_NESTED["field23"] = _NESTED["field21"]
 
 
 def decode(body: bytes, op: str = None, depth: int = 0, fields=None):

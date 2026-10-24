@@ -2434,6 +2434,11 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 ok, why = guild.daily_campaign(rec, sock, cfg)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind == "guild_claim":
+                from . import guild
+                ok, why = guild.claim_guild_rewards(rec, sock)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "blast":
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
                     citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
@@ -2582,13 +2587,13 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     hold_closed = False
     side_kinds = (
         "blast", "factory",
-        "daily", "pve", "fund", "guild_camp", "chest", "cards",
+        "daily", "pve", "fund", "guild_camp", "guild_claim", "chest", "cards",
         "haoyin", "admiral", "admiral10", "box_mid", "box_high",
         "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
     )
 
     def _lane_for(kind):
-        if kind in ("daily", "pve", "fund", "guild_camp", "chest"):
+        if kind in ("daily", "pve", "fund", "guild_camp", "guild_claim", "chest"):
             return "daily"
         if kind == "blast":
             return "blast"

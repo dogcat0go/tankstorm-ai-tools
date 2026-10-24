@@ -123,7 +123,10 @@ const guildClaimable = computed(() =>
         </div>
       </template>
     </details>
-    <h2>最近执行</h2>
+    <div class="lock-row">
+      <h2>最近执行</h2>
+      <button type="button" @click="runDaily('guild_claim').catch((e) => showErr(e.message))">一键领取</button>
+    </div>
     <p v-if="!dailyJobs.length" class="muted">还没有执行记录。</p>
     <div v-else class="wide">
       <table class="daily-jobs">

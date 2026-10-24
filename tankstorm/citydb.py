@@ -2283,7 +2283,7 @@ def bind_attack_account(user_id: int, account: str) -> str:
     return ""
 
 
-_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "hereask", "equipask", "pageqr", "qrpath", "resume")
+_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "hereask", "equipask", "campask", "pageqr", "qrpath", "resume")
 
 
 def clear_attack_binding(user_id: int) -> str:
@@ -4318,6 +4318,35 @@ def take_attack_here() -> bool:
     if not attack_here_pending(user_id):
         return False
     _delete_signal(_mark_name("hereask", user_id))
+    return True
+
+
+def request_camp_live(user_id: int) -> str:
+    """进活动助手时读一次公会战役体力和当前积分。成功返回空字符串。"""
+    user_id = int(user_id or 0)
+    if not base_tier(user_tier(user_id)):
+        return "活动助手需要高级pro订阅"
+    if shutdown_due(user_id):
+        return "已定时关闭，不再执行任务"
+    if not attack_qq_of(user_id):
+        return "还没绑定攻打 QQ"
+    status = attack_status(user_id)
+    if not status.get("online"):
+        return "攻打没在跑"
+    if status.get("phase") == "login" or status.get("need_login"):
+        return "还在登录，连上后再看体力和积分"
+    _upsert_signal(_mark_name("campask", user_id), "1")
+    return ""
+
+
+def take_camp_live() -> bool:
+    """领走这一次查看。领过就不再读第二次。"""
+    user_id = attack_context_user()
+    if not user_id or (shutdown_due(user_id) and shutdown_covers_context()):
+        return False
+    if _signal_value(_mark_name("campask", user_id)).strip() != "1":
+        return False
+    _delete_signal(_mark_name("campask", user_id))
     return True
 
 

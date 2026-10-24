@@ -2176,6 +2176,19 @@ def _refresh_equip_bag(rec, sock) -> None:
     log.info("页面要看补给箱，没读到装备栏")
 
 
+def _refresh_camp_live(rec, sock) -> None:
+    """页面刚进入活动助手。读一次公会战役体力和积分，不进攻。"""
+    from . import citydb, daily, guild
+
+    try:
+        with daily.lane_hold():
+            if not citydb.take_camp_live():
+                return
+            guild.peek_campaign(rec, sock)
+    except OSError:
+        raise
+
+
 def _run_requested_move(rec, sock, config, beater) -> bool:
     """页面点了移动到指定城。走进那座城，不打它。没有请求返回 False。"""
     from . import citydb, country_war
@@ -2650,6 +2663,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                     citydb.set_attack_status("paused")
                     _refresh_asked_here(rec, sock, config)
                     _refresh_equip_bag(rec, sock)
+                    _refresh_camp_live(rec, sock)
                     if not _wait_socket(sock, spec, ctx):
                         raise OSError("服务器关闭连接")
                     continue
@@ -2665,6 +2679,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 if _refresh_asked_here(rec, sock, config):
                     continue
                 _refresh_equip_bag(rec, sock)
+                _refresh_camp_live(rec, sock)
                 for uid in citydb.attack_context_users():
                     citydb.skip_unfinished_auto(uid)
                 citydb.release_due_waits()

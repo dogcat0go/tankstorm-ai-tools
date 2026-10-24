@@ -247,6 +247,38 @@ def _camp_score(data):
     return _camp_int(msg, "point")
 
 
+def peek_campaign(rec, sock):
+    """打开公会战役，记下体力和当前积分。不进攻。"""
+    from . import citydb
+    opened = _wait(sock, rec, _send(sock, rec, TYPE_CAMP_OPEN,
+                                    _camp_fields(TYPE_CAMP_OPEN)),
+                   TYPE_CAMP_OPEN)
+    if not isinstance(opened, dict) or opened.get("ret") not in (0, None):
+        log.info("[公会战役] 打开没回包，体力和积分没更新")
+        return False
+    thew = _camp_thew(opened)
+    score = _camp_score(opened)
+    _nap(0.6)
+    entered = _wait(sock, rec, _send(sock, rec, TYPE_CAMP_ENTER,
+                                     _camp_fields(TYPE_CAMP_ENTER)),
+                    TYPE_CAMP_ENTER)
+    if isinstance(entered, dict) and entered.get("ret") in (0, None):
+        got = _camp_thew(entered)
+        if got is not None:
+            thew = got
+        got = _camp_score(entered)
+        if got is not None:
+            score = got
+    if thew is None and score is None:
+        log.info("[公会战役] 打开了，体力和积分都没读到")
+        return False
+    citydb.note_guild_camp(thew, score)
+    log.info("[公会战役] 读到体力 %s，积分 %s",
+             thew if thew is not None else "读不到",
+             score if score is not None else "读不到")
+    return True
+
+
 def daily_campaign(rec, sock, config):
     """窗口内对上等级后按体力连打。窗口外不发包。一轮只算一次任务。"""
     from . import citydb

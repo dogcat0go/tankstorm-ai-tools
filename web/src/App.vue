@@ -575,7 +575,10 @@ function markAttackHere() {
 function pickTab(key) {
   tab.value = key;
   if (key === "daily") refreshDaily().catch((e) => showErr(e.message, "daily"));
-  if (key === "activity") refreshDaily().catch((e) => showErr(e.message, "activity"));
+  if (key === "activity") {
+    refreshDaily().catch((e) => showErr(e.message, "activity"));
+    api("/api/camp-live", {}).catch((e) => showErr(e.message, "activity"));
+  }
   if (key === "base") {
     refreshBase().catch((e) => showErr(e.message, "base"));
     askBaseEquip();

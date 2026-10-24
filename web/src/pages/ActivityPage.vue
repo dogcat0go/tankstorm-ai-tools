@@ -71,7 +71,7 @@ function liveText(n) {
       <p v-if="note" class="muted">{{ note }}</p>
       <p v-if="campJob">{{ campJob.status }} {{ campJob.detail }}</p>
       <p>体力 {{ liveText(thew) }} · 当前积分 {{ liveText(score) }}</p>
-      <p class="muted">只在周五 10:00 到周六 22:00（本机时间）执行。点进攻就按体力打这一轮，不用等整轮日常。同一等级一直打，直到体力不够、体力不再下降或被拒绝。不领奖。等级记在这个登录账号上，没改过就用配置里的等级。</p>
+      <p class="muted">进入这个页面会读一次体力和当前积分。只在周五 10:00 到周六 22:00（本机时间）进攻。点进攻就按体力打这一轮，不用等整轮日常。同一等级一直打，直到体力不够、体力不再下降或被拒绝。不领奖。等级记在这个登录账号上，没改过就用配置里的等级。</p>
     </details>
     <details class="campaign-box">
       <summary>成就拨款</summary>

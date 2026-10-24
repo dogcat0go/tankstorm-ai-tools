@@ -680,6 +680,13 @@ def _handler(config: dict):
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True})
+                elif path == "/api/camp-live":
+                    if not citydb.base_tier(user.get("tier") or ""):
+                        raise ValueError("活动助手需要高级pro订阅")
+                    why = citydb.request_camp_live(user["id"])
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True})
                 elif path == "/api/base-equip":
                     if not citydb.base_tier(user.get("tier") or ""):
                         raise ValueError("基地战需要高级pro订阅")
